@@ -1,0 +1,10 @@
+docker stop dockup && docker rm dockup
+docker build -t dockup:latest .
+docker run -d \
+  --name dockup \
+  -p 5000:5000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /DATA/Compose:/stacks \
+  -v dockup_data:/app/data \
+  --restart unless-stopped \
+  dockup:latest

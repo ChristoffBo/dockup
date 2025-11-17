@@ -1,0 +1,1365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dockup - Docker Stack Manager</title>
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.3.4/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios@1.5.0/dist/axios.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            color: #e2e8f0;
+            min-height: 100vh;
+        }
+
+        #app {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 250px;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(10px);
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 20px;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 30px;
+            color: #60a5fa;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .nav-item {
+            padding: 12px 15px;
+            margin: 5px 0;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .nav-item:hover {
+            background: rgba(96, 165, 250, 0.2);
+        }
+
+        .nav-item.active {
+            background: rgba(96, 165, 250, 0.3);
+            border-left: 3px solid #60a5fa;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            padding: 30px;
+            overflow-y: auto;
+        }
+
+        .header {
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #94a3b8;
+        }
+
+        /* Cards */
+        .card {
+            background: rgba(30, 41, 59, 0.6);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            transition: all 0.3s;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .card-title {
+            font-size: 20px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-running {
+            background: rgba(34, 197, 94, 0.2);
+            color: #22c55e;
+        }
+
+        .status-stopped {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .status-updating {
+            background: rgba(234, 179, 8, 0.2);
+            color: #eab308;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn-primary {
+            background: #60a5fa;
+            color: white;
+        }
+
+        .btn-success {
+            background: #22c55e;
+            color: white;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-warning {
+            background: #eab308;
+            color: white;
+        }
+
+        .btn-secondary {
+            background: rgba(148, 163, 184, 0.3);
+            color: #e2e8f0;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+
+        /* Modal */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal-content {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 800px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-header h2 {
+            font-size: 24px;
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            color: #94a3b8;
+            font-size: 24px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .close-btn:hover {
+            color: #e2e8f0;
+        }
+
+        /* Form */
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 8px;
+            color: #cbd5e1;
+            font-weight: 500;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 10px;
+            background: rgba(15, 23, 42, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-size: 14px;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #60a5fa;
+        }
+
+        textarea.form-input {
+            min-height: 400px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .form-select {
+            width: 100%;
+            padding: 10px;
+            background: rgba(15, 23, 42, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-size: 14px;
+        }
+
+        /* Stack Grid */
+        .stacks-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+        }
+
+        .stack-info {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin: 15px 0;
+        }
+
+        .stack-info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px;
+            background: rgba(15, 23, 42, 0.3);
+            border-radius: 6px;
+        }
+
+        .stack-info-label {
+            color: #94a3b8;
+        }
+
+        .stack-info-value {
+            font-weight: 500;
+        }
+
+        /* Logs */
+        .logs-container {
+            background: #0f172a;
+            border-radius: 6px;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+
+        /* Update indicator */
+        .update-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 8px;
+            background: rgba(234, 179, 8, 0.2);
+            color: #eab308;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Settings */
+        .settings-section {
+            margin-bottom: 30px;
+        }
+
+        .settings-section h3 {
+            margin-bottom: 15px;
+            color: #60a5fa;
+        }
+
+        /* Toast Notifications */
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 2000;
+        }
+
+        .toast {
+            background: #1e293b;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 15px 20px;
+            margin-bottom: 10px;
+            min-width: 300px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .toast-success {
+            border-left: 4px solid #22c55e;
+        }
+
+        .toast-error {
+            border-left: 4px solid #ef4444;
+        }
+
+        .toast-info {
+            border-left: 4px solid #60a5fa;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #60a5fa;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #94a3b8;
+        }
+
+        .empty-state i {
+            font-size: 64px;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+
+        .inactive-stack {
+            opacity: 0.6;
+            border: 1px solid rgba(100, 116, 139, 0.3);
+        }
+
+        .inactive-stack:hover {
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="logo">
+                <i class="fas fa-layer-group"></i>
+                Dockup
+            </div>
+            <div class="nav-item" :class="{active: currentView === 'dashboard'}" @click="currentView = 'dashboard'">
+                <i class="fas fa-home"></i>
+                Dashboard
+            </div>
+            <div class="nav-item" :class="{active: currentView === 'images'}" @click="currentView = 'images'; loadImages()">
+                <i class="fas fa-hdd"></i>
+                Images
+            </div>
+            <div class="nav-item" :class="{active: currentView === 'settings'}" @click="currentView = 'settings'">
+                <i class="fas fa-cog"></i>
+                Settings
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Dashboard View -->
+            <div v-if="currentView === 'dashboard'">
+                <div class="header">
+                    <h1>Dashboard</h1>
+                    <p>Overview of all your Docker stacks</p>
+                </div>
+
+                <div style="margin-bottom: 30px;">
+                    <button class="btn btn-primary" @click="showCreateStack" style="font-size: 16px; padding: 12px 24px;">
+                        <i class="fas fa-plus-circle"></i> Create New Stack
+                    </button>
+                </div>
+
+                <div v-if="stacks.length === 0" class="empty-state">
+                    <i class="fas fa-box-open"></i>
+                    <h2>No Stacks Yet</h2>
+                    <p>Create your first stack to get started</p>
+                    <button class="btn btn-primary" @click="showCreateStack" style="margin-top: 20px;">
+                        <i class="fas fa-plus"></i> Create Stack
+                    </button>
+                </div>
+
+                <div v-else class="stacks-grid">
+                    <!-- Active Stacks -->
+                    <div class="card" v-for="stack in activeStacks" :key="stack.name">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <i class="fas fa-layer-group"></i>
+                                {{ stack.name }}
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span class="status-badge" :class="stack.running ? 'status-running' : 'status-stopped'">
+                                    {{ stack.running ? 'Running' : 'Stopped' }}
+                                </span>
+                                <span v-if="stack.running && getStackUptime(stack)" style="font-size: 12px; color: #94a3b8;">
+                                    <i class="fas fa-clock"></i> {{ getStackUptime(stack) }}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="stack-info">
+                            <div class="stack-info-row">
+                                <span class="stack-info-label">Services:</span>
+                                <span class="stack-info-value">{{ stack.services.length }}</span>
+                            </div>
+                            <div class="stack-info-row" v-if="stack.running">
+                                <span class="stack-info-label">CPU:</span>
+                                <span class="stack-info-value">{{ stack.stats.cpu_percent }}%</span>
+                            </div>
+                            <div class="stack-info-row" v-if="stack.running">
+                                <span class="stack-info-label">RAM:</span>
+                                <span class="stack-info-value">{{ stack.stats.mem_usage_mb }} MB ({{ stack.stats.mem_percent }}%)</span>
+                            </div>
+                            <div class="stack-info-row">
+                                <span class="stack-info-label">Update Mode:</span>
+                                <span class="stack-info-value">
+                                    {{ stack.update_mode === 'off' ? 'Off' : stack.update_mode === 'check' ? 'Check Only' : 'Auto Update' }}
+                                </span>
+                            </div>
+                            <div class="stack-info-row" v-if="stack.last_check">
+                                <span class="stack-info-label">Last Check:</span>
+                                <span class="stack-info-value">{{ formatDate(stack.last_check) }}</span>
+                            </div>
+                        </div>
+
+                        <div v-if="stack.update_available" class="update-indicator pulse">
+                            <i class="fas fa-exclamation-circle"></i>
+                            Update Available
+                        </div>
+
+                        <div class="btn-group" style="margin-top: 15px;">
+                            <button class="btn btn-success" v-if="!stack.running" @click="stackOperationWithTerminal(stack.name, 'up')">
+                                <i class="fas fa-play"></i> Start
+                            </button>
+                            <button class="btn btn-danger" v-if="stack.running" @click="stackOperationWithTerminal(stack.name, 'down')">
+                                <i class="fas fa-stop"></i> Stop
+                            </button>
+                            <button class="btn btn-warning" v-if="stack.running" @click="stackOperationWithTerminal(stack.name, 'restart')">
+                                <i class="fas fa-redo"></i> Restart
+                            </button>
+                            <button class="btn btn-warning" v-if="stack.update_available" @click="updateStack(stack.name)">
+                                <i class="fas fa-arrow-up"></i> Update Now
+                            </button>
+                            <button class="btn btn-primary" @click="checkUpdates(stack.name)">
+                                <i class="fas fa-sync"></i> Check
+                            </button>
+                            <button class="btn btn-primary" @click="quickSetMode(stack.name, 'check')">
+                                <i class="fas fa-search"></i> Check Only
+                            </button>
+                            <button class="btn btn-success" @click="quickSetMode(stack.name, 'auto')">
+                                <i class="fas fa-magic"></i> Auto Update
+                            </button>
+                            <button class="btn btn-primary" @click="editStack(stack.name)">
+                                <i class="fas fa-edit"></i> Edit
+                            </button>
+                            <button class="btn btn-secondary" @click="viewLogs(stack.name)">
+                                <i class="fas fa-file-alt"></i> Logs
+                            </button>
+                            <button class="btn btn-secondary" @click="configureSchedule(stack.name)">
+                                <i class="fas fa-clock"></i> Schedule
+                            </button>
+                            <button class="btn btn-warning" @click="deleteImagesOnly(stack.name)">
+                                <i class="fas fa-images"></i> Delete Images
+                            </button>
+                            <button class="btn btn-danger" @click="confirmDeleteStack(stack.name)">
+                                <i class="fas fa-trash"></i> Delete
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Inactive Stacks (Never Started) -->
+                    <div v-if="inactiveStacks.length > 0" style="grid-column: 1 / -1; margin-top: 30px;">
+                        <h3 style="color: #64748b; margin-bottom: 20px;">
+                            <i class="fas fa-pause-circle"></i> Inactive Stacks
+                        </h3>
+                    </div>
+                    
+                    <div class="card inactive-stack" v-for="stack in inactiveStacks" :key="stack.name">
+                        <div class="card-header">
+                            <div class="card-title" style="color: #64748b;">
+                                <i class="fas fa-layer-group"></i>
+                                {{ stack.name }}
+                            </div>
+                            <span class="status-badge" style="background: rgba(100, 116, 139, 0.2); color: #64748b;">
+                                Never Started
+                            </span>
+                        </div>
+
+                        <div class="stack-info">
+                            <div class="stack-info-row">
+                                <span class="stack-info-label">Services:</span>
+                                <span class="stack-info-value">{{ stack.services.length }}</span>
+                            </div>
+                        </div>
+
+                        <div class="btn-group" style="margin-top: 15px;">
+                            <button class="btn btn-success" @click="stackOperationWithTerminal(stack.name, 'up')">
+                                <i class="fas fa-play"></i> Start
+                            </button>
+                            <button class="btn btn-primary" @click="editStack(stack.name)">
+                                <i class="fas fa-edit"></i> Edit
+                            </button>
+                            <button class="btn btn-danger" @click="confirmDeleteStack(stack.name)">
+                                <i class="fas fa-trash"></i> Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Images View -->
+            <div v-if="currentView === 'images'">
+                <div class="header">
+                    <h1>Docker Images</h1>
+                    <p>Manage your Docker images and free up disk space</p>
+                </div>
+
+                <div class="card" style="margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h3><i class="fas fa-broom"></i> Cleanup Unused Images</h3>
+                            <p style="color: #94a3b8; margin-top: 10px;">Remove dangling and unused Docker images to free up disk space</p>
+                        </div>
+                        <button class="btn btn-warning" @click="pruneImages" :disabled="pruning">
+                            <i class="fas" :class="pruning ? 'fa-spinner fa-spin' : 'fa-broom'"></i>
+                            {{ pruning ? 'Pruning...' : 'Prune Unused Images' }}
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3 style="margin-bottom: 20px;">
+                        <i class="fas fa-images"></i> All Images ({{ images.length }})
+                    </h3>
+
+                    <div v-if="images.length === 0" style="text-align: center; padding: 40px; color: #94a3b8;">
+                        <i class="fas fa-images" style="font-size: 48px; margin-bottom: 15px; opacity: 0.5;"></i>
+                        <p>No images found</p>
+                    </div>
+
+                    <div v-else style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
+                                    <th style="padding: 12px; text-align: left; color: #94a3b8;">Image</th>
+                                    <th style="padding: 12px; text-align: left; color: #94a3b8;">Size</th>
+                                    <th style="padding: 12px; text-align: left; color: #94a3b8;">Status</th>
+                                    <th style="padding: 12px; text-align: left; color: #94a3b8;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="image in images" :key="image.id" style="border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
+                                    <td style="padding: 12px;">
+                                        <div style="font-weight: 500;">{{ image.tag }}</div>
+                                        <div style="font-size: 12px; color: #64748b; margin-top: 4px;">{{ image.id }}</div>
+                                    </td>
+                                    <td style="padding: 12px;">
+                                        <span :style="'color: ' + (image.size_mb > 1000 ? '#eab308' : '#94a3b8')">
+                                            {{ image.size_mb > 1000 ? (image.size_mb / 1024).toFixed(2) + ' GB' : image.size_mb + ' MB' }}
+                                        </span>
+                                    </td>
+                                    <td style="padding: 12px;">
+                                        <span v-if="image.in_use" class="status-badge status-running">
+                                            <i class="fas fa-check-circle"></i> In Use
+                                        </span>
+                                        <span v-else class="status-badge status-stopped">
+                                            <i class="fas fa-circle"></i> Unused
+                                        </span>
+                                        <div v-if="image.containers.length > 0" style="font-size: 11px; color: #64748b; margin-top: 4px;">
+                                            {{ image.containers.join(', ') }}
+                                        </div>
+                                    </td>
+                                    <td style="padding: 12px;">
+                                        <button class="btn btn-danger btn-sm" @click="deleteImage(image.id, image.tag)" v-if="!image.in_use">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings View -->
+            <div v-if="currentView === 'settings'">
+                <div class="header">
+                    <h1>Settings</h1>
+                    <p>Configure notifications and defaults</p>
+                </div>
+
+                <div class="card">
+                    <div class="settings-section">
+                        <h3><i class="fas fa-bell"></i> Gotify Notifications</h3>
+                        <div class="form-group">
+                            <label class="form-label">Gotify URL</label>
+                            <input type="text" class="form-input" v-model="settings.gotify_url" placeholder="http://gotify.example.com">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Gotify Token</label>
+                            <input type="text" class="form-input" v-model="settings.gotify_token" placeholder="Your Gotify application token">
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3><i class="fas fa-paper-plane"></i> Apprise Notifications</h3>
+                        <div class="form-group">
+                            <label class="form-label">Apprise URLs (one per line)</label>
+                            <textarea class="form-input" v-model="appriseUrlsText" placeholder="discord://webhook_id/webhook_token&#10;mailto://user:pass@gmail.com" style="min-height: 150px;"></textarea>
+                            <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                Supports: Discord, Slack, Telegram, Email, Pushover, and 70+ more services
+                            </small>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3><i class="fas fa-clock"></i> Default Schedule</h3>
+                        <div class="form-group">
+                            <label class="form-label">Default Cron Expression</label>
+                            <input type="text" class="form-input" v-model="settings.default_cron" placeholder="0 2 * * *">
+                            <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                Example: "0 2 * * *" = Daily at 2 AM
+                            </small>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Timezone</label>
+                            <input type="text" class="form-input" v-model="settings.timezone" placeholder="UTC">
+                            <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                Examples: UTC, America/New_York, Europe/London, Africa/Johannesburg
+                            </small>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3><i class="fas fa-broom"></i> Auto-Prune Unused Images</h3>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.auto_prune">
+                                <span>Automatically prune unused Docker images</span>
+                            </label>
+                        </div>
+                        <div class="form-group" v-if="settings.auto_prune">
+                            <label class="form-label">Prune Schedule (Cron)</label>
+                            <input type="text" class="form-input" v-model="settings.auto_prune_cron" placeholder="0 3 * * 0">
+                            <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                Default: "0 3 * * 0" = Weekly on Sunday at 3 AM
+                            </small>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3><i class="fas fa-toggle-on"></i> Notification Preferences</h3>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.notify_on_check">
+                                <span>Notify when updates are available (Check Only mode)</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.notify_on_update">
+                                <span>Notify when updates are completed (Auto Update mode)</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.notify_on_error">
+                                <span>Notify on errors</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <button class="btn btn-success" @click="saveSettings">
+                        <i class="fas fa-save"></i> Save Settings
+                    </button>
+                    <button class="btn btn-primary" @click="testNotification" style="margin-left: 10px;">
+                        <i class="fas fa-bell"></i> Test Notification
+                    </button>
+                </div>
+
+                <div class="card" style="margin-top: 20px;">
+                    <h2 style="margin-bottom: 20px;"><i class="fas fa-layer-group"></i> Apply to All Stacks</h2>
+                    <p style="color: #94a3b8; margin-bottom: 20px;">Set the same update mode and schedule for all stacks at once</p>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Update Mode</label>
+                        <select class="form-select" v-model="applyAllMode">
+                            <option value="off">Off - Don't check for updates</option>
+                            <option value="check">Check Only - Notify but don't update</option>
+                            <option value="auto">Auto Update - Automatically update when available</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group" v-if="applyAllMode !== 'off'">
+                        <label class="form-label">Cron Schedule</label>
+                        <input type="text" class="form-input" v-model="applyAllCron" placeholder="0 2 * * *">
+                    </div>
+                    
+                    <button class="btn btn-warning" @click="applyToAll">
+                        <i class="fas fa-magic"></i> Apply to All Stacks
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Edit Stack Modal -->
+        <div class="modal" v-if="showEditModal" @click.self="showEditModal = false">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>{{ editingStack ? 'Edit Stack' : 'Create New Stack' }}</h2>
+                    <button class="close-btn" @click="showEditModal = false">&times;</button>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Stack Name</label>
+                    <input type="text" class="form-input" v-model="editStackName" :disabled="!!editingStack" placeholder="e.g., nginx, plex, jellyfin">
+                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                        {{ editingStack ? 'Stack name cannot be changed' : 'This will create a folder: /DATA/Compose/' + (editStackName || 'stackname') + '/' }}
+                    </small>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Docker Compose YAML</label>
+                    <textarea class="form-input" v-model="editStackContent" placeholder="Paste your docker-compose.yml here or write from scratch..." style="min-height: 450px; font-family: 'Courier New', monospace;"></textarea>
+                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                        {{ editingStack ? 'Edit your compose file' : 'Will be saved as: compose.yaml' }}
+                    </small>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-success" @click="saveStack" :disabled="!editStackName || !editStackContent">
+                        <i class="fas fa-save"></i> {{ editingStack ? 'Save Changes' : 'Create Stack' }}
+                    </button>
+                    <button class="btn btn-secondary" @click="showEditModal = false">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logs Modal -->
+        <div class="modal" v-if="showLogsModal" @click.self="showLogsModal = false">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Logs - {{ logsStackName }}</h2>
+                    <button class="close-btn" @click="showLogsModal = false">&times;</button>
+                </div>
+                <div v-for="(log, container) in stackLogs" :key="container">
+                    <h3 style="margin: 20px 0 10px;">{{ container }}</h3>
+                    <div class="logs-container">{{ log }}</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Schedule Modal -->
+        <div class="modal" v-if="showScheduleModal" @click.self="showScheduleModal = false">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Update Schedule - {{ scheduleStackName }}</h2>
+                    <button class="close-btn" @click="showScheduleModal = false">&times;</button>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Update Mode</label>
+                    <select class="form-select" v-model="scheduleMode">
+                        <option value="off">Off - Don't check for updates</option>
+                        <option value="check">Check Only - Notify but don't update</option>
+                        <option value="auto">Auto Update - Automatically update when available</option>
+                    </select>
+                </div>
+                <div class="form-group" v-if="scheduleMode !== 'off'">
+                    <label class="form-label">Cron Schedule</label>
+                    <input type="text" class="form-input" v-model="scheduleCron" placeholder="0 2 * * *">
+                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                        Examples:<br>
+                        • "0 2 * * *" = Daily at 2 AM<br>
+                        • "0 */6 * * *" = Every 6 hours<br>
+                        • "0 0 * * 0" = Weekly on Sunday at midnight
+                    </small>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-success" @click="saveSchedule">
+                        <i class="fas fa-save"></i> Save Schedule
+                    </button>
+                    <button class="btn btn-secondary" @click="showScheduleModal = false">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Terminal Modal -->
+        <div class="modal" v-if="showTerminalModal" @click.self="closeTerminal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>{{ terminalOperation }} - {{ terminalStack }}</h2>
+                    <button class="close-btn" @click="closeTerminal">&times;</button>
+                </div>
+                <div class="logs-container" style="max-height: 500px;">
+                    <div v-for="(line, index) in terminalOutput" :key="index">{{ line }}</div>
+                    <div v-if="terminalOutput.length === 0" style="color: #94a3b8;">
+                        <i class="fas fa-spinner fa-spin"></i> Starting operation...
+                    </div>
+                </div>
+                <button class="btn btn-secondary" @click="closeTerminal" style="margin-top: 15px;">
+                    Close
+                </button>
+            </div>
+        </div>
+
+        <!-- Delete Confirmation Modal -->
+        <div class="modal" v-if="showDeleteModal" @click.self="showDeleteModal = false">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Delete Stack - {{ deleteStackName }}</h2>
+                    <button class="close-btn" @click="showDeleteModal = false">&times;</button>
+                </div>
+                <p style="margin-bottom: 20px; color: #94a3b8;">
+                    Choose what to delete:
+                </p>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                        <input type="checkbox" v-model="deleteCompose">
+                        <span>Delete compose file (cannot be undone)</span>
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                        <input type="checkbox" v-model="deleteImages">
+                        <span>Delete Docker images</span>
+                    </label>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-danger" @click="executeDelete">
+                        <i class="fas fa-trash"></i> Delete
+                    </button>
+                    <button class="btn btn-secondary" @click="showDeleteModal = false">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast Notifications -->
+        <div class="toast-container">
+            <div v-for="toast in toasts" :key="toast.id" class="toast" :class="'toast-' + toast.type">
+                <strong>{{ toast.title }}</strong>
+                <div style="margin-top: 5px;">{{ toast.message }}</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    currentView: 'dashboard',
+                    stacks: [],
+                    settings: {
+                        gotify_url: '',
+                        gotify_token: '',
+                        apprise_urls: [],
+                        default_cron: '0 2 * * *',
+                        notify_on_check: true,
+                        notify_on_update: true,
+                        notify_on_error: true
+                    },
+                    showEditModal: false,
+                    editingStack: null,
+                    editStackName: '',
+                    editStackContent: '',
+                    showLogsModal: false,
+                    logsStackName: '',
+                    stackLogs: {},
+                    showScheduleModal: false,
+                    scheduleStackName: '',
+                    scheduleMode: 'off',
+                    scheduleCron: '0 2 * * *',
+                    showTerminalModal: false,
+                    terminalStack: '',
+                    terminalOperation: '',
+                    terminalOutput: [],
+                    showDeleteModal: false,
+                    deleteStackName: '',
+                    deleteImages: false,
+                    deleteCompose: true,
+                    showApplyAllModal: false,
+                    applyAllMode: 'off',
+                    applyAllCron: '0 2 * * *',
+                    images: [],
+                    pruning: false,
+                    toasts: [],
+                    ws: null
+                };
+            },
+            computed: {
+                appriseUrlsText: {
+                    get() {
+                        return this.settings.apprise_urls.join('\n');
+                    },
+                    set(value) {
+                        this.settings.apprise_urls = value.split('\n').filter(url => url.trim());
+                    }
+                },
+                activeStacks() {
+                    // Stacks that have been started at least once (have containers)
+                    return this.stacks.filter(s => s.containers.length > 0);
+                },
+                inactiveStacks() {
+                    // Stacks that have never been started (no containers)
+                    return this.stacks.filter(s => s.containers.length === 0);
+                }
+            },
+            mounted() {
+                this.loadStacks();
+                this.loadSettings();
+                this.connectWebSocket();
+                
+                // Refresh stacks every 10 seconds
+                setInterval(() => {
+                    this.loadStacks();
+                }, 10000);
+            },
+            methods: {
+                async loadStacks() {
+                    try {
+                        const response = await axios.get('/api/stacks');
+                        this.stacks = response.data;
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to load stacks', 'error');
+                    }
+                },
+                async loadSettings() {
+                    try {
+                        const response = await axios.get('/api/config');
+                        this.settings = response.data;
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to load settings', 'error');
+                    }
+                },
+                async saveSettings() {
+                    try {
+                        await axios.post('/api/config', this.settings);
+                        this.showToast('Success', 'Settings saved successfully', 'success');
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to save settings', 'error');
+                    }
+                },
+                async stackOperation(stackName, operation) {
+                    try {
+                        const response = await axios.post(`/api/stack/${stackName}/operation`, { operation });
+                        this.showToast('Success', `Stack ${operation} completed`, 'success');
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', `Failed to ${operation} stack: ${error.response?.data?.error || error.message}`, 'error');
+                    }
+                },
+                stackOperationWithTerminal(stackName, operation) {
+                    this.terminalStack = stackName;
+                    this.terminalOperation = operation.toUpperCase();
+                    this.terminalOutput = [];
+                    this.showTerminalModal = true;
+                    
+                    // Start the operation
+                    this.stackOperation(stackName, operation);
+                },
+                closeTerminal() {
+                    this.showTerminalModal = false;
+                    this.loadStacks();
+                },
+                async updateStack(stackName) {
+                    if (!confirm(`Pull latest images and restart ${stackName}?`)) {
+                        return;
+                    }
+                    this.terminalStack = stackName;
+                    this.terminalOperation = 'UPDATE';
+                    this.terminalOutput = [];
+                    this.showTerminalModal = true;
+                    
+                    try {
+                        // Pull images first
+                        await axios.post(`/api/stack/${stackName}/operation`, { operation: 'pull' });
+                        // Then restart
+                        await axios.post(`/api/stack/${stackName}/operation`, { operation: 'up' });
+                        this.showToast('Success', `${stackName} updated successfully`, 'success');
+                    } catch (error) {
+                        this.showToast('Error', `Failed to update: ${error.response?.data?.error || error.message}`, 'error');
+                    }
+                },
+                async quickSetMode(stackName, mode) {
+                    try {
+                        const cron = this.settings.default_cron || '0 2 * * *';
+                        await axios.post(`/api/stack/${stackName}/schedule`, { mode, cron });
+                        this.showToast('Success', `${stackName} set to ${mode === 'check' ? 'Check Only' : 'Auto Update'}`, 'success');
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to set mode', 'error');
+                    }
+                },
+                async deleteImagesOnly(stackName) {
+                    if (!confirm(`Delete all Docker images for ${stackName}? The compose file will be kept.`)) {
+                        return;
+                    }
+                    
+                    try {
+                        const response = await axios.post(`/api/stack/${stackName}/delete-images`);
+                        this.showToast('Success', `Deleted images: ${response.data.deleted.join(', ')}`, 'success');
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to delete images', 'error');
+                    }
+                },
+                confirmDeleteStack(stackName) {
+                    this.deleteStackName = stackName;
+                    this.deleteImages = false;
+                    this.deleteCompose = true;
+                    this.showDeleteModal = true;
+                },
+                async executeDelete() {
+                    try {
+                        await axios.delete(`/api/stack/${this.deleteStackName}`, {
+                            data: {
+                                delete_images: this.deleteImages,
+                                delete_compose: this.deleteCompose
+                            }
+                        });
+                        this.showToast('Success', 'Stack deleted successfully', 'success');
+                        this.showDeleteModal = false;
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to delete stack', 'error');
+                    }
+                },
+                async applyToAll() {
+                    if (!confirm(`Apply ${this.applyAllMode} mode to ALL stacks?`)) {
+                        return;
+                    }
+                    
+                    try {
+                        const response = await axios.post('/api/apply-to-all', {
+                            mode: this.applyAllMode,
+                            cron: this.applyAllCron
+                        });
+                        this.showToast('Success', `Applied to ${response.data.updated} stacks`, 'success');
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to apply settings', 'error');
+                    }
+                },
+                async testNotification() {
+                    try {
+                        await axios.post('/api/test-notification');
+                        this.showToast('Success', 'Test notification sent! Check your notification service.', 'success');
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to send test notification', 'error');
+                    }
+                },
+                async loadImages() {
+                    try {
+                        const response = await axios.get('/api/images');
+                        this.images = response.data;
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to load images', 'error');
+                    }
+                },
+                async pruneImages() {
+                    if (!confirm('Prune all unused Docker images? This will free up disk space but cannot be undone.')) {
+                        return;
+                    }
+                    
+                    this.pruning = true;
+                    try {
+                        const response = await axios.post('/api/images/prune');
+                        this.showToast('Success', `Pruned ${response.data.deleted} images, freed ${response.data.space_saved_mb} MB`, 'success');
+                        await this.loadImages();
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to prune images', 'error');
+                    } finally {
+                        this.pruning = false;
+                    }
+                },
+                async deleteImage(imageId, imageTag) {
+                    if (!confirm(`Delete image ${imageTag}?`)) {
+                        return;
+                    }
+                    
+                    try {
+                        await axios.delete(`/api/images/${imageId}`);
+                        this.showToast('Success', `Deleted ${imageTag}`, 'success');
+                        await this.loadImages();
+                    } catch (error) {
+                        this.showToast('Error', `Failed to delete image: ${error.response?.data?.error || error.message}`, 'error');
+                    }
+                },
+                showCreateStack() {
+                    this.editingStack = null;
+                    this.editStackName = '';
+                    this.editStackContent = `services:
+  app:
+    image: nginx:latest
+    container_name: my-app
+    ports:
+      - "80:80"
+    restart: unless-stopped
+    # volumes:
+    #   - ./data:/data
+    # environment:
+    #   - PUID=1000
+    #   - PGID=1000
+`;
+                    this.showEditModal = true;
+                },
+                async editStack(stackName) {
+                    try {
+                        const response = await axios.get(`/api/stack/${stackName}/compose`);
+                        this.editingStack = stackName;
+                        this.editStackName = stackName;
+                        this.editStackContent = response.data.content;
+                        this.showEditModal = true;
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to load stack', 'error');
+                    }
+                },
+                async saveStack() {
+                    if (!this.editStackName || !this.editStackContent) {
+                        this.showToast('Error', 'Stack name and compose content are required', 'error');
+                        return;
+                    }
+                    
+                    try {
+                        await axios.post(`/api/stack/${this.editStackName}/compose`, {
+                            content: this.editStackContent
+                        });
+                        
+                        const action = this.editingStack ? 'updated' : 'created';
+                        const path = `/DATA/Compose/${this.editStackName}/compose.yaml`;
+                        
+                        this.showToast('Success', `Stack ${action} successfully at ${path}`, 'success');
+                        this.showEditModal = false;
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', `Failed to save stack: ${error.response?.data?.error || error.message}`, 'error');
+                    }
+                },
+                async viewLogs(stackName) {
+                    try {
+                        const response = await axios.get(`/api/stack/${stackName}/logs`);
+                        this.logsStackName = stackName;
+                        this.stackLogs = response.data.logs;
+                        this.showLogsModal = true;
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to load logs', 'error');
+                    }
+                },
+                async configureSchedule(stackName) {
+                    try {
+                        const response = await axios.get(`/api/stack/${stackName}/schedule`);
+                        this.scheduleStackName = stackName;
+                        this.scheduleMode = response.data.mode || 'off';
+                        this.scheduleCron = response.data.cron || this.settings.default_cron;
+                        this.showScheduleModal = true;
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to load schedule', 'error');
+                    }
+                },
+                async saveSchedule() {
+                    try {
+                        await axios.post(`/api/stack/${this.scheduleStackName}/schedule`, {
+                            mode: this.scheduleMode,
+                            cron: this.scheduleCron
+                        });
+                        this.showToast('Success', 'Schedule saved successfully', 'success');
+                        this.showScheduleModal = false;
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', `Failed to save schedule: ${error.response?.data?.error || error.message}`, 'error');
+                    }
+                },
+                async checkUpdates(stackName) {
+                    try {
+                        this.showToast('Info', 'Checking for updates...', 'info');
+                        const response = await axios.post(`/api/stack/${stackName}/check-updates`);
+                        if (response.data.update_available) {
+                            this.showToast('Update Available', `Updates available for ${stackName}`, 'info');
+                        } else {
+                            this.showToast('Up to Date', `${stackName} is up to date`, 'success');
+                        }
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to check updates', 'error');
+                    }
+                },
+                connectWebSocket() {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    this.ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+                    
+                    this.ws.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        
+                        if (data.type === 'operation_output') {
+                            if (this.terminalStack === data.stack) {
+                                this.terminalOutput.push(data.line);
+                            }
+                        } else if (data.type === 'update_available') {
+                            this.showToast('Update Available', `Updates available for ${data.stack}`, 'info');
+                            this.loadStacks();
+                        } else if (data.type === 'stack_updated') {
+                            this.showToast('Updated', `${data.stack} has been updated`, 'success');
+                            this.loadStacks();
+                        } else if (data.type === 'update_check_error') {
+                            this.showToast('Error', `Failed to check updates for ${data.stack}`, 'error');
+                        }
+                    };
+                    
+                    this.ws.onclose = () => {
+                        // Reconnect after 5 seconds
+                        setTimeout(() => this.connectWebSocket(), 5000);
+                    };
+                },
+                showToast(title, message, type) {
+                    const toast = {
+                        id: Date.now(),
+                        title,
+                        message,
+                        type
+                    };
+                    this.toasts.push(toast);
+                    
+                    setTimeout(() => {
+                        const index = this.toasts.indexOf(toast);
+                        if (index > -1) {
+                            this.toasts.splice(index, 1);
+                        }
+                    }, 5000);
+                },
+                formatDate(dateString) {
+                    if (!dateString) return 'Never';
+                    const date = new Date(dateString);
+                    const now = new Date();
+                    const diffMs = now - date;
+                    const diffMins = Math.floor(diffMs / 60000);
+                    
+                    if (diffMins < 1) return 'Just now';
+                    if (diffMins < 60) return `${diffMins} min ago`;
+                    const diffHours = Math.floor(diffMins / 60);
+                    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+                    const diffDays = Math.floor(diffHours / 24);
+                    return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+                },
+                getStackUptime(stack) {
+                    // Get the longest uptime from all running containers in stack
+                    if (!stack.containers || stack.containers.length === 0) return '';
+                    
+                    const uptimes = stack.containers
+                        .filter(c => c.status === 'running' && c.uptime)
+                        .map(c => c.uptime);
+                    
+                    if (uptimes.length === 0) return '';
+                    
+                    // Return the first (longest) uptime
+                    return uptimes[0];
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
