@@ -150,6 +150,116 @@ def broadcast_ws(data):
             websocket_clients.remove(client)
 
 
+def import_orphan_containers_as_stacks():
+    """Automatically detect and import containers without com.docker.compose.project label"""
+    try:
+        all_containers = docker_client.containers.list(all=True)
+
+        for container in all_containers:
+            labels = container.labels
+
+            # Skip if already part of a compose stack
+            if labels.get('com.docker.compose.project'):
+                continue
+
+            # Skip if already imported by Dockup
+            if labels.get('dockup.imported') == 'true':
+                continue
+
+            # Permanently ignore Dockup and Dockge (case-insensitive)
+            name_lower = container.name.lower()
+            if 'dockup' in name_lower or 'dockge' in name_lower:
+                continue
+
+            if container.image and container.image.tags:
+                image_tags_lower = ' '.join(tag.lower() for tag in container.image.tags)
+                if 'dockup' in image_tags_lower or 'dockge' in image_tags_lower:
+                    continue
+
+            if labels.get('dockup.self') == 'true':
+                continue
+
+            stack_name = f"imported-{container.name}"
+            stack_path = os.path.join(STACKS_DIR, stack_name)
+
+            if os.path.exists(stack_path):
+                continue
+
+            print(f"[Dockup] Auto-importing orphan container: {container.name} → stack '{stack_name}'")
+
+            inspect = container.attrs
+            cfg = inspect['Config']
+            host_cfg = inspect['HostConfig']
+
+            service = {
+                'image': container.image.tags[0] if container.image.tags else cfg['Image'],
+                'container_name': container.name,
+                'restart': 'unless-stopped',
+            }
+
+            # Ports
+            if host_cfg['PortBindings']:
+                service['ports'] = []
+                for container_port, bindings in host_cfg['PortBindings'].items():
+                    for binding in bindings:
+                        host_port = binding['HostPort']
+                        host_ip = binding.get('HostIp', '')
+                        if host_ip == '0.0.0.0':
+                            host_ip = ''
+                        proto = container_port.split('/')[-1]
+                        port_str = f"{host_ip + ':' if host_ip else ''}{host_port}:{container_port.split('/')[0]}"
+                        if proto != 'tcp':
+                            port_str += '/' + proto
+                        service['ports'].append(port_str)
+
+            # Volumes
+            volumes = []
+            for mount in inspect.get('Mounts', []):
+                if mount['Type'] == 'bind':
+                    vol = f"{mount['Source']}:{mount['Destination']}"
+                    if not mount.get('RW', True):
+                        vol += ':ro'
+                    volumes.append(vol)
+            if host_cfg.get('Binds'):
+                volumes.extend(host_cfg['Binds'])
+            if volumes:
+                service['volumes'] = list(set(volumes))
+
+            # Environment variables (skip PATH)
+            env = [e for e in cfg.get('Env', []) if not e.startswith('PATH=')]
+            if env:
+                service['environment'] = env
+
+            # Network mode
+            if host_cfg['NetworkMode'] not in ('bridge', 'default'):
+                service['network_mode'] = host_cfg['NetworkMode']
+
+            # Create compose file
+            compose_data = {'services': {container.name: service}}
+
+            os.makedirs(stack_path, exist_ok=True)
+            compose_file = os.path.join(stack_path, 'compose.yaml')
+            with open(compose_file, 'w') as f:
+                yaml.safe_dump(compose_data, f, sort_keys=False)
+
+            # Mark container as imported
+            try:
+                docker_client.api.add_label(container.id, 'com.docker.compose.project', stack_name)
+                docker_client.api.add_label(container.id, 'dockup.imported', 'true')
+            except:
+                pass
+
+            send_notification(
+                "Dockup – Orphan Imported",
+                f"Container `{container.name}` automatically imported as stack `{stack_name}`",
+                'info'
+            )
+            broadcast_ws({'type': 'stacks_changed'})
+
+    except Exception as e:
+        print(f"[Dockup] Orphan import error: {e}")
+
+
 def get_stack_stats(stack_name):
     """Get CPU and RAM usage for a stack"""
     try:
@@ -627,7 +737,7 @@ def auto_update_stack(stack_name):
                             if health not in ['healthy', 'none']:
                                 all_healthy = False
                                 print(f"Container {container.name} unhealthy: {health}")
-                                break
+                            break
                     
                     if all_healthy:
                         send_notification(
@@ -717,6 +827,15 @@ def setup_scheduler():
                 print(f"Scheduled auto-prune: {prune_cron} ({config.get('timezone', 'UTC')})")
             except Exception as e:
                 print(f"Error scheduling auto-prune: {e}")
+
+        # Schedule orphan container importer (every 15 minutes)
+        scheduler.add_job(
+            import_orphan_containers_as_stacks,
+            'interval',
+            minutes=15,
+            id='import_orphans',
+            replace_existing=True
+        )
     
     # Initial setup
     update_schedules()
@@ -791,7 +910,7 @@ def api_stack_compose_save(stack_name):
             
             # Check for container_name
             if 'container_name' not in service:
-                suggestions.append(f"'{service_name}': Consider adding 'container_name' for easier management")
+                suggestions.append(f"'{service_name}': Consider adding 'container_name for easier management")
         
         # Save the file
         save_stack_compose(stack_name, content)
@@ -1329,6 +1448,10 @@ if __name__ == '__main__':
         print("Setting up scheduler...")
         scheduler = setup_scheduler()
         print("✓ Scheduler started")
+        
+        # Run orphan import on startup
+        print("Scanning for orphan containers to import...")
+        import_orphan_containers_as_stacks()
         
         # Start background stats updater
         print("Starting background stats updater...")
