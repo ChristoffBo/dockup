@@ -11,9 +11,10 @@ import docker
 import threading
 import time
 import subprocess
+import io
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory, send_file
 from flask_sock import Sock
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -760,15 +761,48 @@ def api_stack_compose(stack_name):
 
 @app.route('/api/stack/<stack_name>/compose', methods=['POST'])
 def api_stack_compose_save(stack_name):
-    """Save stack compose file content"""
+    """Save stack compose file content with validation"""
     data = request.json
     content = data.get('content', '')
     
     try:
-        # Validate YAML
-        yaml.safe_load(content)
+        # Validate YAML syntax
+        compose_data = yaml.safe_load(content)
+        
+        # Validate compose structure
+        warnings = []
+        suggestions = []
+        
+        if not compose_data:
+            return jsonify({'error': 'Empty compose file'}), 400
+        
+        if 'services' not in compose_data:
+            return jsonify({'error': 'No services defined'}), 400
+        
+        # Check for common issues
+        if 'version' in compose_data:
+            warnings.append("'version' is deprecated in modern Compose (can be removed)")
+        
+        services = compose_data.get('services', {})
+        for service_name, service in services.items():
+            # Check for restart policy
+            if 'restart' not in service:
+                suggestions.append(f"'{service_name}': Consider adding 'restart: unless-stopped'")
+            
+            # Check for container_name
+            if 'container_name' not in service:
+                suggestions.append(f"'{service_name}': Consider adding 'container_name' for easier management")
+        
+        # Save the file
         save_stack_compose(stack_name, content)
-        return jsonify({'success': True})
+        
+        return jsonify({
+            'success': True,
+            'warnings': warnings,
+            'suggestions': suggestions
+        })
+    except yaml.YAMLError as e:
+        return jsonify({'error': f'Invalid YAML: {str(e)}'}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
@@ -980,6 +1014,142 @@ def api_image_delete(image_id):
     try:
         docker_client.images.remove(image_id, force=True)
         return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/backup/create', methods=['POST'])
+def api_backup_create():
+    """Create a backup of all stacks"""
+    try:
+        import zipfile
+        import io
+        from flask import send_file
+        
+        # Create zip in memory
+        backup_buffer = io.BytesIO()
+        
+        with zipfile.ZipFile(backup_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Add all compose files
+            for root, dirs, files in os.walk(STACKS_DIR):
+                for file in files:
+                    if file in ['compose.yaml', 'compose.yml', 'docker-compose.yml', 'docker-compose.yaml', '.env']:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, STACKS_DIR)
+                        zip_file.write(file_path, arcname)
+            
+            # Add schedules and config
+            zip_file.writestr('_dockup_schedules.json', json.dumps(schedules, indent=2))
+            zip_file.writestr('_dockup_config.json', json.dumps({
+                'default_cron': config.get('default_cron'),
+                'timezone': config.get('timezone'),
+                'auto_prune': config.get('auto_prune'),
+                'auto_prune_cron': config.get('auto_prune_cron')
+            }, indent=2))
+        
+        backup_buffer.seek(0)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        return send_file(
+            backup_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=f'dockup_backup_{timestamp}.zip'
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/backup/restore', methods=['POST'])
+def api_backup_restore():
+    """Restore stacks from backup"""
+    try:
+        import zipfile
+        
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+        
+        # Read zip file
+        zip_data = io.BytesIO(file.read())
+        
+        restored_stacks = []
+        
+        with zipfile.ZipFile(zip_data, 'r') as zip_file:
+            # Extract all files
+            for file_info in zip_file.filelist:
+                if file_info.filename.startswith('_dockup_'):
+                    # Handle config files
+                    if file_info.filename == '_dockup_schedules.json':
+                        data = json.loads(zip_file.read(file_info))
+                        schedules.update(data)
+                        save_schedules()
+                    elif file_info.filename == '_dockup_config.json':
+                        data = json.loads(zip_file.read(file_info))
+                        for key, value in data.items():
+                            if key in config:
+                                config[key] = value
+                        save_config()
+                else:
+                    # Extract compose files
+                    target_path = os.path.join(STACKS_DIR, file_info.filename)
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    
+                    with open(target_path, 'wb') as f:
+                        f.write(zip_file.read(file_info))
+                    
+                    # Track restored stack
+                    stack_name = file_info.filename.split('/')[0]
+                    if stack_name not in restored_stacks:
+                        restored_stacks.append(stack_name)
+        
+        return jsonify({
+            'success': True,
+            'restored_stacks': restored_stacks
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/stack/<stack_name>/changelog')
+def api_stack_changelog(stack_name):
+    """Get changelog/update history for a stack"""
+    try:
+        containers = docker_client.containers.list(
+            all=True,
+            filters={'label': f'com.docker.compose.project={stack_name}'}
+        )
+        
+        changelog = []
+        
+        for container in containers:
+            image_name = container.image.tags[0] if container.image.tags else None
+            if not image_name:
+                continue
+            
+            # Try to get image history
+            try:
+                image = docker_client.images.get(image_name)
+                history = image.history()
+                
+                # Get last few changes
+                for entry in history[:5]:
+                    if entry.get('CreatedBy'):
+                        changelog.append({
+                            'image': image_name,
+                            'created': entry.get('Created'),
+                            'created_by': entry.get('CreatedBy', '')[:100],
+                            'size': entry.get('Size', 0)
+                        })
+            except:
+                pass
+        
+        return jsonify({'changelog': changelog})
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 

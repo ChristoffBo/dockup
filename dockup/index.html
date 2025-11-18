@@ -433,6 +433,55 @@
         .inactive-stack:hover {
             opacity: 0.8;
         }
+
+        /* Light Theme */
+        body.light-theme {
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+            color: #1e293b;
+        }
+
+        body.light-theme .sidebar {
+            background: rgba(255, 255, 255, 0.9);
+            border-right: 1px solid rgba(0, 0, 0, 0.1);
+        }
+
+        body.light-theme .nav-item {
+            color: #475569;
+        }
+
+        body.light-theme .nav-item:hover {
+            background: rgba(96, 165, 250, 0.1);
+        }
+
+        body.light-theme .nav-item.active {
+            background: rgba(96, 165, 250, 0.2);
+        }
+
+        body.light-theme .card {
+            background: rgba(255, 255, 255, 0.8);
+            border: 1px solid rgba(0, 0, 0, 0.1);
+        }
+
+        body.light-theme .form-input,
+        body.light-theme .form-select {
+            background: rgba(248, 250, 252, 0.8);
+            border: 1px solid rgba(0, 0, 0, 0.1);
+            color: #1e293b;
+        }
+
+        body.light-theme .modal-content {
+            background: #ffffff;
+            border: 1px solid rgba(0, 0, 0, 0.1);
+        }
+
+        body.light-theme .logs-container {
+            background: #f1f5f9;
+            color: #1e293b;
+        }
+
+        body.light-theme .stack-info-row {
+            background: rgba(241, 245, 249, 0.5);
+        }
     </style>
 </head>
 <body>
@@ -462,8 +511,51 @@
             <!-- Dashboard View -->
             <div v-if="currentView === 'dashboard'">
                 <div class="header">
-                    <h1>Dashboard</h1>
-                    <p>Overview of all your Docker stacks</p>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h1>Dashboard</h1>
+                            <p>Overview of all your Docker stacks</p>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-secondary" @click="toggleTheme" title="Toggle Dark/Light Theme">
+                                <i class="fas" :class="darkTheme ? 'fa-sun' : 'fa-moon'"></i>
+                            </button>
+                            <button class="btn btn-primary" @click="downloadBackup" title="Backup All Stacks">
+                                <i class="fas fa-download"></i> Backup
+                            </button>
+                            <button class="btn btn-primary" @click="showBackupModal = true" title="Restore from Backup">
+                                <i class="fas fa-upload"></i> Restore
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Search and Filter -->
+                <div style="margin-bottom: 20px; display: flex; gap: 15px; flex-wrap: wrap; align-items: center;">
+                    <input 
+                        type="text" 
+                        v-model="searchQuery" 
+                        placeholder="Search stacks..." 
+                        class="form-input" 
+                        style="max-width: 300px; margin: 0;"
+                    >
+                    <div class="btn-group">
+                        <button class="btn" :class="filterMode === 'all' ? 'btn-primary' : 'btn-secondary'" @click="filterMode = 'all'">
+                            All ({{ stacks.length }})
+                        </button>
+                        <button class="btn" :class="filterMode === 'running' ? 'btn-success' : 'btn-secondary'" @click="filterMode = 'running'">
+                            Running ({{ stacks.filter(s => s.running).length }})
+                        </button>
+                        <button class="btn" :class="filterMode === 'stopped' ? 'btn-danger' : 'btn-secondary'" @click="filterMode = 'stopped'">
+                            Stopped ({{ stacks.filter(s => !s.running && s.containers.length > 0).length }})
+                        </button>
+                        <button class="btn" :class="filterMode === 'updates' ? 'btn-warning' : 'btn-secondary'" @click="filterMode = 'updates'">
+                            Updates ({{ updatesAvailableCount }})
+                        </button>
+                        <button class="btn" :class="filterMode === 'inactive' ? 'btn-secondary' : 'btn-secondary'" @click="filterMode = 'inactive'">
+                            Inactive ({{ stacks.filter(s => s.containers.length === 0).length }})
+                        </button>
+                    </div>
                 </div>
 
                 <div style="margin-bottom: 30px; display: flex; gap: 15px; flex-wrap: wrap;">
@@ -483,7 +575,7 @@
                     </button>
                 </div>
 
-                <div v-if="stacks.length === 0" class="empty-state">
+                <div v-if="filteredStacks.length === 0 && stacks.length === 0" class="empty-state">
                     <i class="fas fa-box-open"></i>
                     <h2>No Stacks Yet</h2>
                     <p>Create your first stack to get started</p>
@@ -492,9 +584,15 @@
                     </button>
                 </div>
 
+                <div v-if="filteredStacks.length === 0 && stacks.length > 0" class="empty-state">
+                    <i class="fas fa-search"></i>
+                    <h2>No Results Found</h2>
+                    <p>Try adjusting your search or filter</p>
+                </div>
+
                 <div v-else class="stacks-grid">
                     <!-- Active Stacks -->
-                    <div class="card" v-for="stack in activeStacks" :key="stack.name">
+                    <div class="card" v-for="stack in filteredActiveStacks" :key="stack.name">
                         <div class="card-header">
                             <div class="card-title">
                                 <i class="fas fa-layer-group"></i>
@@ -581,13 +679,13 @@
                     </div>
 
                     <!-- Inactive Stacks (Never Started) -->
-                    <div v-if="inactiveStacks.length > 0" style="grid-column: 1 / -1; margin-top: 30px;">
+                    <div v-if="filteredInactiveStacks.length > 0" style="grid-column: 1 / -1; margin-top: 30px;">
                         <h3 style="color: #64748b; margin-bottom: 20px;">
                             <i class="fas fa-pause-circle"></i> Inactive Stacks
                         </h3>
                     </div>
                     
-                    <div class="card inactive-stack" v-for="stack in inactiveStacks" :key="stack.name">
+                    <div class="card inactive-stack" v-for="stack in filteredInactiveStacks" :key="stack.name">
                         <div class="card-header">
                             <div class="card-title" style="color: #64748b;">
                                 <i class="fas fa-layer-group"></i>
@@ -949,6 +1047,36 @@
             </div>
         </div>
 
+        <!-- Restore Backup Modal -->
+        <div class="modal" v-if="showBackupModal" @click.self="showBackupModal = false">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Restore from Backup</h2>
+                    <button class="close-btn" @click="showBackupModal = false">&times;</button>
+                </div>
+                <p style="margin-bottom: 20px; color: #94a3b8;">
+                    Select a Dockup backup file (.zip) to restore your stacks and settings.
+                </p>
+                <div class="form-group">
+                    <label class="form-label">Backup File</label>
+                    <input type="file" @change="handleFileUpload" accept=".zip" class="form-input">
+                </div>
+                <div style="background: rgba(234, 179, 8, 0.2); padding: 15px; border-radius: 8px; margin: 20px 0;">
+                    <i class="fas fa-exclamation-triangle" style="color: #eab308;"></i>
+                    <strong style="color: #eab308;">Warning:</strong>
+                    <p style="color: #94a3b8; margin-top: 10px;">This will overwrite existing stacks with the same names. Make a backup first if needed!</p>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-primary" @click="uploadBackup" :disabled="!restoreFile">
+                        <i class="fas fa-upload"></i> Restore
+                    </button>
+                    <button class="btn btn-secondary" @click="showBackupModal = false">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Toast Notifications -->
         <div class="toast-container">
             <div v-for="toast in toasts" :key="toast.id" class="toast" :class="'toast-' + toast.type">
@@ -1001,6 +1129,11 @@
                     pruning: false,
                     checkingAll: false,
                     updatingAll: false,
+                    searchQuery: '',
+                    filterMode: 'all',
+                    darkTheme: true,
+                    showBackupModal: false,
+                    restoreFile: null,
                     toasts: [],
                     ws: null
                 };
@@ -1027,9 +1160,47 @@
                 },
                 hasUpdatesAvailable() {
                     return this.updatesAvailableCount > 0;
+                },
+                filteredStacks() {
+                    let filtered = this.stacks;
+                    
+                    // Apply search
+                    if (this.searchQuery) {
+                        const query = this.searchQuery.toLowerCase();
+                        filtered = filtered.filter(s => 
+                            s.name.toLowerCase().includes(query) ||
+                            s.services.some(service => service.toLowerCase().includes(query))
+                        );
+                    }
+                    
+                    // Apply filter
+                    if (this.filterMode === 'running') {
+                        filtered = filtered.filter(s => s.running);
+                    } else if (this.filterMode === 'stopped') {
+                        filtered = filtered.filter(s => !s.running && s.containers.length > 0);
+                    } else if (this.filterMode === 'updates') {
+                        filtered = filtered.filter(s => s.update_available);
+                    } else if (this.filterMode === 'inactive') {
+                        filtered = filtered.filter(s => s.containers.length === 0);
+                    }
+                    
+                    return filtered;
+                },
+                filteredActiveStacks() {
+                    return this.filteredStacks.filter(s => s.containers.length > 0);
+                },
+                filteredInactiveStacks() {
+                    return this.filteredStacks.filter(s => s.containers.length === 0);
                 }
             },
             mounted() {
+                // Load theme
+                const savedTheme = localStorage.getItem('dockup_theme');
+                if (savedTheme === 'light') {
+                    this.darkTheme = false;
+                    document.body.classList.add('light-theme');
+                }
+                
                 this.loadStacks();
                 this.loadSettings();
                 this.connectWebSocket();
@@ -1299,6 +1470,48 @@
                         this.showToast('Error', 'Failed to update all stacks', 'error');
                     } finally {
                         this.updatingAll = false;
+                    }
+                },
+                toggleTheme() {
+                    this.darkTheme = !this.darkTheme;
+                    document.body.classList.toggle('light-theme', !this.darkTheme);
+                    localStorage.setItem('dockup_theme', this.darkTheme ? 'dark' : 'light');
+                },
+                async downloadBackup() {
+                    try {
+                        const response = await axios.post('/api/backup/create', {}, { responseType: 'blob' });
+                        const url = window.URL.createObjectURL(new Blob([response.data]));
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.setAttribute('download', `dockup_backup_${new Date().toISOString().split('T')[0]}.zip`);
+                        document.body.appendChild(link);
+                        link.click();
+                        link.remove();
+                        this.showToast('Success', 'Backup downloaded successfully', 'success');
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to create backup', 'error');
+                    }
+                },
+                handleFileUpload(event) {
+                    this.restoreFile = event.target.files[0];
+                },
+                async uploadBackup() {
+                    if (!this.restoreFile) return;
+                    
+                    try {
+                        const formData = new FormData();
+                        formData.append('file', this.restoreFile);
+                        
+                        const response = await axios.post('/api/backup/restore', formData, {
+                            headers: { 'Content-Type': 'multipart/form-data' }
+                        });
+                        
+                        this.showToast('Success', `Restored ${response.data.restored_stacks.length} stacks`, 'success');
+                        this.showBackupModal = false;
+                        this.restoreFile = null;
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', `Failed to restore: ${error.response?.data?.error || error.message}`, 'error');
                     }
                 },
                 showCreateStack() {
