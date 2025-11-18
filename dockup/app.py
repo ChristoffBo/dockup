@@ -115,15 +115,29 @@ def setup_notifications():
 
 def send_notification(title, message, notify_type='info'):
     """Send notification via configured services"""
+    # Check notification preferences
     if not config.get('notify_on_check') and 'update available' in message.lower():
+        print(f"Notification skipped (notify_on_check=False): {title}")
         return
     if not config.get('notify_on_update') and 'updated successfully' in message.lower():
+        print(f"Notification skipped (notify_on_update=False): {title}")
         return
     if not config.get('notify_on_error') and notify_type == 'error':
+        print(f"Notification skipped (notify_on_error=False): {title}")
         return
     
     if len(apobj) > 0:
-        apobj.notify(title=title, body=message, notify_type=notify_type)
+        print(f"Sending notification: {title} - {message}")
+        try:
+            result = apobj.notify(title=title, body=message, notify_type=notify_type)
+            if result:
+                print(f"✓ Notification sent successfully")
+            else:
+                print(f"✗ Notification failed to send")
+        except Exception as e:
+            print(f"✗ Notification error: {e}")
+    else:
+        print(f"No notification services configured. Title: {title}")
 
 
 def broadcast_ws(data):
@@ -529,11 +543,15 @@ def auto_update_stack(stack_name):
     if mode == 'off':
         return
     
-    print(f"Checking updates for stack: {stack_name}")
+    print(f"=" * 50)
+    print(f"[{datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S %Z')}] Scheduled check for: {stack_name}")
+    print(f"Mode: {mode}, Cron: {schedule_info.get('cron')}")
+    print(f"=" * 50)
     
     success, update_available = check_stack_updates(stack_name)
     
     if not success:
+        print(f"✗ Failed to check updates for {stack_name}")
         send_notification(
             f"Dockup - Error",
             f"Failed to check updates for stack: {stack_name}",
@@ -546,6 +564,7 @@ def auto_update_stack(stack_name):
         return
     
     if update_available:
+        print(f"✓ Update available for {stack_name}")
         send_notification(
             f"Dockup - Update Available",
             f"Update available for stack: {stack_name}",
@@ -641,12 +660,13 @@ def auto_update_stack(stack_name):
                 )
         else:
             # Check only mode
+            print(f"Check only mode - notified user about update for {stack_name}")
             broadcast_ws({
                 'type': 'update_available',
                 'stack': stack_name
             })
     else:
-        print(f"No updates available for stack: {stack_name}")
+        print(f"✓ No updates available for {stack_name}")
         broadcast_ws({
             'type': 'no_updates',
             'stack': stack_name
@@ -655,7 +675,10 @@ def auto_update_stack(stack_name):
 
 def setup_scheduler():
     """Setup APScheduler for update checks and auto-prune"""
-    scheduler = BackgroundScheduler()
+    # Get user timezone
+    user_tz = pytz.timezone(config.get('timezone', 'UTC'))
+    
+    scheduler = BackgroundScheduler(timezone=user_tz)
     scheduler.start()
     
     def update_schedules():
@@ -667,7 +690,7 @@ def setup_scheduler():
             if schedule_info.get('mode', 'off') != 'off':
                 cron_expr = schedule_info.get('cron', config.get('default_cron', '0 2 * * *'))
                 try:
-                    trigger = CronTrigger.from_crontab(cron_expr)
+                    trigger = CronTrigger.from_crontab(cron_expr, timezone=user_tz)
                     scheduler.add_job(
                         auto_update_stack,
                         trigger,
@@ -675,7 +698,7 @@ def setup_scheduler():
                         id=f"update_{stack_name}",
                         replace_existing=True
                     )
-                    print(f"Scheduled update check for {stack_name}: {cron_expr}")
+                    print(f"Scheduled update check for {stack_name}: {cron_expr} ({config.get('timezone', 'UTC')})")
                 except Exception as e:
                     print(f"Error scheduling {stack_name}: {e}")
         
@@ -683,14 +706,14 @@ def setup_scheduler():
         if config.get('auto_prune', False):
             prune_cron = config.get('auto_prune_cron', '0 3 * * 0')
             try:
-                trigger = CronTrigger.from_crontab(prune_cron)
+                trigger = CronTrigger.from_crontab(prune_cron, timezone=user_tz)
                 scheduler.add_job(
                     auto_prune_images,
                     trigger,
                     id='auto_prune',
                     replace_existing=True
                 )
-                print(f"Scheduled auto-prune: {prune_cron}")
+                print(f"Scheduled auto-prune: {prune_cron} ({config.get('timezone', 'UTC')})")
             except Exception as e:
                 print(f"Error scheduling auto-prune: {e}")
     
@@ -759,6 +782,12 @@ def api_stack_operation(stack_name):
     success, output = stack_operation(stack_name, operation)
     
     if success:
+        # Clear update_available flag after up/pull operations
+        if operation in ['up', 'pull']:
+            if stack_name in update_status:
+                update_status[stack_name]['update_available'] = False
+                update_status[stack_name]['last_check'] = datetime.now(pytz.UTC).isoformat()
+        
         return jsonify({'success': True, 'output': output})
     return jsonify({'error': output}), 400
 
