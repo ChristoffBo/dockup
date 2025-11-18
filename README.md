@@ -45,7 +45,7 @@ Because adopting and replacing a live container is dangerous and can cause:
 - Applications restarting when they should not  
 
 Docker Compose will recreate a container if ANY part of the compose file differs.  
-This is why Dockge-style “live adoption” can break an environment.
+
 
 Dockup takes the **safer approach**:
 - It imports the orphan  
