@@ -97,4 +97,4 @@ Inside the UI you can:
 - Configure notifications
 - See real-time output and events
 
-Dockup replaces Dockge + Tugtainer + Watchtower with one fast, modern, fully local tool.
+Easy Clean. As it should be.
