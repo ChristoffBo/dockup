@@ -537,8 +537,38 @@ def stack_operation(stack_name, operation):
         return False, str(e)
 
 
+
+def refresh_container_metadata(stack_name):
+    """Force refresh of container and image metadata after update"""
+    try:
+        print(f"  → Refreshing metadata for {stack_name}")
+        
+        containers = docker_client.containers.list(
+            all=True,
+            filters={'label': f'com.docker.compose.project={stack_name}'}
+        )
+        
+        for container in containers:
+            # Force refresh container inspect
+            container.reload()
+            
+            # Force refresh image inspect
+            image_name = container.image.tags[0] if container.image.tags else container.image.id
+            try:
+                docker_client.images.get(image_name)
+            except:
+                pass
+        
+        print(f"  ✓ Metadata refreshed for {stack_name}")
+        return True
+    
+    except Exception as e:
+        print(f"  ✗ Metadata refresh failed: {e}")
+        return False
+
+
 def check_stack_updates(stack_name):
-    """Check if updates are available for a stack - supports all major registries"""
+    """Check if updates are available - GROK'S METHOD: Compare RepoDigest to Descriptor digest"""
     stack_path = os.path.join(STACKS_DIR, stack_name)
     
     # Find compose file
@@ -560,12 +590,10 @@ def check_stack_updates(stack_name):
         )
         
         if not containers:
-            # No containers means it's never been started, can't check updates
             return True, False
         
         update_available = False
         
-        # Check each container's image against remote registry
         for container in containers:
             try:
                 image_name = container.image.tags[0] if container.image.tags else None
@@ -577,28 +605,57 @@ def check_stack_updates(stack_name):
                 local_id = local_image.id
                 local_digests = local_image.attrs.get('RepoDigests', [])
                 
-                # Try to get registry data (works for Docker Hub, GHCR, Quay, LSIO, etc.)
+                print(f"Checking updates for {container.name} ({image_name})")
+                
+                # Skip if no RepoDigests (locally built image)
+                if not local_digests:
+                    print(f"  ℹ No RepoDigests (locally built?), skipping")
+                    continue
+                
+                # Extract local digest: "nginx@sha256:abc123..." -> "sha256:abc123..."
+                local_digest = local_digests[0].split('@')[1]
+                print(f"  Local digest: {local_digest[:20]}...")
+                
+                # Get registry data
                 try:
-                    # This works for all OCI-compliant registries
                     registry_data = docker_client.images.get_registry_data(image_name)
-                    remote_id = registry_data.id
                     
-                    # Compare image IDs
-                    if remote_id != local_id:
-                        # Double-check against repo digests
-                        if not any(remote_id in digest for digest in local_digests):
+                    # Try Grok's method: get Descriptor digest
+                    remote_digest = None
+                    if hasattr(registry_data, 'attrs') and 'Descriptor' in registry_data.attrs:
+                        remote_digest = registry_data.attrs['Descriptor']['digest']
+                        print(f"  Remote digest (Descriptor): {remote_digest[:20]}...")
+                        
+                        # Compare digests directly
+                        if local_digest != remote_digest:
                             update_available = True
-                            print(f"Update found for {image_name}: {local_id[:12]} -> {remote_id[:12]}")
+                            print(f"  ✓ UPDATE AVAILABLE (digest mismatch)")
                             break
+                        else:
+                            print(f"  ✓ UP TO DATE (digests match)")
+                    else:
+                        # Fallback: use ID comparison with safety check
+                        remote_id = registry_data.id
+                        print(f"  Remote ID (fallback): {remote_id[:20]}...")
+                        
+                        if remote_id != local_id:
+                            # Double-check against repo digests
+                            if not any(remote_id in digest for digest in local_digests):
+                                update_available = True
+                                print(f"  ✓ UPDATE AVAILABLE (ID mismatch)")
+                                break
+                            else:
+                                print(f"  ✓ UP TO DATE (ID in digests)")
+                        else:
+                            print(f"  ✓ UP TO DATE (ID match)")
                 
                 except docker.errors.NotFound:
-                    # Image not found in registry (might be local-only)
-                    print(f"Image {image_name} not found in registry, skipping")
+                    print(f"  ℹ Image not found in registry, skipping")
                     continue
                     
                 except Exception as e:
-                    # Fallback: try docker manifest inspect (works for all registries)
-                    print(f"Registry API failed for {image_name}, trying manifest: {e}")
+                    print(f"  ⚠ Registry check failed, trying manifest: {e}")
+                    # Fallback to manifest inspect
                     try:
                         result = subprocess.run(
                             ['docker', 'manifest', 'inspect', image_name],
@@ -608,25 +665,26 @@ def check_stack_updates(stack_name):
                         )
                         
                         if result.returncode == 0:
-                            import json
                             manifest = json.loads(result.stdout)
                             
                             # Get digest from manifest
+                            remote_digest = None
                             if 'config' in manifest:
                                 remote_digest = manifest['config'].get('digest', '')
                             elif 'manifests' in manifest:
-                                # Multi-arch image
+                                # Multi-arch: use first manifest
                                 remote_digest = manifest['manifests'][0].get('digest', '')
-                            else:
-                                remote_digest = ''
                             
-                            # Compare with local
-                            if remote_digest and remote_digest not in str(local_digests) and remote_digest not in local_id:
-                                update_available = True
-                                print(f"Update found for {image_name} via manifest")
-                                break
+                            if remote_digest:
+                                print(f"  Remote digest (manifest): {remote_digest[:20]}...")
+                                if local_digest != remote_digest:
+                                    update_available = True
+                                    print(f"  ✓ UPDATE AVAILABLE (manifest check)")
+                                    break
+                                else:
+                                    print(f"  ✓ UP TO DATE (manifest check)")
                     except Exception as e2:
-                        print(f"Manifest check also failed for {image_name}: {e2}")
+                        print(f"  ✗ Manifest check failed: {e2}")
                         continue
             
             except Exception as e:
@@ -644,7 +702,6 @@ def check_stack_updates(stack_name):
     except Exception as e:
         print(f"Error checking updates for {stack_name}: {e}")
         return False, None
-
 
 def auto_update_stack(stack_name):
     """Check and optionally update a stack based on its schedule - with safety checks"""
@@ -702,6 +759,7 @@ def auto_update_stack(stack_name):
                 pass
             
             # Pull new images
+            print(f"  → Pulling new images...")
             success_pull, output_pull = stack_operation(stack_name, 'pull')
             if not success_pull:
                 send_notification(
@@ -711,65 +769,59 @@ def auto_update_stack(stack_name):
                 )
                 return
             
+            print(f"  ✓ Images pulled successfully")
+            
             # Restart with new images
+            print(f"  → Restarting containers...")
             success_up, output_up = stack_operation(stack_name, 'up')
             
+            if not success_up:
+                print(f"  ✗ First start failed, attempting retry...")
+                # FALLBACK RESTART: Try one more time
+                time.sleep(3)
+                success_up, output_up = stack_operation(stack_name, 'up')
+            
             if success_up:
-                # Wait a bit for containers to stabilize
+                # Wait for containers to stabilize
                 time.sleep(5)
                 
-                # Verify containers are healthy
-                try:
-                    containers_after = docker_client.containers.list(
-                        filters={'label': f'com.docker.compose.project={stack_name}'}
-                    )
-                    
-                    all_healthy = True
-                    for container in containers_after:
-                        if container.status != 'running':
-                            all_healthy = False
-                            print(f"Container {container.name} not running: {container.status}")
-                            break
-                        
-                        # Check health if healthcheck is defined
-                        if 'Health' in container.attrs.get('State', {}):
-                            health = container.attrs['State']['Health']['Status']
-                            if health not in ['healthy', 'none']:
-                                all_healthy = False
-                                print(f"Container {container.name} unhealthy: {health}")
-                            break
-                    
-                    if all_healthy:
-                        send_notification(
-                            f"Dockup - Updated",
-                            f"Stack '{stack_name}' updated successfully and containers are healthy",
-                            'success'
-                        )
-                        broadcast_ws({
-                            'type': 'stack_updated',
-                            'stack': stack_name
-                        })
-                    else:
-                        send_notification(
-                            f"Dockup - Warning",
-                            f"Stack '{stack_name}' updated but some containers may be unhealthy. Check logs.",
-                            'warning'
-                        )
+                # FORCE REFRESH metadata
+                refresh_container_metadata(stack_name)
                 
-                except Exception as e:
-                    print(f"Health check error: {e}")
+                # POST-UPDATE VERIFICATION
+                if verify_update_success(stack_name):
+                    print(f"  ✓ Update verified: local digest matches remote")
+                    
+                    # Clear stale update flags
+                    update_status[stack_name] = {
+                        'last_check': datetime.now().isoformat(),
+                        'update_available': False
+                    }
+                    
                     send_notification(
                         f"Dockup - Updated",
-                        f"Stack '{stack_name}' updated (health check skipped)",
+                        f"Stack '{stack_name}' updated successfully and verified",
+                        'success'
+                    )
+                    broadcast_ws({
+                        'type': 'stack_updated',
+                        'stack': stack_name
+                    })
+                else:
+                    print(f"  ⚠ Update completed but verification inconclusive")
+                    send_notification(
+                        f"Dockup - Updated",
+                        f"Stack '{stack_name}' updated (verification partial)",
                         'success'
                     )
             else:
+                print(f"  ✗ Both start attempts failed")
                 send_notification(
                     f"Dockup - Update Failed",
-                    f"Failed to restart stack '{stack_name}': {output_up}",
+                    f"Failed to restart stack '{stack_name}' after update",
                     'error'
                 )
-        else:
+    
             # Check only mode
             print(f"Check only mode - notified user about update for {stack_name}")
             broadcast_ws({
@@ -1413,6 +1465,167 @@ def api_config_set():
     setup_notifications()
     
     return jsonify({'success': True})
+
+
+
+
+# ============================================================================
+# SPLIT EDITOR ENDPOINTS - ZimaOS Style
+# ============================================================================
+
+@app.route('/api/stack/<stack_name>/service/<service_name>/sections', methods=['GET'])
+def get_service_sections(stack_name, service_name):
+    """Get service configuration split into sections for ZimaOS-style editor"""
+    try:
+        stack_path = os.path.join(STACKS_DIR, stack_name)
+        compose_file = None
+        
+        for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
+            potential_file = os.path.join(stack_path, filename)
+            if os.path.exists(potential_file):
+                compose_file = potential_file
+                break
+        
+        if not compose_file:
+            return jsonify({'error': 'Compose file not found'}), 404
+        
+        with open(compose_file, 'r') as f:
+            compose_data = yaml.safe_load(f)
+        
+        services = compose_data.get('services', {})
+        if service_name not in services:
+            return jsonify({'error': 'Service not found'}), 404
+        
+        service = services[service_name]
+        
+        # Split into sections
+        sections = {
+            'name_image': {
+                'name': service_name,
+                'image': service.get('image', ''),
+                'container_name': service.get('container_name', '')
+            },
+            'environment': service.get('environment', []),
+            'ports': service.get('ports', []),
+            'volumes': service.get('volumes', []),
+            'devices': service.get('devices', []),
+            'labels': service.get('labels', {}),
+            'command': service.get('command', ''),
+            'entrypoint': service.get('entrypoint', ''),
+            'network_mode': service.get('network_mode', ''),
+            'restart': service.get('restart', 'unless-stopped'),
+            'extra': {}
+        }
+        
+        # Gather extra keys
+        known_keys = ['image', 'container_name', 'environment', 'ports', 'volumes', 
+                      'devices', 'labels', 'command', 'entrypoint', 'network_mode', 'restart']
+        
+        for key, value in service.items():
+            if key not in known_keys:
+                sections['extra'][key] = value
+        
+        # Also provide raw YAML
+        sections['raw_yaml'] = yaml.safe_dump({'services': {service_name: service}}, sort_keys=False)
+        
+        return jsonify(sections)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/stack/<stack_name>/service/<service_name>/sections', methods=['POST'])
+def save_service_sections(stack_name, service_name):
+    """Save service configuration from sections"""
+    try:
+        stack_path = os.path.join(STACKS_DIR, stack_name)
+        compose_file = None
+        
+        for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
+            potential_file = os.path.join(stack_path, filename)
+            if os.path.exists(potential_file):
+                compose_file = potential_file
+                break
+        
+        if not compose_file:
+            return jsonify({'error': 'Compose file not found'}), 404
+        
+        with open(compose_file, 'r') as f:
+            compose_data = yaml.safe_load(f)
+        
+        services = compose_data.get('services', {})
+        if service_name not in services:
+            return jsonify({'error': 'Service not found'}), 404
+        
+        data = request.json
+        
+        # Rebuild service from sections
+        new_service = {}
+        
+        # Name/Image section
+        if 'name_image' in data:
+            if data['name_image'].get('image'):
+                new_service['image'] = data['name_image']['image']
+            if data['name_image'].get('container_name'):
+                new_service['container_name'] = data['name_image']['container_name']
+        
+        # Environment
+        if 'environment' in data and data['environment']:
+            new_service['environment'] = data['environment']
+        
+        # Ports
+        if 'ports' in data and data['ports']:
+            new_service['ports'] = data['ports']
+        
+        # Volumes
+        if 'volumes' in data and data['volumes']:
+            new_service['volumes'] = data['volumes']
+        
+        # Devices
+        if 'devices' in data and data['devices']:
+            new_service['devices'] = data['devices']
+        
+        # Labels
+        if 'labels' in data and data['labels']:
+            new_service['labels'] = data['labels']
+        
+        # Command
+        if 'command' in data and data['command']:
+            new_service['command'] = data['command']
+        
+        # Entrypoint
+        if 'entrypoint' in data and data['entrypoint']:
+            new_service['entrypoint'] = data['entrypoint']
+        
+        # Network mode
+        if 'network_mode' in data and data['network_mode']:
+            new_service['network_mode'] = data['network_mode']
+        
+        # Restart
+        if 'restart' in data:
+            new_service['restart'] = data['restart'] or 'unless-stopped'
+        
+        # Extra keys
+        if 'extra' in data and data['extra']:
+            new_service.update(data['extra'])
+        
+        # Validate YAML
+        try:
+            test_yaml = yaml.safe_dump({'services': {service_name: new_service}})
+        except Exception as e:
+            return jsonify({'error': f'Invalid YAML: {str(e)}'}), 400
+        
+        # Update compose data
+        compose_data['services'][service_name] = new_service
+        
+        # Write to file
+        with open(compose_file, 'w') as f:
+            yaml.safe_dump(compose_data, f, sort_keys=False, default_flow_style=False)
+        
+        return jsonify({'success': True})
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @sock.route('/ws')
