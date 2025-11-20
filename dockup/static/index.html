@@ -482,6 +482,94 @@
         body.light-theme .stack-info-row {
             background: rgba(241, 245, 249, 0.5);
         }
+        /* Split Editor Styles */
+        .editor-section {
+            background: rgba(15, 23, 42, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+
+        .editor-section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .editor-section-title {
+            font-weight: 600;
+            color: #60a5fa;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .editor-section-body {
+            margin-top: 12px;
+        }
+
+        .editor-section-collapsed .editor-section-body {
+            display: none;
+        }
+
+        .key-value-pair {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 8px;
+            align-items: center;
+        }
+
+        .key-value-pair input {
+            flex: 1;
+        }
+
+        .remove-btn {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .remove-btn:hover {
+            background: rgba(239, 68, 68, 0.4);
+        }
+
+        .add-btn {
+            background: rgba(34, 197, 94, 0.2);
+            color: #22c55e;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 8px;
+        }
+
+        .add-btn:hover {
+            background: rgba(34, 197, 94, 0.4);
+        }
+
+        .raw-yaml-toggle {
+            background: rgba(59, 130, 246, 0.2);
+            color: #3b82f6;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 15px;
+        }
+
+        .raw-yaml-toggle:hover {
+            background: rgba(59, 130, 246, 0.4);
+        }
     </style>
 </head>
 <body>
@@ -913,29 +1001,198 @@
             </div>
         </div>
 
-        <!-- Edit Stack Modal -->
+        <!-- Edit Stack Modal with ZimaOS Split Editor -->
         <div class="modal" v-if="showEditModal" @click.self="showEditModal = false">
             <div class="modal-content">
                 <div class="modal-header">
                     <h2>{{ editingStack ? 'Edit Stack' : 'Create New Stack' }}</h2>
                     <button class="close-btn" @click="showEditModal = false">&times;</button>
                 </div>
+                
                 <div class="form-group">
                     <label class="form-label">Stack Name</label>
                     <input type="text" class="form-input" v-model="editStackName" :disabled="!!editingStack" placeholder="e.g., nginx, plex, jellyfin">
                     <small style="color: #94a3b8; display: block; margin-top: 5px;">
-                        {{ editingStack ? 'Stack name cannot be changed' : 'This will create a folder: /DATA/Compose/' + (editStackName || 'stackname') + '/' }}
+                        {{ editingStack ? 'Stack name cannot be changed' : 'This will create a folder: /stacks/' + (editStackName || 'stackname') + '/' }}
                     </small>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Docker Compose YAML</label>
-                    <textarea class="form-input" v-model="editStackContent" placeholder="Paste your docker-compose.yml here or write from scratch..." style="min-height: 450px; font-family: 'Courier New', monospace;"></textarea>
-                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
-                        {{ editingStack ? 'Edit your compose file' : 'Will be saved as: compose.yaml' }}
-                    </small>
+
+                <!-- Split Editor Mode -->
+                <div v-if="editingStack && !showRawYaml">
+                    <button class="raw-yaml-toggle" @click="toggleRawYaml">
+                        <i class="fas fa-code"></i> Show Raw YAML
+                    </button>
+
+                    <!-- Service Selector -->
+                    <div class="form-group">
+                        <label class="form-label">Select Service to Edit</label>
+                        <select class="form-select" v-model="selectedService" @change="loadServiceSections">
+                            <option value="">-- Select a service --</option>
+                            <option v-for="service in availableServices" :key="service" :value="service">{{ service }}</option>
+                        </select>
+                    </div>
+
+                    <!-- Split Editor Sections -->
+                    <div v-if="selectedService && serviceSections">
+                        <!-- Name & Image -->
+                        <div class="editor-section">
+                            <div class="editor-section-header">
+                                <div class="editor-section-title">
+                                    <i class="fas fa-cube"></i>
+                                    Name & Image
+                                </div>
+                            </div>
+                            <div class="editor-section-body">
+                                <div class="form-group">
+                                    <label class="form-label">Service Name</label>
+                                    <input type="text" class="form-input" :value="serviceSections.name_image.name" disabled>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Image</label>
+                                    <input type="text" class="form-input" v-model="serviceSections.name_image.image" placeholder="nginx:latest">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Container Name (optional)</label>
+                                    <input type="text" class="form-input" v-model="serviceSections.name_image.container_name" placeholder="my-container">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Environment Variables -->
+                        <div class="editor-section">
+                            <div class="editor-section-header">
+                                <div class="editor-section-title">
+                                    <i class="fas fa-list"></i>
+                                    Environment Variables
+                                </div>
+                            </div>
+                            <div class="editor-section-body">
+                                <div v-for="(env, index) in serviceSections.environment" :key="'env-' + index" class="key-value-pair">
+                                    <input type="text" class="form-input" v-model="serviceSections.environment[index]" placeholder="KEY=value">
+                                    <button class="remove-btn" @click="serviceSections.environment.splice(index, 1)">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                                <button class="add-btn" @click="serviceSections.environment.push('')">
+                                    <i class="fas fa-plus"></i> Add Environment Variable
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Ports -->
+                        <div class="editor-section">
+                            <div class="editor-section-header">
+                                <div class="editor-section-title">
+                                    <i class="fas fa-network-wired"></i>
+                                    Ports
+                                </div>
+                            </div>
+                            <div class="editor-section-body">
+                                <div v-for="(port, index) in serviceSections.ports" :key="'port-' + index" class="key-value-pair">
+                                    <input type="text" class="form-input" v-model="serviceSections.ports[index]" placeholder="8080:80">
+                                    <button class="remove-btn" @click="serviceSections.ports.splice(index, 1)">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                                <button class="add-btn" @click="serviceSections.ports.push('')">
+                                    <i class="fas fa-plus"></i> Add Port
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Volumes -->
+                        <div class="editor-section">
+                            <div class="editor-section-header">
+                                <div class="editor-section-title">
+                                    <i class="fas fa-hdd"></i>
+                                    Volumes
+                                </div>
+                            </div>
+                            <div class="editor-section-body">
+                                <div v-for="(volume, index) in serviceSections.volumes" :key="'vol-' + index" class="key-value-pair">
+                                    <input type="text" class="form-input" v-model="serviceSections.volumes[index]" placeholder="/host/path:/container/path">
+                                    <button class="remove-btn" @click="serviceSections.volumes.splice(index, 1)">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                                <button class="add-btn" @click="serviceSections.volumes.push('')">
+                                    <i class="fas fa-plus"></i> Add Volume
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Devices -->
+                        <div class="editor-section" v-if="serviceSections.devices && serviceSections.devices.length > 0">
+                            <div class="editor-section-header">
+                                <div class="editor-section-title">
+                                    <i class="fas fa-microchip"></i>
+                                    Devices
+                                </div>
+                            </div>
+                            <div class="editor-section-body">
+                                <div v-for="(device, index) in serviceSections.devices" :key="'dev-' + index" class="key-value-pair">
+                                    <input type="text" class="form-input" v-model="serviceSections.devices[index]" placeholder="/dev/video0:/dev/video0">
+                                    <button class="remove-btn" @click="serviceSections.devices.splice(index, 1)">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                                <button class="add-btn" @click="serviceSections.devices.push('')">
+                                    <i class="fas fa-plus"></i> Add Device
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Advanced Options -->
+                        <div class="editor-section">
+                            <div class="editor-section-header">
+                                <div class="editor-section-title">
+                                    <i class="fas fa-cogs"></i>
+                                    Advanced Options
+                                </div>
+                            </div>
+                            <div class="editor-section-body">
+                                <div class="form-group">
+                                    <label class="form-label">Restart Policy</label>
+                                    <select class="form-select" v-model="serviceSections.restart">
+                                        <option value="no">no</option>
+                                        <option value="always">always</option>
+                                        <option value="unless-stopped">unless-stopped</option>
+                                        <option value="on-failure">on-failure</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Network Mode (optional)</label>
+                                    <input type="text" class="form-input" v-model="serviceSections.network_mode" placeholder="bridge, host, none">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Command (optional)</label>
+                                    <input type="text" class="form-input" v-model="serviceSections.command" placeholder="npm start">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Entrypoint (optional)</label>
+                                    <input type="text" class="form-input" v-model="serviceSections.entrypoint" placeholder="/docker-entrypoint.sh">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
+
+                <!-- Raw YAML Mode -->
+                <div v-if="!editingStack || showRawYaml">
+                    <button v-if="editingStack" class="raw-yaml-toggle" @click="toggleRawYaml">
+                        <i class="fas fa-th-large"></i> Show Split Editor
+                    </button>
+                    <div class="form-group">
+                        <label class="form-label">Docker Compose YAML</label>
+                        <textarea class="form-input" v-model="editStackContent" placeholder="Paste your docker-compose.yml here or write from scratch..." style="min-height: 450px; font-family: 'Courier New', monospace;"></textarea>
+                        <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                            {{ editingStack ? 'Edit your compose file' : 'Will be saved as: compose.yaml' }}
+                        </small>
+                    </div>
+                </div>
+
                 <div class="btn-group">
-                    <button class="btn btn-success" @click="saveStack" :disabled="!editStackName || !editStackContent">
+                    <button class="btn btn-success" @click="saveStack" :disabled="!editStackName || (!editStackContent && !selectedService)">
                         <i class="fas fa-save"></i> {{ editingStack ? 'Save Changes' : 'Create Stack' }}
                     </button>
                     <button class="btn btn-secondary" @click="showEditModal = false">
@@ -1107,6 +1364,10 @@
                     editingStack: null,
                     editStackName: '',
                     editStackContent: '',
+                    showRawYaml: false,
+                    selectedService: '',
+                    availableServices: [],
+                    serviceSections: null,
                     showLogsModal: false,
                     logsStackName: '',
                     stackLogs: {},
@@ -1530,6 +1791,10 @@
     #   - PUID=1000
     #   - PGID=1000
 `;
+                    this.selectedService = '';
+                    this.availableServices = [];
+                    this.serviceSections = null;
+                    this.showRawYaml = true;
                     this.showEditModal = true;
                 },
                 async editStack(stackName) {
@@ -1538,30 +1803,79 @@
                         this.editingStack = stackName;
                         this.editStackName = stackName;
                         this.editStackContent = response.data.content;
+                        
+                        // Parse services for split editor
+                        const yaml = jsyaml.load(this.editStackContent);
+                        this.availableServices = Object.keys(yaml.services || {});
+                        this.selectedService = '';
+                        this.serviceSections = null;
+                        this.showRawYaml = false;
+                        
                         this.showEditModal = true;
                     } catch (error) {
                         this.showToast('Error', 'Failed to load stack', 'error');
                     }
                 },
                 async saveStack() {
-                    if (!this.editStackName || !this.editStackContent) {
-                        this.showToast('Error', 'Stack name and compose content are required', 'error');
+                    if (!this.editStackName) {
+                        this.showToast('Error', 'Stack name is required', 'error');
                         return;
                     }
-                    
+
                     try {
-                        await axios.post(`/api/stack/${this.editStackName}/compose`, {
-                            content: this.editStackContent
-                        });
+                        // If using split editor, save sections
+                        if (this.editingStack && !this.showRawYaml && this.selectedService && this.serviceSections) {
+                            await axios.post(
+                                `/api/stack/${this.editingStack}/service/${this.selectedService}/sections`,
+                                this.serviceSections
+                            );
+                        } else {
+                            // Save raw YAML
+                            if (!this.editStackContent) {
+                                this.showToast('Error', 'Compose content is required', 'error');
+                                return;
+                            }
+                            
+                            await axios.post(`/api/stack/${this.editStackName}/compose`, {
+                                content: this.editStackContent
+                            });
+                        }
                         
                         const action = this.editingStack ? 'updated' : 'created';
-                        const path = `/DATA/Compose/${this.editStackName}/compose.yaml`;
+                        const path = `/stacks/${this.editStackName}/compose.yaml`;
                         
                         this.showToast('Success', `Stack ${action} successfully at ${path}`, 'success');
                         this.showEditModal = false;
                         await this.loadStacks();
                     } catch (error) {
                         this.showToast('Error', `Failed to save stack: ${error.response?.data?.error || error.message}`, 'error');
+                    }
+                },
+                async loadServiceSections() {
+                    if (!this.selectedService) return;
+                    
+                    try {
+                        const response = await axios.get(`/api/stack/${this.editingStack}/service/${this.selectedService}/sections`);
+                        this.serviceSections = response.data;
+                        
+                        // Ensure arrays exist
+                        if (!this.serviceSections.environment) this.serviceSections.environment = [];
+                        if (!this.serviceSections.ports) this.serviceSections.ports = [];
+                        if (!this.serviceSections.volumes) this.serviceSections.volumes = [];
+                        if (!this.serviceSections.devices) this.serviceSections.devices = [];
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to load service sections: ' + error.message, 'error');
+                    }
+                },
+                toggleRawYaml() {
+                    this.showRawYaml = !this.showRawYaml;
+                    
+                    // If switching to raw YAML, fetch the current content
+                    if (this.showRawYaml && this.editingStack) {
+                        axios.get(`/api/stack/${this.editingStack}/compose`)
+                            .then(response => {
+                                this.editStackContent = response.data.content;
+                            });
                     }
                 },
                 async viewLogs(stackName) {
@@ -1685,5 +1999,8 @@
             }
         }).mount('#app');
     </script>
+
+    <!-- JS-YAML for parsing YAML in split editor -->
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
 </body>
 </html>
