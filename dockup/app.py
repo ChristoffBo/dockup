@@ -12,6 +12,7 @@ import threading
 import time
 import subprocess
 import io
+import psutil
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory, send_file
@@ -1011,6 +1012,29 @@ def index():
 def api_stacks():
     """Get all stacks"""
     return jsonify(get_stacks())
+
+
+@app.route('/api/host/stats')
+def api_host_stats():
+    """Get host system CPU and memory stats"""
+    try:
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        
+        return jsonify({
+            'cpu_percent': round(cpu_percent, 1),
+            'cpu_count': psutil.cpu_count(),
+            'memory_total_gb': round(memory.total / (1024**3), 2),
+            'memory_used_gb': round(memory.used / (1024**3), 2),
+            'memory_percent': round(memory.percent, 1),
+            'disk_total_gb': round(disk.total / (1024**3), 2),
+            'disk_used_gb': round(disk.used / (1024**3), 2),
+            'disk_percent': round(disk.percent, 1),
+            'hostname': os.uname().nodename
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/stack/<stack_name>')

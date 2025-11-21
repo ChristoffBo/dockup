@@ -33,7 +33,8 @@ RUN pip install --no-cache-dir 'urllib3==1.26.18' && \
     apprise==1.6.0 \
     croniter==2.0.1 \
     requests==2.31.0 \
-    pytz==2024.1
+    pytz==2024.1 \
+    psutil
 
 # Create directories
 RUN mkdir -p /app/static /app/data /stacks
