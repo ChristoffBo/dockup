@@ -98,6 +98,28 @@ def save_schedules():
         json.dump(schedules, f, indent=2)
 
 
+def get_stack_metadata(stack_name):
+    """Load stack metadata from .dockup-meta.json"""
+    stack_path = os.path.join(STACKS_DIR, stack_name)
+    meta_file = os.path.join(stack_path, '.dockup-meta.json')
+    if os.path.exists(meta_file):
+        try:
+            with open(meta_file, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+
+def save_stack_metadata(stack_name, metadata):
+    """Save stack metadata to .dockup-meta.json"""
+    stack_path = os.path.join(STACKS_DIR, stack_name)
+    Path(stack_path).mkdir(parents=True, exist_ok=True)
+    meta_file = os.path.join(stack_path, '.dockup-meta.json')
+    with open(meta_file, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+
 def setup_notifications():
     """Setup Apprise notification services"""
     global apobj
@@ -439,6 +461,9 @@ def get_stacks():
                 'mem_percent': 0
             })
             
+            # Load metadata
+            metadata = get_stack_metadata(stack_name)
+            
             stacks.append({
                 'name': stack_name,
                 'path': stack_path,
@@ -451,7 +476,8 @@ def get_stacks():
                 'last_check': format_timestamp(update_status.get(stack_name, {}).get('last_check')),
                 'update_available': update_status.get(stack_name, {}).get('update_available', False),
                 'stats': stats,
-                'inactive': len(containers) == 0  # True if never started
+                'inactive': len(containers) == 0,  # True if never started
+                'web_ui_url': metadata.get('web_ui_url', '')
             })
         except Exception as e:
             print(f"Error loading stack {stack_name}: {e}")
@@ -1718,6 +1744,18 @@ def websocket(ws):
     finally:
         if ws in websocket_clients:
             websocket_clients.remove(ws)
+
+
+@app.route('/api/stack/<stack_name>/metadata', methods=['GET', 'POST'])
+def api_stack_metadata(stack_name):
+    """Get or update stack metadata"""
+    if request.method == 'GET':
+        metadata = get_stack_metadata(stack_name)
+        return jsonify(metadata)
+    else:
+        data = request.json
+        save_stack_metadata(stack_name, data)
+        return jsonify({'success': True})
 
 
 if __name__ == '__main__':
