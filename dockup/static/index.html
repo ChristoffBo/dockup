@@ -1074,18 +1074,25 @@
                 </div>
 
                 <!-- Split Editor Mode -->
-                <div v-if="editingStack && !showRawYaml">
+                <div v-if="!showRawYaml">
                     <button class="raw-yaml-toggle" @click="toggleRawYaml">
                         <i class="fas fa-code"></i> Show Raw YAML
                     </button>
 
                     <!-- Service Selector -->
-                    <div class="form-group">
+                    <div class="form-group" v-if="editingStack">
                         <label class="form-label">Select Service to Edit</label>
                         <select class="form-select" v-model="selectedService" @change="loadServiceSections">
                             <option value="">-- Select a service --</option>
                             <option v-for="service in availableServices" :key="service" :value="service">{{ service }}</option>
                         </select>
+                    </div>
+                    
+                    <!-- For new stacks, show basic split editor -->
+                    <div v-if="!editingStack">
+                        <p style="color: #94a3b8; margin-bottom: 15px;">
+                            <i class="fas fa-info-circle"></i> Create your first service using the split editor below, or switch to Raw YAML for multiple services.
+                        </p>
                     </div>
 
                     <!-- Split Editor Sections -->
@@ -1103,9 +1110,25 @@
                                     <label class="form-label">Service Name</label>
                                     <input type="text" class="form-input" :value="serviceSections.name_image.name" disabled>
                                 </div>
-                                <div class="form-group">
-                                    <label class="form-label">Image</label>
-                                    <input type="text" class="form-input" v-model="serviceSections.name_image.image" placeholder="nginx:latest">
+                                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 15px;">
+                                    <div class="form-group" style="margin: 0;">
+                                        <label class="form-label">Image Name</label>
+                                        <input type="text" class="form-input" v-model="imageBaseName" placeholder="nginx" @input="updateFullImage">
+                                    </div>
+                                    <div class="form-group" style="margin: 0;">
+                                        <label class="form-label">Tag</label>
+                                        <input type="text" list="common-tags" class="form-input" v-model="imageTag" placeholder="latest" @input="updateFullImage">
+                                        <datalist id="common-tags">
+                                            <option value="latest">
+                                            <option value="stable">
+                                            <option value="development">
+                                            <option value="dev">
+                                            <option value="nightly">
+                                            <option value="alpine">
+                                            <option value="slim">
+                                            <option value="lts">
+                                        </datalist>
+                                    </div>
                                 </div>
                                 <div class="form-group">
                                     <label class="form-label">Container Name (optional)</label>
@@ -1252,9 +1275,40 @@
                                         <option value="on-failure">on-failure</option>
                                     </select>
                                 </div>
+                                
+                                <!-- Resource Limits -->
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 15px;">
+                                    <div class="form-group" style="margin: 0;">
+                                        <label class="form-label">
+                                            <i class="fas fa-microchip"></i> CPU Limit (cores)
+                                        </label>
+                                        <input type="number" step="0.1" min="0" class="form-input" v-model="serviceSections.cpus" placeholder="0 = unlimited">
+                                        <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                            e.g., 1.5 = 1.5 CPU cores max
+                                        </small>
+                                    </div>
+                                    <div class="form-group" style="margin: 0;">
+                                        <label class="form-label">
+                                            <i class="fas fa-memory"></i> RAM Limit (GB)
+                                        </label>
+                                        <input type="number" step="0.1" min="0" class="form-input" v-model="serviceSections.mem_limit" placeholder="0 = unlimited">
+                                        <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                            e.g., 2 = 2GB RAM max
+                                        </small>
+                                    </div>
+                                </div>
+                                
                                 <div class="form-group">
                                     <label class="form-label">Network Mode (optional)</label>
-                                    <input type="text" class="form-input" v-model="serviceSections.network_mode" placeholder="bridge, host, none">
+                                    <select class="form-select" v-model="serviceSections.network_mode">
+                                        <option value="">Default (bridge)</option>
+                                        <option value="bridge">bridge</option>
+                                        <option value="host">host</option>
+                                        <option value="none">none</option>
+                                        <option v-for="network in dockerNetworks" :key="network.name" :value="network.name">
+                                            {{ network.name }} ({{ network.driver }})
+                                        </option>
+                                    </select>
                                 </div>
                                 <div class="form-group">
                                     <label class="form-label">Command (optional)</label>
@@ -1264,14 +1318,23 @@
                                     <label class="form-label">Entrypoint (optional)</label>
                                     <input type="text" class="form-input" v-model="serviceSections.entrypoint" placeholder="/docker-entrypoint.sh">
                                 </div>
+                                <div class="form-group">
+                                    <label class="form-label">
+                                        <i class="fas fa-external-link-alt"></i> Web UI URL (optional)
+                                    </label>
+                                    <input type="url" class="form-input" v-model="webUiUrl" placeholder="http://10.0.0.240:8080">
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Leave empty to auto-detect from first exposed port
+                                    </small>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
 
                 <!-- Raw YAML Mode -->
-                <div v-if="!editingStack || showRawYaml">
-                    <button v-if="editingStack" class="raw-yaml-toggle" @click="toggleRawYaml">
+                <div v-if="showRawYaml">
+                    <button class="raw-yaml-toggle" @click="toggleRawYaml">
                         <i class="fas fa-th-large"></i> Show Split Editor
                     </button>
                     <div class="form-group">
@@ -1883,10 +1946,32 @@
     #   - PUID=1000
     #   - PGID=1000
 `;
-                    this.selectedService = '';
-                    this.availableServices = [];
-                    this.serviceSections = null;
-                    this.showRawYaml = true;
+                    // Initialize with a default "app" service for split editor
+                    this.selectedService = 'app';
+                    this.availableServices = ['app'];
+                    this.serviceSections = {
+                        name_image: {
+                            name: 'app',
+                            image: 'nginx:latest',
+                            container_name: 'my-app'
+                        },
+                        environment: [],
+                        ports: [],
+                        volumes: [],
+                        devices: [],
+                        restart: 'unless-stopped',
+                        network_mode: '',
+                        command: '',
+                        entrypoint: '',
+                        cpus: '',
+                        mem_limit: '',
+                        extra: {}
+                    };
+                    
+                    // Parse existing fields for split editor
+                    this.parseFieldsForEditor();
+                    
+                    this.showRawYaml = false;  // Start with split editor
                     this.showEditModal = true;
                 },
                 async editStack(stackName) {
@@ -1899,10 +1984,22 @@
                         // Parse services for split editor
                         const yaml = jsyaml.load(this.editStackContent);
                         this.availableServices = Object.keys(yaml.services || {});
-                        this.selectedService = '';
-                        this.serviceSections = null;
-                        this.showRawYaml = false;
                         
+                        // Load Web UI URL and networks
+                        await this.loadWebUiUrl();
+                        await this.loadDockerNetworks();
+                        
+                        // Auto-select service if only one exists
+                        if (this.availableServices.length === 1) {
+                            this.selectedService = this.availableServices[0];
+                            // Load sections for the auto-selected service
+                            await this.loadServiceSections();
+                        } else {
+                            this.selectedService = '';
+                            this.serviceSections = null;
+                        }
+                        
+                        this.showRawYaml = false;
                         this.showEditModal = true;
                     } catch (error) {
                         this.showToast('Error', 'Failed to load stack', 'error');
@@ -1939,6 +2036,11 @@
                         const action = this.editingStack ? 'updated' : 'created';
                         const path = `/stacks/${this.editStackName}/compose.yaml`;
                         
+                        // Save Web UI URL if editing
+                        if (this.editingStack) {
+                            await this.saveWebUiUrl();
+                        }
+                        
                         this.showToast('Success', `Stack ${action} successfully at ${path}`, 'success');
                         this.showEditModal = false;
                         await this.loadStacks();
@@ -1959,8 +2061,32 @@
                         if (!this.serviceSections.volumes) this.serviceSections.volumes = [];
                         if (!this.serviceSections.devices) this.serviceSections.devices = [];
                         
+                        // Parse CPU/RAM limits from extra fields
+                        if (this.serviceSections.extra) {
+                            if (this.serviceSections.extra.cpus) {
+                                this.serviceSections.cpus = this.serviceSections.extra.cpus;
+                                delete this.serviceSections.extra.cpus;
+                            }
+                            if (this.serviceSections.extra.mem_limit) {
+                                // Convert mem_limit from Docker format (e.g., "2g", "512m") to GB
+                                const memStr = this.serviceSections.extra.mem_limit.toString().toLowerCase();
+                                if (memStr.endsWith('g')) {
+                                    this.serviceSections.mem_limit = parseFloat(memStr);
+                                } else if (memStr.endsWith('m')) {
+                                    this.serviceSections.mem_limit = (parseFloat(memStr) / 1024).toFixed(2);
+                                }
+                                delete this.serviceSections.extra.mem_limit;
+                            }
+                        }
+                        
+                        // Ensure CPU/RAM fields exist
+                        if (!this.serviceSections.cpus) this.serviceSections.cpus = '';
+                        if (!this.serviceSections.mem_limit) this.serviceSections.mem_limit = '';
+                        
                         // Parse into split fields
                         this.parseFieldsForEditor();
+                        this.parseImageNameTag();
+                        await this.loadWebUiUrl();
                     } catch (error) {
                         this.showToast('Error', 'Failed to load service sections: ' + error.message, 'error');
                     }
@@ -2026,6 +2152,19 @@
                             const volStr = `${vol.host}:${vol.container}`;
                             return vol.mode === 'ro' ? `${volStr}:ro` : volStr;
                         });
+                    
+                    // Handle CPU/RAM limits - move to extra if set
+                    if (this.serviceSections.cpus && parseFloat(this.serviceSections.cpus) > 0) {
+                        this.serviceSections.extra.cpus = parseFloat(this.serviceSections.cpus);
+                    }
+                    if (this.serviceSections.mem_limit && parseFloat(this.serviceSections.mem_limit) > 0) {
+                        // Convert GB to Docker format (e.g., 2 -> "2g")
+                        this.serviceSections.extra.mem_limit = `${this.serviceSections.mem_limit}g`;
+                    }
+                    
+                    // Remove cpus and mem_limit from top level (they go in extra)
+                    delete this.serviceSections.cpus;
+                    delete this.serviceSections.mem_limit;
                 },
                 addEnvVar() {
                     this.parsedEnvVars.push({ name: '', value: '' });
@@ -2044,6 +2183,47 @@
                 },
                 removeVolume(index) {
                     this.parsedVolumes.splice(index, 1);
+                },
+                updateFullImage() {
+                    // Combine image name and tag
+                    if (this.imageBaseName) {
+                        this.serviceSections.name_image.image = this.imageTag ? 
+                            `${this.imageBaseName}:${this.imageTag}` : this.imageBaseName;
+                    }
+                },
+                parseImageNameTag() {
+                    // Split image into name and tag
+                    const image = this.serviceSections.name_image.image || '';
+                    const parts = image.split(':');
+                    this.imageBaseName = parts[0] || '';
+                    this.imageTag = parts[1] || 'latest';
+                },
+                async loadDockerNetworks() {
+                    try {
+                        const response = await axios.get('/api/networks');
+                        this.dockerNetworks = response.data.filter(n => !['bridge', 'host', 'none'].includes(n.name));
+                    } catch (error) {
+                        console.error('Failed to load networks:', error);
+                    }
+                },
+                async loadWebUiUrl() {
+                    if (!this.editingStack) return;
+                    try {
+                        const response = await axios.get(`/api/stack/${this.editingStack}/webui`);
+                        this.webUiUrl = response.data.web_ui_url || '';
+                    } catch (error) {
+                        console.error('Failed to load Web UI URL:', error);
+                    }
+                },
+                async saveWebUiUrl() {
+                    if (!this.editingStack) return;
+                    try {
+                        await axios.post(`/api/stack/${this.editingStack}/webui`, {
+                            web_ui_url: this.webUiUrl
+                        });
+                    } catch (error) {
+                        console.error('Failed to save Web UI URL:', error);
+                    }
                 },
                 toggleRawYaml() {
                     this.showRawYaml = !this.showRawYaml;
