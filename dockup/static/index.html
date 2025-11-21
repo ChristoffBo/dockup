@@ -570,6 +570,62 @@
         .raw-yaml-toggle:hover {
             background: rgba(59, 130, 246, 0.4);
         }
+
+        /* ZimaOS-Style Split Fields */
+        .split-field-row {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr auto auto;
+            gap: 10px;
+            margin-bottom: 8px;
+            align-items: center;
+        }
+
+        .split-field-row input,
+        .split-field-row select {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(15, 23, 42, 0.6);
+            color: #e2e8f0;
+            font-size: 14px;
+        }
+
+        .split-field-row input:focus,
+        .split-field-row select:focus {
+            outline: none;
+            border-color: #60a5fa;
+        }
+
+        .split-field-arrow {
+            color: #60a5fa;
+            font-size: 16px;
+            user-select: none;
+        }
+
+        .split-field-label {
+            font-size: 12px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .split-field-header {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr auto auto;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .split-field-header-label {
+            font-size: 11px;
+            color: #60a5fa;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+
     </style>
 </head>
 <body>
@@ -1067,14 +1123,24 @@
                                 </div>
                             </div>
                             <div class="editor-section-body">
-                                <div v-for="(env, index) in serviceSections.environment" :key="'env-' + index" class="key-value-pair">
-                                    <input type="text" class="form-input" v-model="serviceSections.environment[index]" placeholder="KEY=value">
-                                    <button class="remove-btn" @click="serviceSections.environment.splice(index, 1)">
+                                <div class="split-field-header">
+                                    <div class="split-field-header-label">Variable Name</div>
+                                    <div></div>
+                                    <div class="split-field-header-label">Value</div>
+                                    <div></div>
+                                    <div></div>
+                                </div>
+                                <div v-for="(env, index) in parsedEnvVars" :key="'env-' + index" class="split-field-row">
+                                    <input type="text" v-model="env.name" placeholder="API_KEY">
+                                    <div class="split-field-arrow">→</div>
+                                    <input type="text" v-model="env.value" placeholder="your_value_here">
+                                    <div></div>
+                                    <button class="remove-btn" @click="removeEnvVar(index)">
                                         <i class="fas fa-times"></i>
                                     </button>
                                 </div>
-                                <button class="add-btn" @click="serviceSections.environment.push('')">
-                                    <i class="fas fa-plus"></i> Add Environment Variable
+                                <button class="add-btn" @click="addEnvVar">
+                                    <i class="fas fa-plus"></i> Add Variable
                                 </button>
                             </div>
                         </div>
@@ -1088,13 +1154,26 @@
                                 </div>
                             </div>
                             <div class="editor-section-body">
-                                <div v-for="(port, index) in serviceSections.ports" :key="'port-' + index" class="key-value-pair">
-                                    <input type="text" class="form-input" v-model="serviceSections.ports[index]" placeholder="8080:80">
-                                    <button class="remove-btn" @click="serviceSections.ports.splice(index, 1)">
+                                <div class="split-field-header">
+                                    <div class="split-field-header-label">Host Port</div>
+                                    <div></div>
+                                    <div class="split-field-header-label">Container Port</div>
+                                    <div class="split-field-header-label">Protocol</div>
+                                    <div></div>
+                                </div>
+                                <div v-for="(port, index) in parsedPorts" :key="'port-' + index" class="split-field-row">
+                                    <input type="text" v-model="port.host" placeholder="8080">
+                                    <div class="split-field-arrow">→</div>
+                                    <input type="text" v-model="port.container" placeholder="80">
+                                    <select v-model="port.protocol">
+                                        <option value="tcp">TCP</option>
+                                        <option value="udp">UDP</option>
+                                    </select>
+                                    <button class="remove-btn" @click="removePort(index)">
                                         <i class="fas fa-times"></i>
                                     </button>
                                 </div>
-                                <button class="add-btn" @click="serviceSections.ports.push('')">
+                                <button class="add-btn" @click="addPort">
                                     <i class="fas fa-plus"></i> Add Port
                                 </button>
                             </div>
@@ -1109,13 +1188,26 @@
                                 </div>
                             </div>
                             <div class="editor-section-body">
-                                <div v-for="(volume, index) in serviceSections.volumes" :key="'vol-' + index" class="key-value-pair">
-                                    <input type="text" class="form-input" v-model="serviceSections.volumes[index]" placeholder="/host/path:/container/path">
-                                    <button class="remove-btn" @click="serviceSections.volumes.splice(index, 1)">
+                                <div class="split-field-header">
+                                    <div class="split-field-header-label">Host Path</div>
+                                    <div></div>
+                                    <div class="split-field-header-label">Container Path</div>
+                                    <div class="split-field-header-label">Mode</div>
+                                    <div></div>
+                                </div>
+                                <div v-for="(volume, index) in parsedVolumes" :key="'vol-' + index" class="split-field-row">
+                                    <input type="text" v-model="volume.host" placeholder="/mnt/data">
+                                    <div class="split-field-arrow">→</div>
+                                    <input type="text" v-model="volume.container" placeholder="/app/data">
+                                    <select v-model="volume.mode">
+                                        <option value="rw">Read/Write</option>
+                                        <option value="ro">Read Only</option>
+                                    </select>
+                                    <button class="remove-btn" @click="removeVolume(index)">
                                         <i class="fas fa-times"></i>
                                     </button>
                                 </div>
-                                <button class="add-btn" @click="serviceSections.volumes.push('')">
+                                <button class="add-btn" @click="addVolume">
                                     <i class="fas fa-plus"></i> Add Volume
                                 </button>
                             </div>
@@ -1825,6 +1917,9 @@
                     try {
                         // If using split editor, save sections
                         if (this.editingStack && !this.showRawYaml && this.selectedService && this.serviceSections) {
+                            // Combine split fields back into original format
+                            this.combineFieldsForSave();
+                            
                             await axios.post(
                                 `/api/stack/${this.editingStack}/service/${this.selectedService}/sections`,
                                 this.serviceSections
@@ -1863,9 +1958,92 @@
                         if (!this.serviceSections.ports) this.serviceSections.ports = [];
                         if (!this.serviceSections.volumes) this.serviceSections.volumes = [];
                         if (!this.serviceSections.devices) this.serviceSections.devices = [];
+                        
+                        // Parse into split fields
+                        this.parseFieldsForEditor();
                     } catch (error) {
                         this.showToast('Error', 'Failed to load service sections: ' + error.message, 'error');
                     }
+                },
+                parseFieldsForEditor() {
+                    // Parse environment variables (KEY=value)
+                    this.parsedEnvVars = this.serviceSections.environment.map(env => {
+                        const parts = env.split('=');
+                        return {
+                            name: parts[0] || '',
+                            value: parts.slice(1).join('=') || ''
+                        };
+                    });
+                    
+                    // Parse ports (host:container/protocol)
+                    this.parsedPorts = this.serviceSections.ports.map(port => {
+                        const str = port.toString();
+                        let protocol = 'tcp';
+                        let portStr = str;
+                        
+                        if (str.includes('/')) {
+                            const parts = str.split('/');
+                            portStr = parts[0];
+                            protocol = parts[1] || 'tcp';
+                        }
+                        
+                        const portParts = portStr.split(':');
+                        return {
+                            host: portParts[0] || '',
+                            container: portParts[1] || portParts[0] || '',
+                            protocol: protocol
+                        };
+                    });
+                    
+                    // Parse volumes (host:container or host:container:mode)
+                    this.parsedVolumes = this.serviceSections.volumes.map(volume => {
+                        const parts = volume.split(':');
+                        return {
+                            host: parts[0] || '',
+                            container: parts[1] || '',
+                            mode: parts[2] || 'rw'
+                        };
+                    });
+                },
+                combineFieldsForSave() {
+                    // Combine env vars back to KEY=value format
+                    this.serviceSections.environment = this.parsedEnvVars
+                        .filter(env => env.name || env.value)
+                        .map(env => `${env.name}=${env.value}`);
+                    
+                    // Combine ports back to host:container/protocol format
+                    this.serviceSections.ports = this.parsedPorts
+                        .filter(port => port.host || port.container)
+                        .map(port => {
+                            const portStr = `${port.host}:${port.container}`;
+                            return port.protocol !== 'tcp' ? `${portStr}/${port.protocol}` : portStr;
+                        });
+                    
+                    // Combine volumes back to host:container:mode format
+                    this.serviceSections.volumes = this.parsedVolumes
+                        .filter(vol => vol.host || vol.container)
+                        .map(vol => {
+                            const volStr = `${vol.host}:${vol.container}`;
+                            return vol.mode === 'ro' ? `${volStr}:ro` : volStr;
+                        });
+                },
+                addEnvVar() {
+                    this.parsedEnvVars.push({ name: '', value: '' });
+                },
+                removeEnvVar(index) {
+                    this.parsedEnvVars.splice(index, 1);
+                },
+                addPort() {
+                    this.parsedPorts.push({ host: '', container: '', protocol: 'tcp' });
+                },
+                removePort(index) {
+                    this.parsedPorts.splice(index, 1);
+                },
+                addVolume() {
+                    this.parsedVolumes.push({ host: '', container: '', mode: 'rw' });
+                },
+                removeVolume(index) {
+                    this.parsedVolumes.splice(index, 1);
                 },
                 toggleRawYaml() {
                     this.showRawYaml = !this.showRawYaml;
