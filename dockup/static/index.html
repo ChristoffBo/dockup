@@ -719,6 +719,56 @@
                     </button>
                 </div>
 
+                <!-- Host System Stats -->
+                <div v-if="hostStats" class="card" style="margin-bottom: 30px; background: linear-gradient(135deg, rgba(0, 217, 255, 0.1), rgba(124, 58, 237, 0.1));">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <i class="fas fa-server"></i>
+                            Host System - {{ hostStats.hostname }}
+                        </div>
+                    </div>
+                    <div style="padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+                        <!-- CPU -->
+                        <div style="text-align: center;">
+                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                                <i class="fas fa-microchip"></i> CPU
+                            </div>
+                            <div style="font-size: 32px; font-weight: bold; color: #00d9ff;">
+                                {{ hostStats.cpu_percent }}%
+                            </div>
+                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                                {{ hostStats.cpu_count }} cores
+                            </div>
+                        </div>
+                        
+                        <!-- Memory -->
+                        <div style="text-align: center;">
+                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                                <i class="fas fa-memory"></i> Memory
+                            </div>
+                            <div style="font-size: 32px; font-weight: bold;" :style="{color: hostStats.memory_percent > 90 ? '#ef4444' : hostStats.memory_percent > 75 ? '#f59e0b' : '#10b981'}">
+                                {{ hostStats.memory_percent }}%
+                            </div>
+                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                                {{ hostStats.memory_used_gb }} / {{ hostStats.memory_total_gb }} GB
+                            </div>
+                        </div>
+                        
+                        <!-- Disk -->
+                        <div style="text-align: center;">
+                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                                <i class="fas fa-hdd"></i> Disk
+                            </div>
+                            <div style="font-size: 32px; font-weight: bold;" :style="{color: hostStats.disk_percent > 90 ? '#ef4444' : hostStats.disk_percent > 75 ? '#f59e0b' : '#10b981'}">
+                                {{ hostStats.disk_percent }}%
+                            </div>
+                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                                {{ hostStats.disk_used_gb }} / {{ hostStats.disk_total_gb }} GB
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div v-if="filteredStacks.length === 0 && stacks.length === 0" class="empty-state">
                     <i class="fas fa-box-open"></i>
                     <h2>No Stacks Yet</h2>
@@ -740,7 +790,12 @@
                         <div class="card-header">
                             <div class="card-title">
                                 <i class="fas fa-layer-group"></i>
-                                {{ stack.name }}
+                                <span @click="openStackWebUI(stack)" 
+                                      :style="{cursor: stack.web_ui_url ? 'pointer' : 'default', color: stack.web_ui_url ? '#00d9ff' : 'inherit'}"
+                                      :title="stack.web_ui_url || 'No Web UI configured'">
+                                    {{ stack.name }}
+                                    <i v-if="stack.web_ui_url" class="fas fa-external-link-alt" style="font-size: 12px; margin-left: 5px;"></i>
+                                </span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px;">
                                 <span class="status-badge" :class="stack.running ? 'status-running' : 'status-stopped'">
@@ -833,7 +888,12 @@
                         <div class="card-header">
                             <div class="card-title" style="color: #64748b;">
                                 <i class="fas fa-layer-group"></i>
-                                {{ stack.name }}
+                                <span @click="openStackWebUI(stack)" 
+                                      :style="{cursor: stack.web_ui_url ? 'pointer' : 'default', color: stack.web_ui_url ? '#00d9ff' : '#64748b'}"
+                                      :title="stack.web_ui_url || 'No Web UI configured'">
+                                    {{ stack.name }}
+                                    <i v-if="stack.web_ui_url" class="fas fa-external-link-alt" style="font-size: 12px; margin-left: 5px;"></i>
+                                </span>
                             </div>
                             <span class="status-badge" style="background: rgba(100, 116, 139, 0.2); color: #64748b;">
                                 Never Started
@@ -1322,7 +1382,7 @@
                                     <label class="form-label">
                                         <i class="fas fa-external-link-alt"></i> Web UI URL (optional)
                                     </label>
-                                    <input type="url" class="form-input" v-model="webUiUrl" placeholder="http://10.0.0.240:8080">
+                                    <input type="url" class="form-input" v-model="editStack.web_ui_url" placeholder="http://10.0.0.240:8080">
                                     <small style="color: #94a3b8; display: block; margin-top: 5px;">
                                         Leave empty to auto-detect from first exposed port
                                     </small>
@@ -1551,7 +1611,8 @@
                     showBackupModal: false,
                     restoreFile: null,
                     toasts: [],
-                    ws: null
+                    ws: null,
+                    hostStats: null
                 };
             },
             computed: {
@@ -1619,12 +1680,18 @@
                 
                 this.loadStacks();
                 this.loadSettings();
+                this.loadHostStats();
                 this.connectWebSocket();
                 
                 // Refresh stacks every 10 seconds
                 setInterval(() => {
                     this.loadStacks();
                 }, 10000);
+                
+                // Refresh host stats every 5 seconds
+                setInterval(() => {
+                    this.loadHostStats();
+                }, 5000);
             },
             methods: {
                 async loadStacks() {
@@ -1643,12 +1710,25 @@
                         this.showToast('Error', 'Failed to load settings', 'error');
                     }
                 },
+                async loadHostStats() {
+                    try {
+                        const response = await axios.get('/api/host/stats');
+                        this.hostStats = response.data;
+                    } catch (error) {
+                        console.error('Failed to load host stats:', error);
+                    }
+                },
                 async saveSettings() {
                     try {
                         await axios.post('/api/config', this.settings);
                         this.showToast('Success', 'Settings saved successfully', 'success');
                     } catch (error) {
                         this.showToast('Error', 'Failed to save settings', 'error');
+                    }
+                },
+                openStackWebUI(stack) {
+                    if (stack.web_ui_url) {
+                        window.open(stack.web_ui_url, '_blank');
                     }
                 },
                 async stackOperation(stackName, operation) {
@@ -2035,6 +2115,13 @@
                         
                         const action = this.editingStack ? 'updated' : 'created';
                         const path = `/stacks/${this.editStackName}/compose.yaml`;
+                        // Save Web UI URL metadata
+              await axios.post(
+    `/api/stack/${this.editStackName}/metadata`,
+    {
+        web_ui_url: this.editStack.web_ui_url || ""
+    }
+);
                         
                         // Save Web UI URL if editing
                         if (this.editingStack) {
