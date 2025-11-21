@@ -703,6 +703,68 @@ def check_stack_updates(stack_name):
         print(f"Error checking updates for {stack_name}: {e}")
         return False, None
 
+def verify_update_success(stack_name):
+    """Verify that update was successful by checking if local digest now matches remote"""
+    try:
+        print(f"  → Verifying update for {stack_name}")
+        
+        containers = docker_client.containers.list(
+            all=True,
+            filters={'label': f'com.docker.compose.project={stack_name}'}
+        )
+        
+        if not containers:
+            print(f"  ⚠ No containers found for verification")
+            return False
+        
+        all_verified = True
+        
+        for container in containers:
+            try:
+                image_name = container.image.tags[0] if container.image.tags else None
+                if not image_name:
+                    continue
+                
+                # Get local image info (after update)
+                local_image = container.image
+                local_digests = local_image.attrs.get('RepoDigests', [])
+                
+                if not local_digests:
+                    print(f"  ℹ {container.name}: No RepoDigests, skipping verification")
+                    continue
+                
+                local_digest = local_digests[0].split('@')[1]
+                
+                # Get registry data
+                try:
+                    registry_data = docker_client.images.get_registry_data(image_name)
+                    remote_digest = None
+                    
+                    if hasattr(registry_data, 'attrs') and 'Descriptor' in registry_data.attrs:
+                        remote_digest = registry_data.attrs['Descriptor']['digest']
+                    
+                    if remote_digest:
+                        if local_digest == remote_digest:
+                            print(f"  ✓ {container.name}: Verified (digests match)")
+                        else:
+                            print(f"  ✗ {container.name}: Verification failed (digest mismatch)")
+                            all_verified = False
+                    else:
+                        print(f"  ⚠ {container.name}: Cannot verify (no remote digest)")
+                        
+                except Exception as e:
+                    print(f"  ⚠ {container.name}: Verification inconclusive ({e})")
+                    
+            except Exception as e:
+                print(f"  ⚠ Error verifying {container.name}: {e}")
+        
+        return all_verified
+        
+    except Exception as e:
+        print(f"  ✗ Verification error: {e}")
+        return False
+
+
 def auto_update_stack(stack_name):
     """Check and optionally update a stack based on its schedule - with safety checks"""
     schedule_info = schedules.get(stack_name, {})
@@ -821,7 +883,8 @@ def auto_update_stack(stack_name):
                     f"Failed to restart stack '{stack_name}' after update",
                     'error'
                 )
-    
+        
+        elif mode == 'check':
             # Check only mode
             print(f"Check only mode - notified user about update for {stack_name}")
             broadcast_ws({
@@ -846,7 +909,13 @@ def setup_scheduler():
     
     def update_schedules():
         """Update scheduled jobs based on current configuration"""
-        scheduler.remove_all_jobs()
+        # Only remove user-configurable jobs — never touch system ones
+        for job in list(scheduler.get_jobs()):
+            if job.id.startswith('update_') or job.id in ('auto_prune', 'import_orphans'):
+                try:
+                    scheduler.remove_job(job.id)
+                except:
+                    pass
         
         # Stack update schedules
         for stack_name, schedule_info in schedules.items():
@@ -892,8 +961,15 @@ def setup_scheduler():
     # Initial setup
     update_schedules()
     
-    # Re-setup schedules every hour in case of changes
-    scheduler.add_job(update_schedules, 'interval', hours=1, id='refresh_schedules')
+    # Re-setup schedules every hour — SAFE version that preserves itself
+    scheduler.add_job(
+        update_schedules,
+        'interval',
+        hours=1,
+        id='refresh_schedules',
+        replace_existing=True,
+        coalesce=True
+    )
     
     return scheduler
 
