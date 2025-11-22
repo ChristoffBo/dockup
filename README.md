@@ -1,3 +1,6 @@
+<img width="1569" height="922" alt="image" src="https://github.com/user-attachments/assets/cb63f08e-37de-450c-a6a6-f562bb7d91d1" />
+
+ 
  # 🚀 Dockup — Docker Compose Stack Manager with Auto-Update
 
 Dockup is a standalone Docker container that combines Dockge-style stack management with Watchtower-style auto-update detection. It provides a full web UI for managing Docker Compose stacks, editing compose files, running commands, checking for image updates, pruning unused images, viewing logs, and scheduling automatic updates. Everything is fully local and self-hosted.
