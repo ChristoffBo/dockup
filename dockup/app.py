@@ -559,10 +559,17 @@ def get_stacks():
                         except:
                             uptime_str = ''
                     
+                    # Get health status if available
+                    health_status = None
+                    state = container.attrs.get('State', {})
+                    if 'Health' in state:
+                        health_status = state['Health'].get('Status', 'none')
+                    
                     containers.append({
                         'id': container.id[:12],
                         'name': container.name,
                         'status': container.status,
+                        'health': health_status,  # Can be: healthy, unhealthy, starting, none (no healthcheck)
                         'image': container.image.tags[0] if container.image.tags else container.image.id[:12],
                         'uptime': uptime_str
                     })
