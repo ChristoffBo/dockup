@@ -138,6 +138,37 @@
             color: #eab308;
         }
 
+        .status-restarting {
+            background: rgba(249, 115, 22, 0.2);
+            color: #f97316;
+        }
+
+        /* Health badges */
+        .health-badge {
+            padding: 3px 10px;
+            border-radius: 15px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .health-healthy {
+            background: rgba(34, 197, 94, 0.15);
+            color: #22c55e;
+        }
+
+        .health-unhealthy {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+        }
+
+        .health-starting {
+            background: rgba(234, 179, 8, 0.15);
+            color: #eab308;
+        }
+
         /* Buttons */
         .btn {
             padding: 8px 16px;
@@ -813,9 +844,29 @@
                                 </span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px;">
-                                <span class="status-badge" :class="stack.running ? 'status-running' : 'status-stopped'">
-                                    {{ stack.running ? 'Running' : 'Stopped' }}
+                                <!-- Status badge -->
+                                <span class="status-badge" :class="{
+                                    'status-running': stack.running,
+                                    'status-stopped': !stack.running && stack.containers.length > 0,
+                                    'status-restarting': stack.containers.some(c => c.status === 'restarting')
+                                }">
+                                    <span v-if="stack.containers.some(c => c.status === 'restarting')">Restarting</span>
+                                    <span v-else>{{ stack.running ? 'Running' : 'Stopped' }}</span>
                                 </span>
+                                
+                                <!-- Health badge (only if running and has health checks) -->
+                                <span v-if="stack.running && getStackHealth(stack)" class="health-badge" :class="{
+                                    'health-healthy': getStackHealth(stack) === 'healthy',
+                                    'health-unhealthy': getStackHealth(stack) === 'unhealthy',
+                                    'health-starting': getStackHealth(stack) === 'starting'
+                                }">
+                                    <i class="fas fa-heartbeat"></i>
+                                    <span v-if="getStackHealth(stack) === 'healthy'">Healthy</span>
+                                    <span v-else-if="getStackHealth(stack) === 'unhealthy'">Unhealthy</span>
+                                    <span v-else-if="getStackHealth(stack) === 'starting'">Starting</span>
+                                </span>
+                                
+                                <!-- Uptime -->
                                 <span v-if="stack.running && getStackUptime(stack)" style="font-size: 12px; color: #94a3b8;">
                                     <i class="fas fa-clock"></i> {{ getStackUptime(stack) }}
                                 </span>
@@ -2462,6 +2513,28 @@
                     
                     // Return the first (longest) uptime
                     return uptimes[0];
+                },
+                getStackHealth(stack) {
+                    // Get overall health status for the stack
+                    if (!stack.containers || stack.containers.length === 0) return null;
+                    
+                    // Get health statuses from containers that have health checks
+                    const healthStatuses = stack.containers
+                        .filter(c => c.health)  // Only containers with health checks
+                        .map(c => c.health);
+                    
+                    if (healthStatuses.length === 0) return null;  // No health checks configured
+                    
+                    // If any container is unhealthy, stack is unhealthy
+                    if (healthStatuses.includes('unhealthy')) return 'unhealthy';
+                    
+                    // If any container is starting, stack is starting
+                    if (healthStatuses.includes('starting')) return 'starting';
+                    
+                    // If all are healthy, stack is healthy
+                    if (healthStatuses.every(h => h === 'healthy')) return 'healthy';
+                    
+                    return null;
                 }
             }
         }).mount('#app');
