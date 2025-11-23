@@ -482,6 +482,150 @@
         body.light-theme .stack-info-row {
             background: rgba(241, 245, 249, 0.5);
         }
+        /* Split Editor Styles */
+        .editor-section {
+            background: rgba(15, 23, 42, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+
+        .editor-section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .editor-section-title {
+            font-weight: 600;
+            color: #60a5fa;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .editor-section-body {
+            margin-top: 12px;
+        }
+
+        .editor-section-collapsed .editor-section-body {
+            display: none;
+        }
+
+        .key-value-pair {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 8px;
+            align-items: center;
+        }
+
+        .key-value-pair input {
+            flex: 1;
+        }
+
+        .remove-btn {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .remove-btn:hover {
+            background: rgba(239, 68, 68, 0.4);
+        }
+
+        .add-btn {
+            background: rgba(34, 197, 94, 0.2);
+            color: #22c55e;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 8px;
+        }
+
+        .add-btn:hover {
+            background: rgba(34, 197, 94, 0.4);
+        }
+
+        .raw-yaml-toggle {
+            background: rgba(59, 130, 246, 0.2);
+            color: #3b82f6;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 15px;
+        }
+
+        .raw-yaml-toggle:hover {
+            background: rgba(59, 130, 246, 0.4);
+        }
+
+        /* ZimaOS-Style Split Fields */
+        .split-field-row {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr auto auto;
+            gap: 10px;
+            margin-bottom: 8px;
+            align-items: center;
+        }
+
+        .split-field-row input,
+        .split-field-row select {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(15, 23, 42, 0.6);
+            color: #e2e8f0;
+            font-size: 14px;
+        }
+
+        .split-field-row input:focus,
+        .split-field-row select:focus {
+            outline: none;
+            border-color: #60a5fa;
+        }
+
+        .split-field-arrow {
+            color: #60a5fa;
+            font-size: 16px;
+            user-select: none;
+        }
+
+        .split-field-label {
+            font-size: 12px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .split-field-header {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr auto auto;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .split-field-header-label {
+            font-size: 11px;
+            color: #60a5fa;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+
     </style>
 </head>
 <body>
@@ -575,6 +719,71 @@
                     </button>
                 </div>
 
+                <!-- Host System Stats -->
+                <div v-if="hostStats" class="card" style="margin-bottom: 30px; background: linear-gradient(135deg, rgba(0, 217, 255, 0.1), rgba(124, 58, 237, 0.1));">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <i class="fas fa-server"></i>
+                            Host System
+                        </div>
+                    </div>
+                    <div style="padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+                        <!-- CPU -->
+                        <div style="text-align: center;">
+                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                                <i class="fas fa-microchip"></i> CPU
+                            </div>
+                            <div style="font-size: 32px; font-weight: bold; color: #00d9ff;">
+                                {{ hostStats.cpu_percent }}%
+                            </div>
+                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                                {{ hostStats.cpu_count }} cores
+                            </div>
+                        </div>
+                        
+                        <!-- Memory -->
+                        <div style="text-align: center;">
+                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                                <i class="fas fa-memory"></i> Memory
+                            </div>
+                            <div style="font-size: 32px; font-weight: bold;" :style="{color: hostStats.memory_percent > 90 ? '#ef4444' : hostStats.memory_percent > 75 ? '#f59e0b' : '#10b981'}">
+                                {{ hostStats.memory_percent }}%
+                            </div>
+                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                                {{ hostStats.memory_used_gb }} / {{ hostStats.memory_total_gb }} GB
+                            </div>
+                        </div>
+                        
+                        <!-- Disk -->
+                        <div style="text-align: center;">
+                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                                <i class="fas fa-hdd"></i> Disk
+                            </div>
+                            <div style="font-size: 32px; font-weight: bold;" :style="{color: hostStats.disk_percent > 90 ? '#ef4444' : hostStats.disk_percent > 75 ? '#f59e0b' : '#10b981'}">
+                                {{ hostStats.disk_percent }}%
+                            </div>
+                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                                {{ hostStats.disk_used_gb }} / {{ hostStats.disk_total_gb }} GB
+                            </div>
+                        </div>
+                        
+                        <!-- Network -->
+                        <div style="text-align: center;">
+                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                                <i class="fas fa-network-wired"></i> Network
+                            </div>
+                            <div style="font-size: 20px; font-weight: bold; color: #8b5cf6;">
+                                <div style="margin-bottom: 4px;">
+                                    <i class="fas fa-arrow-down" style="font-size: 14px;"></i> {{ hostStats.net_rx_mbps || 0 }} Mbps
+                                </div>
+                                <div>
+                                    <i class="fas fa-arrow-up" style="font-size: 14px;"></i> {{ hostStats.net_tx_mbps || 0 }} Mbps
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div v-if="filteredStacks.length === 0 && stacks.length === 0" class="empty-state">
                     <i class="fas fa-box-open"></i>
                     <h2>No Stacks Yet</h2>
@@ -596,7 +805,12 @@
                         <div class="card-header">
                             <div class="card-title">
                                 <i class="fas fa-layer-group"></i>
-                                {{ stack.name }}
+                                <span @click="openStackWebUI(stack)" 
+                                      :style="{cursor: stack.web_ui_url ? 'pointer' : 'default', color: stack.web_ui_url ? '#00d9ff' : 'inherit'}"
+                                      :title="stack.web_ui_url || 'No Web UI configured'">
+                                    {{ stack.name }}
+                                    <i v-if="stack.web_ui_url" class="fas fa-external-link-alt" style="font-size: 12px; margin-left: 5px;"></i>
+                                </span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px;">
                                 <span class="status-badge" :class="stack.running ? 'status-running' : 'status-stopped'">
@@ -621,6 +835,13 @@
                                 <span class="stack-info-label">RAM:</span>
                                 <span class="stack-info-value">{{ stack.stats.mem_usage_mb }} MB ({{ stack.stats.mem_percent }}%)</span>
                             </div>
+                            <div class="stack-info-row" v-if="stack.running">
+                                <span class="stack-info-label">Network:</span>
+                                <span class="stack-info-value">
+                                    <i class="fas fa-arrow-down"></i> {{ stack.stats.net_rx_mbps || 0 }} Mbps
+                                    <i class="fas fa-arrow-up" style="margin-left: 8px;"></i> {{ stack.stats.net_tx_mbps || 0 }} Mbps
+                                </span>
+                            </div>
                             <div class="stack-info-row">
                                 <span class="stack-info-label">Update Mode:</span>
                                 <span class="stack-info-value">
@@ -642,7 +863,7 @@
                             <button class="btn btn-success" v-if="!stack.running" @click="stackOperationWithTerminal(stack.name, 'up')">
                                 <i class="fas fa-play"></i> Start
                             </button>
-                            <button class="btn btn-danger" v-if="stack.running" @click="stackOperationWithTerminal(stack.name, 'down')">
+                            <button class="btn btn-danger" v-if="stack.running" @click="stackOperationWithTerminal(stack.name, 'stop')">
                                 <i class="fas fa-stop"></i> Stop
                             </button>
                             <button class="btn btn-warning" v-if="stack.running" @click="stackOperationWithTerminal(stack.name, 'restart')">
@@ -689,7 +910,12 @@
                         <div class="card-header">
                             <div class="card-title" style="color: #64748b;">
                                 <i class="fas fa-layer-group"></i>
-                                {{ stack.name }}
+                                <span @click="openStackWebUI(stack)" 
+                                      :style="{cursor: stack.web_ui_url ? 'pointer' : 'default', color: stack.web_ui_url ? '#00d9ff' : '#64748b'}"
+                                      :title="stack.web_ui_url || 'No Web UI configured'">
+                                    {{ stack.name }}
+                                    <i v-if="stack.web_ui_url" class="fas fa-external-link-alt" style="font-size: 12px; margin-left: 5px;"></i>
+                                </span>
                             </div>
                             <span class="status-badge" style="background: rgba(100, 116, 139, 0.2); color: #64748b;">
                                 Never Started
@@ -913,29 +1139,297 @@
             </div>
         </div>
 
-        <!-- Edit Stack Modal -->
+        <!-- Edit Stack Modal with ZimaOS Split Editor -->
         <div class="modal" v-if="showEditModal" @click.self="showEditModal = false">
             <div class="modal-content">
                 <div class="modal-header">
                     <h2>{{ editingStack ? 'Edit Stack' : 'Create New Stack' }}</h2>
                     <button class="close-btn" @click="showEditModal = false">&times;</button>
                 </div>
+                
                 <div class="form-group">
                     <label class="form-label">Stack Name</label>
                     <input type="text" class="form-input" v-model="editStackName" :disabled="!!editingStack" placeholder="e.g., nginx, plex, jellyfin">
                     <small style="color: #94a3b8; display: block; margin-top: 5px;">
-                        {{ editingStack ? 'Stack name cannot be changed' : 'This will create a folder: /DATA/Compose/' + (editStackName || 'stackname') + '/' }}
+                        {{ editingStack ? 'Stack name cannot be changed' : 'This will create a folder: /stacks/' + (editStackName || 'stackname') + '/' }}
                     </small>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Docker Compose YAML</label>
-                    <textarea class="form-input" v-model="editStackContent" placeholder="Paste your docker-compose.yml here or write from scratch..." style="min-height: 450px; font-family: 'Courier New', monospace;"></textarea>
-                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
-                        {{ editingStack ? 'Edit your compose file' : 'Will be saved as: compose.yaml' }}
-                    </small>
+
+                <!-- Split Editor Mode -->
+                <div v-if="!showRawYaml">
+                    <button class="raw-yaml-toggle" @click="toggleRawYaml">
+                        <i class="fas fa-code"></i> Show Raw YAML
+                    </button>
+
+                    <!-- Service Selector -->
+                    <div class="form-group" v-if="editingStack">
+                        <label class="form-label">Select Service to Edit</label>
+                        <select class="form-select" v-model="selectedService" @change="loadServiceSections">
+                            <option value="">-- Select a service --</option>
+                            <option v-for="service in availableServices" :key="service" :value="service">{{ service }}</option>
+                        </select>
+                    </div>
+                    
+                    <!-- For new stacks, show basic split editor -->
+                    <div v-if="!editingStack">
+                        <p style="color: #94a3b8; margin-bottom: 15px;">
+                            <i class="fas fa-info-circle"></i> Create your first service using the split editor below, or switch to Raw YAML for multiple services.
+                        </p>
+                    </div>
+
+                    <!-- Split Editor Sections -->
+                    <div v-if="selectedService && serviceSections">
+                        <!-- Name & Image -->
+                        <div class="editor-section">
+                            <div class="editor-section-header">
+                                <div class="editor-section-title">
+                                    <i class="fas fa-cube"></i>
+                                    Name & Image
+                                </div>
+                            </div>
+                            <div class="editor-section-body">
+                                <div class="form-group">
+                                    <label class="form-label">Service Name</label>
+                                    <input type="text" class="form-input" :value="serviceSections.name_image.name" disabled>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 15px;">
+                                    <div class="form-group" style="margin: 0;">
+                                        <label class="form-label">Image Name</label>
+                                        <input type="text" class="form-input" v-model="imageBaseName" placeholder="nginx" @input="updateFullImage">
+                                    </div>
+                                    <div class="form-group" style="margin: 0;">
+                                        <label class="form-label">Tag</label>
+                                        <input type="text" list="common-tags" class="form-input" v-model="imageTag" placeholder="latest" @input="updateFullImage">
+                                        <datalist id="common-tags">
+                                            <option value="latest">
+                                            <option value="stable">
+                                            <option value="development">
+                                            <option value="dev">
+                                            <option value="nightly">
+                                            <option value="alpine">
+                                            <option value="slim">
+                                            <option value="lts">
+                                        </datalist>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Container Name (optional)</label>
+                                    <input type="text" class="form-input" v-model="serviceSections.name_image.container_name" placeholder="my-container">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Environment Variables -->
+                        <div class="editor-section">
+                            <div class="editor-section-header">
+                                <div class="editor-section-title">
+                                    <i class="fas fa-list"></i>
+                                    Environment Variables
+                                </div>
+                            </div>
+                            <div class="editor-section-body">
+                                <div class="split-field-header">
+                                    <div class="split-field-header-label">Variable Name</div>
+                                    <div></div>
+                                    <div class="split-field-header-label">Value</div>
+                                    <div></div>
+                                    <div></div>
+                                </div>
+                                <div v-for="(env, index) in parsedEnvVars" :key="'env-' + index" class="split-field-row">
+                                    <input type="text" v-model="env.name" placeholder="API_KEY">
+                                    <div class="split-field-arrow">→</div>
+                                    <input type="text" v-model="env.value" placeholder="your_value_here">
+                                    <div></div>
+                                    <button class="remove-btn" @click="removeEnvVar(index)">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                                <button class="add-btn" @click="addEnvVar">
+                                    <i class="fas fa-plus"></i> Add Variable
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Ports -->
+                        <div class="editor-section">
+                            <div class="editor-section-header">
+                                <div class="editor-section-title">
+                                    <i class="fas fa-network-wired"></i>
+                                    Ports
+                                </div>
+                            </div>
+                            <div class="editor-section-body">
+                                <div class="split-field-header">
+                                    <div class="split-field-header-label">Host Port</div>
+                                    <div></div>
+                                    <div class="split-field-header-label">Container Port</div>
+                                    <div class="split-field-header-label">Protocol</div>
+                                    <div></div>
+                                </div>
+                                <div v-for="(port, index) in parsedPorts" :key="'port-' + index" class="split-field-row">
+                                    <input type="text" v-model="port.host" placeholder="8080">
+                                    <div class="split-field-arrow">→</div>
+                                    <input type="text" v-model="port.container" placeholder="80">
+                                    <select v-model="port.protocol">
+                                        <option value="tcp">TCP</option>
+                                        <option value="udp">UDP</option>
+                                    </select>
+                                    <button class="remove-btn" @click="removePort(index)">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                                <button class="add-btn" @click="addPort">
+                                    <i class="fas fa-plus"></i> Add Port
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Volumes -->
+                        <div class="editor-section">
+                            <div class="editor-section-header">
+                                <div class="editor-section-title">
+                                    <i class="fas fa-hdd"></i>
+                                    Volumes
+                                </div>
+                            </div>
+                            <div class="editor-section-body">
+                                <div class="split-field-header">
+                                    <div class="split-field-header-label">Host Path</div>
+                                    <div></div>
+                                    <div class="split-field-header-label">Container Path</div>
+                                    <div class="split-field-header-label">Mode</div>
+                                    <div></div>
+                                </div>
+                                <div v-for="(volume, index) in parsedVolumes" :key="'vol-' + index" class="split-field-row">
+                                    <input type="text" v-model="volume.host" placeholder="/mnt/data">
+                                    <div class="split-field-arrow">→</div>
+                                    <input type="text" v-model="volume.container" placeholder="/app/data">
+                                    <select v-model="volume.mode">
+                                        <option value="rw">Read/Write</option>
+                                        <option value="ro">Read Only</option>
+                                    </select>
+                                    <button class="remove-btn" @click="removeVolume(index)">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                                <button class="add-btn" @click="addVolume">
+                                    <i class="fas fa-plus"></i> Add Volume
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Devices -->
+                        <div class="editor-section" v-if="serviceSections.devices && serviceSections.devices.length > 0">
+                            <div class="editor-section-header">
+                                <div class="editor-section-title">
+                                    <i class="fas fa-microchip"></i>
+                                    Devices
+                                </div>
+                            </div>
+                            <div class="editor-section-body">
+                                <div v-for="(device, index) in serviceSections.devices" :key="'dev-' + index" class="key-value-pair">
+                                    <input type="text" class="form-input" v-model="serviceSections.devices[index]" placeholder="/dev/video0:/dev/video0">
+                                    <button class="remove-btn" @click="serviceSections.devices.splice(index, 1)">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                                <button class="add-btn" @click="serviceSections.devices.push('')">
+                                    <i class="fas fa-plus"></i> Add Device
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Advanced Options -->
+                        <div class="editor-section">
+                            <div class="editor-section-header">
+                                <div class="editor-section-title">
+                                    <i class="fas fa-cogs"></i>
+                                    Advanced Options
+                                </div>
+                            </div>
+                            <div class="editor-section-body">
+                                <div class="form-group">
+                                    <label class="form-label">Restart Policy</label>
+                                    <select class="form-select" v-model="serviceSections.restart">
+                                        <option value="no">no</option>
+                                        <option value="always">always</option>
+                                        <option value="unless-stopped">unless-stopped</option>
+                                        <option value="on-failure">on-failure</option>
+                                    </select>
+                                </div>
+                                
+                                <!-- Resource Limits -->
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 15px;">
+                                    <div class="form-group" style="margin: 0;">
+                                        <label class="form-label">
+                                            <i class="fas fa-microchip"></i> CPU Limit (cores)
+                                        </label>
+                                        <input type="number" step="0.1" min="0" class="form-input" v-model="serviceSections.cpus" placeholder="0 = unlimited">
+                                        <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                            e.g., 1.5 = 1.5 CPU cores max
+                                        </small>
+                                    </div>
+                                    <div class="form-group" style="margin: 0;">
+                                        <label class="form-label">
+                                            <i class="fas fa-memory"></i> RAM Limit (GB)
+                                        </label>
+                                        <input type="number" step="0.1" min="0" class="form-input" v-model="serviceSections.mem_limit" placeholder="0 = unlimited">
+                                        <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                            e.g., 2 = 2GB RAM max
+                                        </small>
+                                    </div>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">Network Mode (optional)</label>
+                                    <select class="form-select" v-model="serviceSections.network_mode">
+                                        <option value="">Default (bridge)</option>
+                                        <option value="bridge">bridge</option>
+                                        <option value="host">host</option>
+                                        <option value="none">none</option>
+                                        <option v-for="network in dockerNetworks" :key="network.name" :value="network.name">
+                                            {{ network.name }} ({{ network.driver }})
+                                        </option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Command (optional)</label>
+                                    <input type="text" class="form-input" v-model="serviceSections.command" placeholder="npm start">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Entrypoint (optional)</label>
+                                    <input type="text" class="form-input" v-model="serviceSections.entrypoint" placeholder="/docker-entrypoint.sh">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">
+                                        <i class="fas fa-external-link-alt"></i> Web UI URL (optional)
+                                    </label>
+                                    <input type="url" class="form-input" v-model="editStack.web_ui_url" placeholder="http://10.0.0.240:8080">
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Leave empty to auto-detect from first exposed port
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
+
+                <!-- Raw YAML Mode -->
+                <div v-if="showRawYaml">
+                    <button class="raw-yaml-toggle" @click="toggleRawYaml">
+                        <i class="fas fa-th-large"></i> Show Split Editor
+                    </button>
+                    <div class="form-group">
+                        <label class="form-label">Docker Compose YAML</label>
+                        <textarea class="form-input" v-model="editStackContent" placeholder="Paste your docker-compose.yml here or write from scratch..." style="min-height: 450px; font-family: 'Courier New', monospace;"></textarea>
+                        <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                            {{ editingStack ? 'Edit your compose file' : 'Will be saved as: compose.yaml' }}
+                        </small>
+                    </div>
+                </div>
+
                 <div class="btn-group">
-                    <button class="btn btn-success" @click="saveStack" :disabled="!editStackName || !editStackContent">
+                    <button class="btn btn-success" @click="saveStack" :disabled="!editStackName || (!editStackContent && !selectedService)">
                         <i class="fas fa-save"></i> {{ editingStack ? 'Save Changes' : 'Create Stack' }}
                     </button>
                     <button class="btn btn-secondary" @click="showEditModal = false">
@@ -1107,6 +1601,10 @@
                     editingStack: null,
                     editStackName: '',
                     editStackContent: '',
+                    showRawYaml: false,
+                    selectedService: '',
+                    availableServices: [],
+                    serviceSections: null,
                     showLogsModal: false,
                     logsStackName: '',
                     stackLogs: {},
@@ -1135,7 +1633,8 @@
                     showBackupModal: false,
                     restoreFile: null,
                     toasts: [],
-                    ws: null
+                    ws: null,
+                    hostStats: null
                 };
             },
             computed: {
@@ -1203,12 +1702,18 @@
                 
                 this.loadStacks();
                 this.loadSettings();
+                this.loadHostStats();
                 this.connectWebSocket();
                 
                 // Refresh stacks every 10 seconds
                 setInterval(() => {
                     this.loadStacks();
                 }, 10000);
+                
+                // Refresh host stats every 5 seconds
+                setInterval(() => {
+                    this.loadHostStats();
+                }, 5000);
             },
             methods: {
                 async loadStacks() {
@@ -1227,12 +1732,25 @@
                         this.showToast('Error', 'Failed to load settings', 'error');
                     }
                 },
+                async loadHostStats() {
+                    try {
+                        const response = await axios.get('/api/host/stats');
+                        this.hostStats = response.data;
+                    } catch (error) {
+                        console.error('Failed to load host stats:', error);
+                    }
+                },
                 async saveSettings() {
                     try {
                         await axios.post('/api/config', this.settings);
                         this.showToast('Success', 'Settings saved successfully', 'success');
                     } catch (error) {
                         this.showToast('Error', 'Failed to save settings', 'error');
+                    }
+                },
+                openStackWebUI(stack) {
+                    if (stack.web_ui_url) {
+                        window.open(stack.web_ui_url, '_blank');
                     }
                 },
                 async stackOperation(stackName, operation) {
@@ -1530,6 +2048,32 @@
     #   - PUID=1000
     #   - PGID=1000
 `;
+                    // Initialize with a default "app" service for split editor
+                    this.selectedService = 'app';
+                    this.availableServices = ['app'];
+                    this.serviceSections = {
+                        name_image: {
+                            name: 'app',
+                            image: 'nginx:latest',
+                            container_name: 'my-app'
+                        },
+                        environment: [],
+                        ports: [],
+                        volumes: [],
+                        devices: [],
+                        restart: 'unless-stopped',
+                        network_mode: '',
+                        command: '',
+                        entrypoint: '',
+                        cpus: '',
+                        mem_limit: '',
+                        extra: {}
+                    };
+                    
+                    // Parse existing fields for split editor
+                    this.parseFieldsForEditor();
+                    
+                    this.showRawYaml = false;  // Start with split editor
                     this.showEditModal = true;
                 },
                 async editStack(stackName) {
@@ -1538,30 +2082,267 @@
                         this.editingStack = stackName;
                         this.editStackName = stackName;
                         this.editStackContent = response.data.content;
+                        
+                        // Parse services for split editor
+                        const yaml = jsyaml.load(this.editStackContent);
+                        this.availableServices = Object.keys(yaml.services || {});
+                        
+                        // Load Web UI URL and networks
+                        await this.loadWebUiUrl();
+                        await this.loadDockerNetworks();
+                        
+                        // Auto-select service if only one exists
+                        if (this.availableServices.length === 1) {
+                            this.selectedService = this.availableServices[0];
+                            // Load sections for the auto-selected service
+                            await this.loadServiceSections();
+                        } else {
+                            this.selectedService = '';
+                            this.serviceSections = null;
+                        }
+                        
+                        this.showRawYaml = false;
                         this.showEditModal = true;
                     } catch (error) {
                         this.showToast('Error', 'Failed to load stack', 'error');
                     }
                 },
                 async saveStack() {
-                    if (!this.editStackName || !this.editStackContent) {
-                        this.showToast('Error', 'Stack name and compose content are required', 'error');
+                    if (!this.editStackName) {
+                        this.showToast('Error', 'Stack name is required', 'error');
                         return;
                     }
-                    
+
                     try {
-                        await axios.post(`/api/stack/${this.editStackName}/compose`, {
-                            content: this.editStackContent
-                        });
+                        // If using split editor, save sections
+                        if (this.editingStack && !this.showRawYaml && this.selectedService && this.serviceSections) {
+                            // Combine split fields back into original format
+                            this.combineFieldsForSave();
+                            
+                            await axios.post(
+                                `/api/stack/${this.editingStack}/service/${this.selectedService}/sections`,
+                                this.serviceSections
+                            );
+                        } else {
+                            // Save raw YAML
+                            if (!this.editStackContent) {
+                                this.showToast('Error', 'Compose content is required', 'error');
+                                return;
+                            }
+                            
+                            await axios.post(`/api/stack/${this.editStackName}/compose`, {
+                                content: this.editStackContent
+                            });
+                        }
                         
                         const action = this.editingStack ? 'updated' : 'created';
-                        const path = `/DATA/Compose/${this.editStackName}/compose.yaml`;
+                        const path = `/stacks/${this.editStackName}/compose.yaml`;
+                        // Save Web UI URL metadata
+              await axios.post(
+    `/api/stack/${this.editStackName}/metadata`,
+    {
+        web_ui_url: this.editStack.web_ui_url || ""
+    }
+);
+                        
+                        // Save Web UI URL if editing
+                        if (this.editingStack) {
+                            await this.saveWebUiUrl();
+                        }
                         
                         this.showToast('Success', `Stack ${action} successfully at ${path}`, 'success');
                         this.showEditModal = false;
                         await this.loadStacks();
                     } catch (error) {
                         this.showToast('Error', `Failed to save stack: ${error.response?.data?.error || error.message}`, 'error');
+                    }
+                },
+                async loadServiceSections() {
+                    if (!this.selectedService) return;
+                    
+                    try {
+                        const response = await axios.get(`/api/stack/${this.editingStack}/service/${this.selectedService}/sections`);
+                        this.serviceSections = response.data;
+                        
+                        // Ensure arrays exist
+                        if (!this.serviceSections.environment) this.serviceSections.environment = [];
+                        if (!this.serviceSections.ports) this.serviceSections.ports = [];
+                        if (!this.serviceSections.volumes) this.serviceSections.volumes = [];
+                        if (!this.serviceSections.devices) this.serviceSections.devices = [];
+                        
+                        // Parse CPU/RAM limits from extra fields
+                        if (this.serviceSections.extra) {
+                            if (this.serviceSections.extra.cpus) {
+                                this.serviceSections.cpus = this.serviceSections.extra.cpus;
+                                delete this.serviceSections.extra.cpus;
+                            }
+                            if (this.serviceSections.extra.mem_limit) {
+                                // Convert mem_limit from Docker format (e.g., "2g", "512m") to GB
+                                const memStr = this.serviceSections.extra.mem_limit.toString().toLowerCase();
+                                if (memStr.endsWith('g')) {
+                                    this.serviceSections.mem_limit = parseFloat(memStr);
+                                } else if (memStr.endsWith('m')) {
+                                    this.serviceSections.mem_limit = (parseFloat(memStr) / 1024).toFixed(2);
+                                }
+                                delete this.serviceSections.extra.mem_limit;
+                            }
+                        }
+                        
+                        // Ensure CPU/RAM fields exist
+                        if (!this.serviceSections.cpus) this.serviceSections.cpus = '';
+                        if (!this.serviceSections.mem_limit) this.serviceSections.mem_limit = '';
+                        
+                        // Parse into split fields
+                        this.parseFieldsForEditor();
+                        this.parseImageNameTag();
+                        await this.loadWebUiUrl();
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to load service sections: ' + error.message, 'error');
+                    }
+                },
+                parseFieldsForEditor() {
+                    // Parse environment variables (KEY=value)
+                    this.parsedEnvVars = this.serviceSections.environment.map(env => {
+                        const parts = env.split('=');
+                        return {
+                            name: parts[0] || '',
+                            value: parts.slice(1).join('=') || ''
+                        };
+                    });
+                    
+                    // Parse ports (host:container/protocol)
+                    this.parsedPorts = this.serviceSections.ports.map(port => {
+                        const str = port.toString();
+                        let protocol = 'tcp';
+                        let portStr = str;
+                        
+                        if (str.includes('/')) {
+                            const parts = str.split('/');
+                            portStr = parts[0];
+                            protocol = parts[1] || 'tcp';
+                        }
+                        
+                        const portParts = portStr.split(':');
+                        return {
+                            host: portParts[0] || '',
+                            container: portParts[1] || portParts[0] || '',
+                            protocol: protocol
+                        };
+                    });
+                    
+                    // Parse volumes (host:container or host:container:mode)
+                    this.parsedVolumes = this.serviceSections.volumes.map(volume => {
+                        const parts = volume.split(':');
+                        return {
+                            host: parts[0] || '',
+                            container: parts[1] || '',
+                            mode: parts[2] || 'rw'
+                        };
+                    });
+                },
+                combineFieldsForSave() {
+                    // Combine env vars back to KEY=value format
+                    this.serviceSections.environment = this.parsedEnvVars
+                        .filter(env => env.name || env.value)
+                        .map(env => `${env.name}=${env.value}`);
+                    
+                    // Combine ports back to host:container/protocol format
+                    this.serviceSections.ports = this.parsedPorts
+                        .filter(port => port.host || port.container)
+                        .map(port => {
+                            const portStr = `${port.host}:${port.container}`;
+                            return port.protocol !== 'tcp' ? `${portStr}/${port.protocol}` : portStr;
+                        });
+                    
+                    // Combine volumes back to host:container:mode format
+                    this.serviceSections.volumes = this.parsedVolumes
+                        .filter(vol => vol.host || vol.container)
+                        .map(vol => {
+                            const volStr = `${vol.host}:${vol.container}`;
+                            return vol.mode === 'ro' ? `${volStr}:ro` : volStr;
+                        });
+                    
+                    // Handle CPU/RAM limits - move to extra if set
+                    if (this.serviceSections.cpus && parseFloat(this.serviceSections.cpus) > 0) {
+                        this.serviceSections.extra.cpus = parseFloat(this.serviceSections.cpus);
+                    }
+                    if (this.serviceSections.mem_limit && parseFloat(this.serviceSections.mem_limit) > 0) {
+                        // Convert GB to Docker format (e.g., 2 -> "2g")
+                        this.serviceSections.extra.mem_limit = `${this.serviceSections.mem_limit}g`;
+                    }
+                    
+                    // Remove cpus and mem_limit from top level (they go in extra)
+                    delete this.serviceSections.cpus;
+                    delete this.serviceSections.mem_limit;
+                },
+                addEnvVar() {
+                    this.parsedEnvVars.push({ name: '', value: '' });
+                },
+                removeEnvVar(index) {
+                    this.parsedEnvVars.splice(index, 1);
+                },
+                addPort() {
+                    this.parsedPorts.push({ host: '', container: '', protocol: 'tcp' });
+                },
+                removePort(index) {
+                    this.parsedPorts.splice(index, 1);
+                },
+                addVolume() {
+                    this.parsedVolumes.push({ host: '', container: '', mode: 'rw' });
+                },
+                removeVolume(index) {
+                    this.parsedVolumes.splice(index, 1);
+                },
+                updateFullImage() {
+                    // Combine image name and tag
+                    if (this.imageBaseName) {
+                        this.serviceSections.name_image.image = this.imageTag ? 
+                            `${this.imageBaseName}:${this.imageTag}` : this.imageBaseName;
+                    }
+                },
+                parseImageNameTag() {
+                    // Split image into name and tag
+                    const image = this.serviceSections.name_image.image || '';
+                    const parts = image.split(':');
+                    this.imageBaseName = parts[0] || '';
+                    this.imageTag = parts[1] || 'latest';
+                },
+                async loadDockerNetworks() {
+                    try {
+                        const response = await axios.get('/api/networks');
+                        this.dockerNetworks = response.data.filter(n => !['bridge', 'host', 'none'].includes(n.name));
+                    } catch (error) {
+                        console.error('Failed to load networks:', error);
+                    }
+                },
+                async loadWebUiUrl() {
+                    if (!this.editingStack) return;
+                    try {
+                        const response = await axios.get(`/api/stack/${this.editingStack}/webui`);
+                        this.webUiUrl = response.data.web_ui_url || '';
+                    } catch (error) {
+                        console.error('Failed to load Web UI URL:', error);
+                    }
+                },
+                async saveWebUiUrl() {
+                    if (!this.editingStack) return;
+                    try {
+                        await axios.post(`/api/stack/${this.editingStack}/webui`, {
+                            web_ui_url: this.webUiUrl
+                        });
+                    } catch (error) {
+                        console.error('Failed to save Web UI URL:', error);
+                    }
+                },
+                toggleRawYaml() {
+                    this.showRawYaml = !this.showRawYaml;
+                    
+                    // If switching to raw YAML, fetch the current content
+                    if (this.showRawYaml && this.editingStack) {
+                        axios.get(`/api/stack/${this.editingStack}/compose`)
+                            .then(response => {
+                                this.editStackContent = response.data.content;
+                            });
                     }
                 },
                 async viewLogs(stackName) {
@@ -1685,5 +2466,8 @@
             }
         }).mount('#app');
     </script>
+
+    <!-- JS-YAML for parsing YAML in split editor -->
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
 </body>
 </html>

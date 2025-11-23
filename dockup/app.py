@@ -46,6 +46,7 @@ schedules = {}
 update_status = {}
 websocket_clients = []
 stack_stats_cache = {}  # Cache for stack stats
+network_stats_cache = {}  # Cache for network bytes tracking (for rate calculation)
 
 # Initialize Apprise
 apobj = apprise.Apprise()
@@ -283,8 +284,91 @@ def import_orphan_containers_as_stacks():
         print(f"[Dockup] Orphan import error: {e}")
 
 
+def get_all_used_ports():
+    """Get all ports currently in use by all containers"""
+    used_ports = {}  # {port_number: [container_names]}
+    try:
+        all_containers = docker_client.containers.list()
+        for container in all_containers:
+            ports = container.attrs.get('NetworkSettings', {}).get('Ports', {})
+            for container_port, bindings in ports.items():
+                if bindings:
+                    for binding in bindings:
+                        host_port = binding.get('HostPort')
+                        if host_port:
+                            port_num = int(host_port)
+                            if port_num not in used_ports:
+                                used_ports[port_num] = []
+                            used_ports[port_num].append(container.name)
+    except Exception as e:
+        print(f"Error getting used ports: {e}")
+    return used_ports
+
+
+def check_port_conflicts(stack_name, compose_content):
+    """Check if any ports in compose file conflict with running containers"""
+    conflicts = []
+    try:
+        # Parse compose file
+        compose_data = yaml.safe_load(compose_content)
+        services = compose_data.get('services', {})
+        
+        # Get currently used ports
+        used_ports = get_all_used_ports()
+        
+        # Get containers from this stack (to exclude them from conflict check)
+        stack_containers = []
+        try:
+            containers = docker_client.containers.list(filters={'label': f'com.docker.compose.project={stack_name}'})
+            stack_containers = [c.name for c in containers]
+        except:
+            pass
+        
+        # Check each service
+        for service_name, service_config in services.items():
+            ports = service_config.get('ports', [])
+            for port_mapping in ports:
+                port_str = str(port_mapping)
+                
+                # Handle different port formats
+                if ':' in port_str:
+                    parts = port_str.split(':')
+                    if len(parts) == 2:
+                        host_port = parts[0]
+                    elif len(parts) == 3:
+                        host_port = parts[1]
+                    else:
+                        continue
+                else:
+                    host_port = port_str.split('/')[0]
+                
+                host_port = host_port.split('/')[0].strip()
+                
+                try:
+                    port_num = int(host_port)
+                    
+                    # Check if port is used by containers NOT in this stack
+                    if port_num in used_ports:
+                        conflicting_containers = [c for c in used_ports[port_num] if c not in stack_containers]
+                        if conflicting_containers:
+                            conflicts.append({
+                                'port': port_num,
+                                'service': service_name,
+                                'used_by': conflicting_containers
+                            })
+                except ValueError:
+                    pass
+                    
+    except Exception as e:
+        print(f"Error checking port conflicts: {e}")
+    
+    return conflicts
+
+
 def get_stack_stats(stack_name):
     """Get CPU and RAM usage for a stack"""
+    global network_stats_cache
+    
     try:
         containers = docker_client.containers.list(
             filters={'label': f'com.docker.compose.project={stack_name}'}
@@ -293,6 +377,10 @@ def get_stack_stats(stack_name):
         total_cpu = 0.0
         total_mem = 0
         total_mem_limit = 0
+        total_net_rx_bytes = 0
+        total_net_tx_bytes = 0
+        
+        current_time = time.time()
         
         for container in containers:
             try:
@@ -313,14 +401,51 @@ def get_stack_stats(stack_name):
                 total_mem += mem_usage
                 total_mem_limit += mem_limit
                 
+                # Sum network bytes from all interfaces
+                networks = stats.get('networks', {})
+                for net_name, net_stats in networks.items():
+                    total_net_rx_bytes += net_stats.get('rx_bytes', 0)
+                    total_net_tx_bytes += net_stats.get('tx_bytes', 0)
+                
             except Exception as e:
                 print(f"Error getting stats for {container.name}: {e}")
+        
+        # Calculate network rate using previous cached values
+        net_rx_mbps = 0.0
+        net_tx_mbps = 0.0
+        
+        cache_key = stack_name
+        if cache_key in network_stats_cache:
+            prev_data = network_stats_cache[cache_key]
+            time_delta = current_time - prev_data['time']
+            
+            if time_delta > 0:
+                # Calculate bytes per second, then convert to Mbps
+                rx_bytes_per_sec = (total_net_rx_bytes - prev_data['rx_bytes']) / time_delta
+                tx_bytes_per_sec = (total_net_tx_bytes - prev_data['tx_bytes']) / time_delta
+                
+                # Convert to Mbps (bytes/sec * 8 / 1,000,000)
+                net_rx_mbps = round((rx_bytes_per_sec * 8) / 1_000_000, 2)
+                net_tx_mbps = round((tx_bytes_per_sec * 8) / 1_000_000, 2)
+                
+                # Ensure non-negative values
+                net_rx_mbps = max(0, net_rx_mbps)
+                net_tx_mbps = max(0, net_tx_mbps)
+        
+        # Store current values for next calculation
+        network_stats_cache[cache_key] = {
+            'time': current_time,
+            'rx_bytes': total_net_rx_bytes,
+            'tx_bytes': total_net_tx_bytes
+        }
         
         return {
             'cpu_percent': round(total_cpu, 2),
             'mem_usage_mb': round(total_mem / (1024 * 1024), 2),
             'mem_limit_mb': round(total_mem_limit / (1024 * 1024), 2),
-            'mem_percent': round((total_mem / total_mem_limit * 100) if total_mem_limit > 0 else 0, 2)
+            'mem_percent': round((total_mem / total_mem_limit * 100) if total_mem_limit > 0 else 0, 2),
+            'net_rx_mbps': net_rx_mbps,
+            'net_tx_mbps': net_tx_mbps
         }
     except Exception as e:
         print(f"Error getting stats for {stack_name}: {e}")
@@ -328,7 +453,9 @@ def get_stack_stats(stack_name):
             'cpu_percent': 0,
             'mem_usage_mb': 0,
             'mem_limit_mb': 0,
-            'mem_percent': 0
+            'mem_percent': 0,
+            'net_rx_mbps': 0,
+            'net_tx_mbps': 0
         }
 
 
@@ -459,11 +586,21 @@ def get_stacks():
                 'cpu_percent': 0,
                 'mem_usage_mb': 0,
                 'mem_limit_mb': 0,
-                'mem_percent': 0
+                'mem_percent': 0,
+                'net_rx_mbps': 0,
+                'net_tx_mbps': 0
             })
             
             # Load metadata
             metadata = get_stack_metadata(stack_name)
+            
+            # Mark as started if containers exist
+            if len(containers) > 0 and not metadata.get('ever_started'):
+                metadata['ever_started'] = True
+                save_stack_metadata(stack_name, metadata)
+            
+            # Inactive = never started (no metadata marker AND no containers)
+            is_inactive = not metadata.get('ever_started', False) and len(containers) == 0
             
             stacks.append({
                 'name': stack_name,
@@ -477,7 +614,7 @@ def get_stacks():
                 'last_check': format_timestamp(update_status.get(stack_name, {}).get('last_check')),
                 'update_available': update_status.get(stack_name, {}).get('update_available', False),
                 'stats': stats,
-                'inactive': len(containers) == 0,  # True if never started
+                'inactive': is_inactive,  # Only inactive if never started
                 'web_ui_url': metadata.get('web_ui_url', '')
             })
         except Exception as e:
@@ -513,7 +650,7 @@ def save_stack_compose(stack_name, content):
 
 
 def stack_operation(stack_name, operation):
-    """Perform operation on stack (up/down/restart/pull) with real-time output"""
+    """Perform operation on stack (up/down/stop/restart/pull) with real-time output"""
     stack_path = os.path.join(STACKS_DIR, stack_name)
     compose_file = os.path.join(stack_path, 'compose.yaml')
     if not os.path.exists(compose_file):
@@ -522,7 +659,11 @@ def stack_operation(stack_name, operation):
     try:
         if operation == 'up':
             cmd = ['docker', 'compose', '-f', compose_file, 'up', '-d']
+        elif operation == 'stop':
+            # Stop containers without removing them
+            cmd = ['docker', 'compose', '-f', compose_file, 'stop']
         elif operation == 'down':
+            # Stop and remove containers
             cmd = ['docker', 'compose', '-f', compose_file, 'down']
         elif operation == 'restart':
             cmd = ['docker', 'compose', '-f', compose_file, 'restart']
@@ -1022,6 +1163,27 @@ def api_host_stats():
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage('/')
         
+        # Get network stats
+        net_io = psutil.net_io_counters()
+        net_rx_mbps = 0
+        net_tx_mbps = 0
+        
+        # Calculate network rate if we have previous data
+        if hasattr(api_host_stats, 'last_net_io'):
+            time_delta = time.time() - api_host_stats.last_time
+            if time_delta > 0:
+                bytes_recv_delta = net_io.bytes_recv - api_host_stats.last_net_io['bytes_recv']
+                bytes_sent_delta = net_io.bytes_sent - api_host_stats.last_net_io['bytes_sent']
+                net_rx_mbps = (bytes_recv_delta * 8) / (time_delta * 1_000_000)
+                net_tx_mbps = (bytes_sent_delta * 8) / (time_delta * 1_000_000)
+        
+        # Store current values for next call
+        api_host_stats.last_net_io = {
+            'bytes_recv': net_io.bytes_recv,
+            'bytes_sent': net_io.bytes_sent
+        }
+        api_host_stats.last_time = time.time()
+        
         return jsonify({
             'cpu_percent': round(cpu_percent, 1),
             'cpu_count': psutil.cpu_count(),
@@ -1031,7 +1193,9 @@ def api_host_stats():
             'disk_total_gb': round(disk.total / (1024**3), 2),
             'disk_used_gb': round(disk.used / (1024**3), 2),
             'disk_percent': round(disk.percent, 1),
-            'hostname': os.uname().nodename
+            'hostname': 'Host System',
+            'net_rx_mbps': round(net_rx_mbps, 2),
+            'net_tx_mbps': round(net_tx_mbps, 2)
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1102,6 +1266,23 @@ def api_stack_compose_save(stack_name):
         return jsonify({'error': f'Invalid YAML: {str(e)}'}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/stack/<stack_name>/port-conflicts', methods=['POST'])
+def api_check_port_conflicts(stack_name):
+    """Check for port conflicts in compose content"""
+    try:
+        data = request.json
+        content = data.get('content', '')
+        
+        conflicts = check_port_conflicts(stack_name, content)
+        
+        return jsonify({
+            'has_conflicts': len(conflicts) > 0,
+            'conflicts': conflicts
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/stack/<stack_name>/operation', methods=['POST'])
@@ -1475,7 +1656,7 @@ def auto_prune_images():
 
 
 def update_stats_background():
-    """Background thread to update stack stats every 10 seconds"""
+    """Background thread to update stack stats every 5 seconds"""
     while True:
         try:
             # Get list of running stacks
@@ -1493,14 +1674,16 @@ def update_stats_background():
                             'cpu_percent': 0,
                             'mem_usage_mb': 0,
                             'mem_limit_mb': 0,
-                            'mem_percent': 0
+                            'mem_percent': 0,
+                            'net_rx_mbps': 0,
+                            'net_tx_mbps': 0
                         }
             
-            # Wait 10 seconds before next update
-            time.sleep(10)
+            # Wait 5 seconds before next update (faster updates)
+            time.sleep(5)
         except Exception as e:
             print(f"Stats update error: {e}")
-            time.sleep(10)
+            time.sleep(5)
 
 
 @app.route('/api/stack/<stack_name>/logs')
