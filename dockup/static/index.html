@@ -724,7 +724,7 @@
                     <div class="card-header">
                         <div class="card-title">
                             <i class="fas fa-server"></i>
-                            Host System - {{ hostStats.hostname }}
+                            Host System
                         </div>
                     </div>
                     <div style="padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
@@ -764,6 +764,21 @@
                             </div>
                             <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
                                 {{ hostStats.disk_used_gb }} / {{ hostStats.disk_total_gb }} GB
+                            </div>
+                        </div>
+                        
+                        <!-- Network -->
+                        <div style="text-align: center;">
+                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                                <i class="fas fa-network-wired"></i> Network
+                            </div>
+                            <div style="font-size: 20px; font-weight: bold; color: #8b5cf6;">
+                                <div style="margin-bottom: 4px;">
+                                    <i class="fas fa-arrow-down" style="font-size: 14px;"></i> {{ hostStats.net_rx_mbps || 0 }} Mbps
+                                </div>
+                                <div>
+                                    <i class="fas fa-arrow-up" style="font-size: 14px;"></i> {{ hostStats.net_tx_mbps || 0 }} Mbps
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -820,6 +835,13 @@
                                 <span class="stack-info-label">RAM:</span>
                                 <span class="stack-info-value">{{ stack.stats.mem_usage_mb }} MB ({{ stack.stats.mem_percent }}%)</span>
                             </div>
+                            <div class="stack-info-row" v-if="stack.running">
+                                <span class="stack-info-label">Network:</span>
+                                <span class="stack-info-value">
+                                    <i class="fas fa-arrow-down"></i> {{ stack.stats.net_rx_mbps || 0 }} Mbps
+                                    <i class="fas fa-arrow-up" style="margin-left: 8px;"></i> {{ stack.stats.net_tx_mbps || 0 }} Mbps
+                                </span>
+                            </div>
                             <div class="stack-info-row">
                                 <span class="stack-info-label">Update Mode:</span>
                                 <span class="stack-info-value">
@@ -841,7 +863,7 @@
                             <button class="btn btn-success" v-if="!stack.running" @click="stackOperationWithTerminal(stack.name, 'up')">
                                 <i class="fas fa-play"></i> Start
                             </button>
-                            <button class="btn btn-danger" v-if="stack.running" @click="stackOperationWithTerminal(stack.name, 'down')">
+                            <button class="btn btn-danger" v-if="stack.running" @click="stackOperationWithTerminal(stack.name, 'stop')">
                                 <i class="fas fa-stop"></i> Stop
                             </button>
                             <button class="btn btn-warning" v-if="stack.running" @click="stackOperationWithTerminal(stack.name, 'restart')">
