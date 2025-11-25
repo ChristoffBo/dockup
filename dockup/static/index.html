@@ -657,6 +657,26 @@
             font-weight: 600;
         }
 
+        
+        /* Tag badges */
+        .tag-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            background: rgba(0, 217, 255, 0.15);
+            color: #00d9ff;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 1px solid rgba(0, 217, 255, 0.3);
+        }
+        
+        .tag-badge:hover {
+            background: rgba(0, 217, 255, 0.25);
+            border-color: #00d9ff;
+            transform: translateY(-1px);
+        }
     </style>
 </head>
 <body>
@@ -729,6 +749,16 @@
                         </button>
                         <button class="btn" :class="filterMode === 'inactive' ? 'btn-secondary' : 'btn-secondary'" @click="filterMode = 'inactive'">
                             Inactive ({{ stacks.filter(s => s.containers.length === 0).length }})
+                        </button>
+                    </div>
+                    
+                    <!-- Tag filter buttons -->
+                    <div v-if="allTags.length > 0" class="btn-group" style="margin-top: 10px;">
+                        <button v-for="tag in allTags" :key="tag"
+                                class="btn"
+                                :class="filterMode === 'tag:' + tag ? 'btn-info' : 'btn-secondary'"
+                                @click="filterMode = 'tag:' + tag">
+                            <i class="fas fa-tag"></i> {{ tag }} ({{ getTagCount(tag) }})
                         </button>
                     </div>
                 </div>
@@ -841,6 +871,15 @@
                                       :title="stack.web_ui_url || 'No Web UI configured'">
                                     {{ stack.name }}
                                     <i v-if="stack.web_ui_url" class="fas fa-external-link-alt" style="font-size: 12px; margin-left: 5px;"></i>
+                                </span>
+                                <!-- Tag badges -->
+                                <span v-if="stack.tags && stack.tags.length > 0" style="display: inline-flex; gap: 5px; margin-left: 10px;">
+                                    <span v-for="tag in stack.tags" :key="tag" 
+                                          @click="filterMode = 'tag:' + tag"
+                                          class="tag-badge"
+                                          :title="'Filter by: ' + tag">
+                                        {{ tag }}
+                                    </span>
                                 </span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px;">
@@ -969,6 +1008,15 @@
                                       :title="stack.web_ui_url || 'No Web UI configured'">
                                     {{ stack.name }}
                                     <i v-if="stack.web_ui_url" class="fas fa-external-link-alt" style="font-size: 12px; margin-left: 5px;"></i>
+                                </span>
+                                <!-- Tag badges -->
+                                <span v-if="stack.tags && stack.tags.length > 0" style="display: inline-flex; gap: 5px; margin-left: 10px;">
+                                    <span v-for="tag in stack.tags" :key="tag" 
+                                          @click="filterMode = 'tag:' + tag"
+                                          class="tag-badge"
+                                          :title="'Filter by: ' + tag">
+                                        {{ tag }}
+                                    </span>
                                 </span>
                             </div>
                             <span class="status-badge" style="background: rgba(100, 116, 139, 0.2); color: #64748b;">
@@ -1463,6 +1511,15 @@
                                         Leave empty to auto-detect from first exposed port
                                     </small>
                                 </div>
+                                <div class="form-group">
+                                    <label class="form-label">
+                                        <i class="fas fa-tags"></i> Tags (optional)
+                                    </label>
+                                    <input type="text" class="form-input" v-model="stackTags" placeholder="arr, media, proxy">
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Separate tags with commas. Use for organizing stacks.
+                                    </small>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1716,7 +1773,8 @@
                     hostStats: null,
                     showCloneModal: false,
                     cloneStackName: '',
-                    cloneNewName: ''
+                    cloneNewName: '',
+                    stackTags: ''
                 };
             },
             computed: {
@@ -1763,9 +1821,22 @@
                         filtered = filtered.filter(s => s.update_available);
                     } else if (this.filterMode === 'inactive') {
                         filtered = filtered.filter(s => s.containers.length === 0);
+                    } else if (this.filterMode.startsWith('tag:')) {
+                        const tag = this.filterMode.substring(4);
+                        filtered = filtered.filter(s => s.tags && s.tags.includes(tag));
                     }
                     
                     return filtered;
+                },
+                allTags() {
+                    // Get all unique tags from all stacks
+                    const tags = new Set();
+                    this.stacks.forEach(stack => {
+                        if (stack.tags && Array.isArray(stack.tags)) {
+                            stack.tags.forEach(tag => tags.add(tag));
+                        }
+                    });
+                    return Array.from(tags).sort();
                 },
                 filteredActiveStacks() {
                     return this.filteredStacks.filter(s => s.containers.length > 0);
@@ -2173,6 +2244,15 @@
                         await this.loadWebUiUrl();
                         await this.loadDockerNetworks();
                         
+                        // Load tags
+                        try {
+                            const metaResponse = await axios.get(`/api/stack/${stackName}/metadata`);
+                            const tags = metaResponse.data.tags || [];
+                            this.stackTags = tags.join(', ');
+                        } catch (error) {
+                            this.stackTags = '';
+                        }
+                        
                         // Auto-select service if only one exists
                         if (this.availableServices.length === 1) {
                             this.selectedService = this.availableServices[0];
@@ -2230,6 +2310,17 @@
                         // Save Web UI URL if editing
                         if (this.editingStack) {
                             await this.saveWebUiUrl();
+                            
+                            // Save tags
+                            try {
+                                const tags = this.stackTags
+                                    .split(',')
+                                    .map(t => t.trim())
+                                    .filter(t => t.length > 0);
+                                await axios.post(`/api/stack/${this.editingStack}/metadata`, { tags: tags });
+                            } catch (error) {
+                                console.error('Failed to save tags:', error);
+                            }
                         }
                         
                         this.showToast('Success', `Stack ${action} successfully at ${path}`, 'success');
@@ -2678,6 +2769,10 @@
                     } catch (error) {
                         this.showToast('Clone Failed', error.response?.data?.error || 'Failed to clone stack', 'error');
                     }
+                },
+                
+                getTagCount(tag) {
+                    return this.stacks.filter(s => s.tags && s.tags.includes(tag)).length;
                 }
             }
         }).mount('#app');
