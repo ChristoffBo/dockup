@@ -622,7 +622,8 @@ def get_stacks():
                 'update_available': update_status.get(stack_name, {}).get('update_available', False),
                 'stats': stats,
                 'inactive': is_inactive,  # Only inactive if never started
-                'web_ui_url': metadata.get('web_ui_url', '')
+                'web_ui_url': metadata.get('web_ui_url', ''),
+                'tags': metadata.get('tags', [])
             })
         except Exception as e:
             print(f"Error loading stack {stack_name}: {e}")
@@ -2228,8 +2229,11 @@ def api_stack_metadata(stack_name):
         metadata = get_stack_metadata(stack_name)
         return jsonify(metadata)
     else:
+        # Merge new data with existing metadata
+        metadata = get_stack_metadata(stack_name)
         data = request.json
-        save_stack_metadata(stack_name, data)
+        metadata.update(data)
+        save_stack_metadata(stack_name, metadata)
         return jsonify({'success': True})
 
 
