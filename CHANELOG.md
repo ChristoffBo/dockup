@@ -1,4 +1,7 @@
 ## latest (2025-11-25)
+added advanced split editor functions.
+fixed a nasty duplicate compose bug
+## latest (2025-11-25)
 Added clone stack button. fixed split editor parse issue
 added stack tagging
 ## latest (2025-11-23)
