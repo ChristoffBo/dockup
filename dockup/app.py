@@ -1944,6 +1944,191 @@ def save_service_sections(stack_name, service_name):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/ports/check', methods=['POST'])
+def api_check_ports():
+    """Check if ports are in use"""
+    try:
+        data = request.json
+        ports = data.get('ports', [])
+        
+        conflicts = {}
+        
+        # Get all containers
+        all_containers = docker_client.containers.list(all=True)
+        
+        for port in ports:
+            # Parse port (format: "8080:80/tcp" or "8080:80")
+            try:
+                if ':' in str(port):
+                    host_port = str(port).split(':')[0]
+                    # Remove any IP prefix
+                    if '.' in host_port or ':' in host_port:
+                        host_port = host_port.split(':')[-1] if ':' in host_port else host_port.split('.')[-1]
+                else:
+                    host_port = str(port)
+                
+                # Remove protocol suffix
+                host_port = host_port.split('/')[0]
+                host_port = int(host_port)
+                
+                # Check against all containers
+                for container in all_containers:
+                    ports_config = container.attrs.get('NetworkSettings', {}).get('Ports', {})
+                    for container_port, bindings in ports_config.items():
+                        if bindings:
+                            for binding in bindings:
+                                if int(binding.get('HostPort', 0)) == host_port:
+                                    conflicts[port] = {
+                                        'container': container.name,
+                                        'stack': container.labels.get('com.docker.compose.project', 'unknown'),
+                                        'status': container.status
+                                    }
+                                    break
+            except:
+                pass
+        
+        return jsonify({
+            'conflicts': conflicts,
+            'has_conflicts': len(conflicts) > 0
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/volumes/suggestions', methods=['GET'])
+def api_volume_suggestions():
+    """Get common volume mount suggestions"""
+    try:
+        suggestions = {
+            'config_dirs': [
+                '/opt/appdata',
+                '/mnt/user/appdata',
+                '/volume1/docker',
+                '/home/user/docker/config',
+                '/srv/docker'
+            ],
+            'data_dirs': [
+                '/mnt/user/data',
+                '/volume1/data',
+                '/media',
+                '/mnt/media',
+                '/data'
+            ],
+            'common_paths': [
+                '/etc/localtime:/etc/localtime:ro',
+                '/var/run/docker.sock:/var/run/docker.sock',
+                '/dev/dri:/dev/dri',
+                '/tmp:/tmp'
+            ]
+        }
+        
+        # Add actually existing paths
+        existing_paths = []
+        common_base_paths = ['/mnt', '/media', '/opt', '/srv', '/volume1', '/data']
+        
+        for base_path in common_base_paths:
+            if os.path.exists(base_path):
+                try:
+                    for item in os.listdir(base_path):
+                        full_path = os.path.join(base_path, item)
+                        if os.path.isdir(full_path):
+                            existing_paths.append(full_path)
+                except:
+                    pass
+        
+        suggestions['existing_paths'] = existing_paths[:20]  # Limit to 20
+        
+        return jsonify(suggestions)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/environment/templates', methods=['GET'])
+def api_env_templates():
+    """Get common environment variable templates"""
+    try:
+        templates = {
+            'common': [
+                {'name': 'TZ', 'value': 'UTC', 'description': 'Timezone'},
+                {'name': 'PUID', 'value': '1000', 'description': 'User ID (for linuxserver.io images)'},
+                {'name': 'PGID', 'value': '1000', 'description': 'Group ID (for linuxserver.io images)'},
+                {'name': 'UMASK', 'value': '022', 'description': 'File creation mask'}
+            ],
+            'database': [
+                {'name': 'MYSQL_ROOT_PASSWORD', 'value': '', 'description': 'MySQL root password'},
+                {'name': 'MYSQL_DATABASE', 'value': '', 'description': 'Database name'},
+                {'name': 'MYSQL_USER', 'value': '', 'description': 'Database user'},
+                {'name': 'MYSQL_PASSWORD', 'value': '', 'description': 'Database password'},
+                {'name': 'POSTGRES_DB', 'value': '', 'description': 'PostgreSQL database name'},
+                {'name': 'POSTGRES_USER', 'value': '', 'description': 'PostgreSQL user'},
+                {'name': 'POSTGRES_PASSWORD', 'value': '', 'description': 'PostgreSQL password'}
+            ],
+            'web': [
+                {'name': 'PORT', 'value': '3000', 'description': 'Application port'},
+                {'name': 'HOST', 'value': '0.0.0.0', 'description': 'Bind address'},
+                {'name': 'NODE_ENV', 'value': 'production', 'description': 'Node environment'}
+            ]
+        }
+        
+        return jsonify(templates)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/stack/<stack_name>/clone', methods=['POST'])
+def api_clone_stack(stack_name):
+    """Clone an existing stack with a new name"""
+    try:
+        data = request.json
+        new_name = data.get('new_name')
+        
+        if not new_name:
+            return jsonify({'error': 'New stack name required'}), 400
+        
+        source_path = os.path.join(STACKS_DIR, stack_name)
+        dest_path = os.path.join(STACKS_DIR, new_name)
+        
+        if not os.path.exists(source_path):
+            return jsonify({'error': 'Source stack not found'}), 404
+        
+        if os.path.exists(dest_path):
+            return jsonify({'error': 'Stack with that name already exists'}), 400
+        
+        # Copy stack directory
+        import shutil
+        shutil.copytree(source_path, dest_path)
+        
+        # Update compose file to change project name references
+        compose_file = None
+        for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
+            potential_file = os.path.join(dest_path, filename)
+            if os.path.exists(potential_file):
+                compose_file = potential_file
+                break
+        
+        if compose_file:
+            with open(compose_file, 'r') as f:
+                content = f.read()
+            
+            # Replace old stack name with new one in content
+            content = content.replace(stack_name, new_name)
+            
+            with open(compose_file, 'w') as f:
+                f.write(content)
+        
+        # Copy metadata but don't copy schedule
+        metadata = get_stack_metadata(stack_name)
+        save_stack_metadata(new_name, metadata)
+        
+        return jsonify({'success': True, 'new_stack': new_name})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @sock.route('/ws')
 def websocket(ws):
     """WebSocket endpoint for real-time updates"""
@@ -1958,6 +2143,82 @@ def websocket(ws):
     finally:
         if ws in websocket_clients:
             websocket_clients.remove(ws)
+
+
+@app.route('/api/stack/<stack_name>/webui', methods=['GET', 'POST'])
+def api_stack_webui(stack_name):
+    """Get or set Web UI URL for a stack (auto-detects if not set)"""
+    if request.method == 'GET':
+        metadata = get_stack_metadata(stack_name)
+        web_ui_url = metadata.get('web_ui_url', '')
+        
+        # Auto-detect from first exposed port if not set
+        if not web_ui_url:
+            try:
+                stack_path = os.path.join(STACKS_DIR, stack_name)
+                compose_file = None
+                
+                for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
+                    potential_file = os.path.join(stack_path, filename)
+                    if os.path.exists(potential_file):
+                        compose_file = potential_file
+                        break
+                
+                if compose_file:
+                    with open(compose_file, 'r') as f:
+                        compose_data = yaml.safe_load(f)
+                    
+                    # Get first service with exposed ports
+                    services = compose_data.get('services', {})
+                    for service_name, service in services.items():
+                        ports = service.get('ports', [])
+                        if ports:
+                            # Get first port
+                            first_port = ports[0]
+                            if isinstance(first_port, str):
+                                # Parse "8080:80" or "80:80" format
+                                port_parts = first_port.split(':')
+                                if len(port_parts) >= 2:
+                                    host_port = port_parts[0].split('/')[0]  # Remove protocol if present
+                                else:
+                                    host_port = port_parts[0].split('/')[0]
+                                
+                                # Try to get host IP (use localhost as fallback)
+                                import socket
+                                try:
+                                    hostname = socket.gethostname()
+                                    host_ip = socket.gethostbyname(hostname)
+                                except:
+                                    host_ip = 'localhost'
+                                
+                                web_ui_url = f"http://{host_ip}:{host_port}"
+                            elif isinstance(first_port, dict):
+                                # Long format with published port
+                                published = first_port.get('published', '')
+                                if published:
+                                    import socket
+                                    try:
+                                        hostname = socket.gethostname()
+                                        host_ip = socket.gethostbyname(hostname)
+                                    except:
+                                        host_ip = 'localhost'
+                                    web_ui_url = f"http://{host_ip}:{published}"
+                            break
+            except Exception as e:
+                print(f"Error auto-detecting Web UI URL: {e}")
+        
+        return jsonify({'web_ui_url': web_ui_url})
+    
+    else:  # POST
+        data = request.json
+        web_ui_url = data.get('web_ui_url', '')
+        
+        # Save to metadata
+        metadata = get_stack_metadata(stack_name)
+        metadata['web_ui_url'] = web_ui_url
+        save_stack_metadata(stack_name, metadata)
+        
+        return jsonify({'success': True})
 
 
 @app.route('/api/stack/<stack_name>/metadata', methods=['GET', 'POST'])

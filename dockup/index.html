@@ -39,7 +39,7 @@
             font-size: 24px;
             font-weight: bold;
             margin-bottom: 30px;
-            color: #60a5fa;
+            color: #93c5fd;
             display: flex;
             align-items: center;
             gap: 10px;
@@ -57,12 +57,12 @@
         }
 
         .nav-item:hover {
-            background: rgba(96, 165, 250, 0.2);
+            background: rgba(147, 197, 253, 0.15);
         }
 
         .nav-item.active {
-            background: rgba(96, 165, 250, 0.3);
-            border-left: 3px solid #60a5fa;
+            background: rgba(147, 197, 253, 0.25);
+            border-left: 3px solid #93c5fd;
         }
 
         /* Main Content */
@@ -189,23 +189,23 @@
         }
 
         .btn-primary {
-            background: #60a5fa;
-            color: white;
+            background: #93c5fd;
+            color: #1e293b;
         }
 
         .btn-success {
-            background: #22c55e;
-            color: white;
+            background: #86efac;
+            color: #1e293b;
         }
 
         .btn-danger {
-            background: #ef4444;
+            background: #ef4444;  /* Keep danger bright (delete, stop) */
             color: white;
         }
 
         .btn-warning {
-            background: #eab308;
-            color: white;
+            background: #fde047;
+            color: #1e293b;
         }
 
         .btn-secondary {
@@ -297,7 +297,7 @@
 
         .form-input:focus {
             outline: none;
-            border-color: #60a5fa;
+            border-color: #93c5fd;
         }
 
         textarea.form-input {
@@ -363,8 +363,8 @@
             align-items: center;
             gap: 5px;
             padding: 4px 8px;
-            background: rgba(234, 179, 8, 0.2);
-            color: #eab308;
+            background: rgba(253, 224, 71, 0.2);
+            color: #fde047;
             border-radius: 4px;
             font-size: 12px;
         }
@@ -385,7 +385,7 @@
 
         .settings-section h3 {
             margin-bottom: 15px;
-            color: #60a5fa;
+            color: #93c5fd;
         }
 
         /* Toast Notifications */
@@ -435,7 +435,7 @@
             width: 14px;
             height: 14px;
             border: 2px solid rgba(255, 255, 255, 0.3);
-            border-top-color: #60a5fa;
+            border-top-color: #93c5fd;
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
@@ -943,6 +943,9 @@
                             </button>
                             <button class="btn btn-warning" @click="deleteImagesOnly(stack.name)">
                                 <i class="fas fa-images"></i> Delete Images
+                            </button>
+                            <button class="btn btn-secondary" @click="cloneStack(stack.name)">
+                                <i class="fas fa-clone"></i> Clone
                             </button>
                             <button class="btn btn-danger" @click="confirmDeleteStack(stack.name)">
                                 <i class="fas fa-trash"></i> Delete
@@ -1622,6 +1625,31 @@
             </div>
         </div>
 
+        <!-- Clone Stack Modal -->
+        <div class="modal" v-if="showCloneModal" @click.self="showCloneModal = false">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Clone Stack</h2>
+                    <button class="close-btn" @click="showCloneModal = false">&times;</button>
+                </div>
+                <p style="margin-bottom: 20px; color: #94a3b8;">
+                    Create a copy of <strong>{{ cloneStackName }}</strong> with a new name.
+                </p>
+                <div class="form-group">
+                    <label class="form-label">New Stack Name</label>
+                    <input type="text" v-model="cloneNewName" class="form-input" placeholder="Enter new stack name">
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-primary" @click="executeClone" :disabled="!cloneNewName">
+                        <i class="fas fa-clone"></i> Clone Stack
+                    </button>
+                    <button class="btn btn-secondary" @click="showCloneModal = false">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Toast Notifications -->
         <div class="toast-container">
             <div v-for="toast in toasts" :key="toast.id" class="toast" :class="'toast-' + toast.type">
@@ -1685,7 +1713,10 @@
                     restoreFile: null,
                     toasts: [],
                     ws: null,
-                    hostStats: null
+                    hostStats: null,
+                    showCloneModal: false,
+                    cloneStackName: '',
+                    cloneNewName: ''
                 };
             },
             computed: {
@@ -2252,44 +2283,120 @@
                     }
                 },
                 parseFieldsForEditor() {
-                    // Parse environment variables (KEY=value)
-                    this.parsedEnvVars = this.serviceSections.environment.map(env => {
-                        const parts = env.split('=');
-                        return {
-                            name: parts[0] || '',
-                            value: parts.slice(1).join('=') || ''
-                        };
-                    });
+                    // Safety check
+                    if (!this.serviceSections) {
+                        this.parsedEnvVars = [];
+                        this.parsedPorts = [];
+                        this.parsedVolumes = [];
+                        return;
+                    }
                     
-                    // Parse ports (host:container/protocol)
-                    this.parsedPorts = this.serviceSections.ports.map(port => {
-                        const str = port.toString();
-                        let protocol = 'tcp';
-                        let portStr = str;
-                        
-                        if (str.includes('/')) {
-                            const parts = str.split('/');
-                            portStr = parts[0];
-                            protocol = parts[1] || 'tcp';
+                    // Parse environment variables - handle both array and dict formats
+                    this.parsedEnvVars = [];
+                    const env = this.serviceSections.environment;
+                    
+                    if (env) {
+                        if (Array.isArray(env)) {
+                            // Array format: ["KEY=value", "KEY2=value2"]
+                            this.parsedEnvVars = env.map(envItem => {
+                                const envStr = envItem.toString();
+                                const eqIndex = envStr.indexOf('=');
+                                if (eqIndex > 0) {
+                                    return {
+                                        name: envStr.substring(0, eqIndex),
+                                        value: envStr.substring(eqIndex + 1)
+                                    };
+                                }
+                                return { name: envStr, value: '' };
+                            });
+                        } else if (typeof env === 'object') {
+                            // Dict format: {KEY: value, KEY2: value2}
+                            this.parsedEnvVars = Object.entries(env).map(([name, value]) => ({
+                                name: name,
+                                value: value ? value.toString() : ''
+                            }));
                         }
-                        
-                        const portParts = portStr.split(':');
-                        return {
-                            host: portParts[0] || '',
-                            container: portParts[1] || portParts[0] || '',
-                            protocol: protocol
-                        };
-                    });
+                    }
                     
-                    // Parse volumes (host:container or host:container:mode)
-                    this.parsedVolumes = this.serviceSections.volumes.map(volume => {
-                        const parts = volume.split(':');
-                        return {
-                            host: parts[0] || '',
-                            container: parts[1] || '',
-                            mode: parts[2] || 'rw'
-                        };
-                    });
+                    // Parse ports - handle different formats
+                    this.parsedPorts = [];
+                    const ports = this.serviceSections.ports;
+                    
+                    if (ports && Array.isArray(ports)) {
+                        this.parsedPorts = ports.map(port => {
+                            // Handle long/dict format: {target: 80, published: 8080, protocol: tcp}
+                            if (typeof port === 'object' && !Array.isArray(port)) {
+                                return {
+                                    host: port.published ? port.published.toString() : '',
+                                    container: port.target ? port.target.toString() : '',
+                                    protocol: port.protocol || 'tcp'
+                                };
+                            }
+                            
+                            // Handle string formats
+                            const str = port.toString();
+                            let protocol = 'tcp';
+                            let portStr = str;
+                            
+                            if (str.includes('/')) {
+                                const parts = str.split('/');
+                                portStr = parts[0];
+                                protocol = parts[1] || 'tcp';
+                            }
+                            
+                            const portParts = portStr.split(':');
+                            
+                            // Handle "IP:host:container" format
+                            if (portParts.length === 3) {
+                                return {
+                                    host: `${portParts[0]}:${portParts[1]}`,
+                                    container: portParts[2],
+                                    protocol: protocol
+                                };
+                            } else if (portParts.length === 2) {
+                                // "host:container" format
+                                return {
+                                    host: portParts[0],
+                                    container: portParts[1],
+                                    protocol: protocol
+                                };
+                            } else {
+                                // Single port (container only)
+                                return {
+                                    host: portParts[0],
+                                    container: portParts[0],
+                                    protocol: protocol
+                                };
+                            }
+                        });
+                    }
+                    
+                    // Parse volumes - handle named volumes and bind mounts
+                    this.parsedVolumes = [];
+                    const volumes = this.serviceSections.volumes;
+                    
+                    if (volumes && Array.isArray(volumes)) {
+                        this.parsedVolumes = volumes.map(volume => {
+                            const volStr = volume.toString();
+                            
+                            // Named volume (no colons)
+                            if (!volStr.includes(':')) {
+                                return {
+                                    host: volStr,
+                                    container: volStr,
+                                    mode: 'rw'
+                                };
+                            }
+                            
+                            // Bind mount: host:container or host:container:mode
+                            const parts = volStr.split(':');
+                            return {
+                                host: parts[0] || '',
+                                container: parts[1] || '',
+                                mode: parts[2] || 'rw'
+                            };
+                        });
+                    }
                 },
                 combineFieldsForSave() {
                     // Combine env vars back to KEY=value format
@@ -2352,6 +2459,13 @@
                     }
                 },
                 parseImageNameTag() {
+                    // Safety check
+                    if (!this.serviceSections || !this.serviceSections.name_image) {
+                        this.imageBaseName = '';
+                        this.imageTag = 'latest';
+                        return;
+                    }
+                    
                     // Split image into name and tag
                     const image = this.serviceSections.name_image.image || '';
                     const parts = image.split(':');
@@ -2535,6 +2649,35 @@
                     if (healthStatuses.every(h => h === 'healthy')) return 'healthy';
                     
                     return null;
+                },
+                
+                async cloneStack(stackName) {
+                    this.cloneStackName = stackName;
+                    this.cloneNewName = stackName + '-clone';
+                    this.showCloneModal = true;
+                },
+
+                async executeClone() {
+                    if (!this.cloneNewName || this.cloneNewName === this.cloneStackName) {
+                        this.showToast('Invalid Name', 'Please provide a different name for the cloned stack', 'error');
+                        return;
+                    }
+                    
+                    try {
+                        const response = await axios.post(`/api/stack/${this.cloneStackName}/clone`, {
+                            new_name: this.cloneNewName
+                        });
+                        
+                        if (response.data.success) {
+                            this.showToast('Stack Cloned', `Successfully cloned ${this.cloneStackName} to ${this.cloneNewName}`, 'success');
+                            this.showCloneModal = false;
+                            this.loadStacks();
+                        } else {
+                            this.showToast('Clone Failed', response.data.error || 'Failed to clone stack', 'error');
+                        }
+                    } catch (error) {
+                        this.showToast('Clone Failed', error.response?.data?.error || 'Failed to clone stack', 'error');
+                    }
                 }
             }
         }).mount('#app');
