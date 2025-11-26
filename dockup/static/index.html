@@ -1493,7 +1493,186 @@
                                             {{ network.name }} ({{ network.driver }})
                                         </option>
                                     </select>
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Use this for host/bridge/none modes, or to attach to a single network
+                                    </small>
                                 </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">Networks (optional)</label>
+                                    <div v-if="typeof serviceSections.networks === 'object' && !Array.isArray(serviceSections.networks)">
+                                        <div v-for="(netConfig, netName) in serviceSections.networks" :key="'net-'+netName" style="display: flex; gap: 10px; margin-bottom: 10px; align-items: center;">
+                                            <span style="color: #e2e8f0; min-width: 120px;">{{ netName }}:</span>
+                                            <input type="text" class="form-input" v-model="netConfig.ipv4_address" placeholder="192.168.1.100" style="flex: 1;">
+                                            <button type="button" class="btn-icon-danger" @click="delete serviceSections.networks[netName]" title="Remove">
+                                                <i class="fas fa-times"></i>
+                                            </button>
+                                        </div>
+                                        <small style="color: #94a3b8; display: block; margin-bottom: 10px;">
+                                            Advanced: Networks with static IPs detected. Switch to Raw YAML to modify.
+                                        </small>
+                                    </div>
+                                    <div v-else>
+                                        <div v-for="(network, index) in serviceSections.networks" :key="'net-'+index" style="display: flex; gap: 10px; margin-bottom: 10px;">
+                                            <select class="form-select" v-model="serviceSections.networks[index]" style="flex: 1;">
+                                                <option value="">Select network...</option>
+                                                <option v-for="net in dockerNetworks" :key="net.name" :value="net.name">
+                                                    {{ net.name }} ({{ net.driver }})
+                                                </option>
+                                            </select>
+                                            <button type="button" class="btn-icon-danger" @click="serviceSections.networks.splice(index, 1)" title="Remove">
+                                                <i class="fas fa-times"></i>
+                                            </button>
+                                        </div>
+                                        <button type="button" class="btn-add" @click="serviceSections.networks.push('')">
+                                            <i class="fas fa-plus"></i> Add Network
+                                        </button>
+                                    </div>
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Simple: Attach to networks. For static IPs, use Raw YAML editor.
+                                    </small>
+                                </div>
+                                
+                                <!-- DNS & Hostname Section (Collapsible) -->
+                                <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid #334155;">
+                                    <h4 style="color: #e2e8f0; margin-bottom: 15px; cursor: pointer; display: flex; align-items: center; gap: 10px;" @click="showDnsSection = !showDnsSection">
+                                        <i :class="showDnsSection ? 'fas fa-chevron-down' : 'fas fa-chevron-right'"></i>
+                                        <i class="fas fa-network-wired"></i> 
+                                        DNS & Hostname <span style="color: #64748b; font-size: 0.85em; font-weight: normal;">(for Macvlan/Static IP)</span>
+                                    </h4>
+                                </div>
+                                
+                                <div v-show="showDnsSection">
+                                <div class="form-group">
+                                    <label class="form-label">Hostname (optional)</label>
+                                    <input type="text" class="form-input" v-model="serviceSections.hostname" placeholder="pihole">
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Container hostname
+                                    </small>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">Domain Name (optional)</label>
+                                    <input type="text" class="form-input" v-model="serviceSections.domainname" placeholder="local">
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Domain name for container
+                                    </small>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">MAC Address (optional)</label>
+                                    <input type="text" class="form-input" v-model="serviceSections.mac_address" placeholder="02:42:ac:11:00:02">
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Custom MAC address (useful for DHCP reservations)
+                                    </small>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">DNS Servers (optional)</label>
+                                    <div v-for="(dns, index) in serviceSections.dns" :key="'dns-'+index" style="display: flex; gap: 10px; margin-bottom: 10px;">
+                                        <input type="text" class="form-input" v-model="serviceSections.dns[index]" placeholder="8.8.8.8" style="flex: 1;">
+                                        <button type="button" class="btn-icon-danger" @click="serviceSections.dns.splice(index, 1)" title="Remove">
+                                            <i class="fas fa-times"></i>
+                                        </button>
+                                    </div>
+                                    <button type="button" class="btn-add" @click="serviceSections.dns.push('')">
+                                        <i class="fas fa-plus"></i> Add DNS Server
+                                    </button>
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Custom DNS servers (e.g., 8.8.8.8, 1.1.1.1)
+                                    </small>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">Extra Hosts (optional)</label>
+                                    <div v-for="(host, index) in serviceSections.extra_hosts" :key="'host-'+index" style="display: flex; gap: 10px; margin-bottom: 10px;">
+                                        <input type="text" class="form-input" v-model="serviceSections.extra_hosts[index]" placeholder="host.docker.internal:host-gateway" style="flex: 1;">
+                                        <button type="button" class="btn-icon-danger" @click="serviceSections.extra_hosts.splice(index, 1)" title="Remove">
+                                            <i class="fas fa-times"></i>
+                                        </button>
+                                    </div>
+                                    <button type="button" class="btn-add" @click="serviceSections.extra_hosts.push('')">
+                                        <i class="fas fa-plus"></i> Add Host Entry
+                                    </button>
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Add entries to /etc/hosts (format: hostname:ip)
+                                    </small>
+                                </div>
+                                </div>
+                                
+                                <!-- Security Section (Collapsible) -->
+                                <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid #334155;">
+                                    <h4 style="color: #e2e8f0; margin-bottom: 15px; cursor: pointer; display: flex; align-items: center; gap: 10px;" @click="showSecuritySection = !showSecuritySection">
+                                        <i :class="showSecuritySection ? 'fas fa-chevron-down' : 'fas fa-chevron-right'"></i>
+                                        <i class="fas fa-shield-alt"></i> 
+                                        Security & Capabilities <span style="color: #64748b; font-size: 0.85em; font-weight: normal;">(optional)</span>
+                                    </h4>
+                                </div>
+                                
+                                <div v-show="showSecuritySection">
+                                <div class="form-group">
+                                    <label class="form-label">
+                                        <input type="checkbox" v-model="serviceSections.privileged" style="margin-right: 8px;">
+                                        Privileged Mode
+                                    </label>
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Grant extended privileges (use with caution)
+                                    </small>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">User (optional)</label>
+                                    <input type="text" class="form-input" v-model="serviceSections.user" placeholder="1000:1000">
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Run as specific user (uid:gid)
+                                    </small>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">Capabilities Add (optional)</label>
+                                    <div v-for="(cap, index) in serviceSections.cap_add" :key="'cap-add-'+index" style="display: flex; gap: 10px; margin-bottom: 10px;">
+                                        <input type="text" class="form-input" v-model="serviceSections.cap_add[index]" placeholder="NET_ADMIN" style="flex: 1;">
+                                        <button type="button" class="btn-icon-danger" @click="serviceSections.cap_add.splice(index, 1)" title="Remove">
+                                            <i class="fas fa-times"></i>
+                                        </button>
+                                    </div>
+                                    <button type="button" class="btn-add" @click="serviceSections.cap_add.push('')">
+                                        <i class="fas fa-plus"></i> Add Capability
+                                    </button>
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Add Linux capabilities (e.g., NET_ADMIN, SYS_TIME)
+                                    </small>
+                                </div>
+                                </div>
+                                
+                                <!-- Console Section (Collapsible) -->
+                                <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid #334155;">
+                                    <h4 style="color: #e2e8f0; margin-bottom: 15px; cursor: pointer; display: flex; align-items: center; gap: 10px;" @click="showConsoleSection = !showConsoleSection">
+                                        <i :class="showConsoleSection ? 'fas fa-chevron-down' : 'fas fa-chevron-right'"></i>
+                                        <i class="fas fa-terminal"></i> 
+                                        Console & Debugging <span style="color: #64748b; font-size: 0.85em; font-weight: normal;">(optional)</span>
+                                    </h4>
+                                </div>
+                                
+                                <div v-show="showConsoleSection">
+                                <div class="form-group">
+                                    <label class="form-label">
+                                        <input type="checkbox" v-model="serviceSections.stdin_open" style="margin-right: 8px;">
+                                        Keep STDIN Open (stdin_open)
+                                    </label>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">
+                                        <input type="checkbox" v-model="serviceSections.tty" style="margin-right: 8px;">
+                                        Allocate TTY (tty)
+                                    </label>
+                                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                        Enable for interactive containers (docker exec)
+                                    </small>
+                                </div>
+                                </div>
+                                
                                 <div class="form-group">
                                     <label class="form-label">Command (optional)</label>
                                     <input type="text" class="form-input" v-model="serviceSections.command" placeholder="npm start">
@@ -1738,6 +1917,9 @@
                     editStackName: '',
                     editStackContent: '',
                     showRawYaml: false,
+                    showDnsSection: false,
+                    showSecuritySection: false,
+                    showConsoleSection: false,
                     selectedService: '',
                     availableServices: [],
                     serviceSections: null,
@@ -2216,6 +2398,26 @@
                         devices: [],
                         restart: 'unless-stopped',
                         network_mode: '',
+                        networks: [],
+                        hostname: '',
+                        domainname: '',
+                        mac_address: '',
+                        dns: [],
+                        dns_search: [],
+                        dns_opt: [],
+                        extra_hosts: [],
+                        privileged: false,
+                        cap_add: [],
+                        cap_drop: [],
+                        security_opt: [],
+                        user: '',
+                        sysctls: {},
+                        tmpfs: [],
+                        stdin_open: false,
+                        tty: false,
+                        healthcheck: {},
+                        depends_on: [],
+                        logging: {},
                         command: '',
                         entrypoint: '',
                         cpus: '',
@@ -2342,6 +2544,32 @@
                         if (!this.serviceSections.ports) this.serviceSections.ports = [];
                         if (!this.serviceSections.volumes) this.serviceSections.volumes = [];
                         if (!this.serviceSections.devices) this.serviceSections.devices = [];
+                        if (!this.serviceSections.networks) this.serviceSections.networks = [];
+                        if (!this.serviceSections.dns) this.serviceSections.dns = [];
+                        if (!this.serviceSections.dns_search) this.serviceSections.dns_search = [];
+                        if (!this.serviceSections.dns_opt) this.serviceSections.dns_opt = [];
+                        if (!this.serviceSections.extra_hosts) this.serviceSections.extra_hosts = [];
+                        if (!this.serviceSections.cap_add) this.serviceSections.cap_add = [];
+                        if (!this.serviceSections.cap_drop) this.serviceSections.cap_drop = [];
+                        if (!this.serviceSections.security_opt) this.serviceSections.security_opt = [];
+                        if (!this.serviceSections.tmpfs) this.serviceSections.tmpfs = [];
+                        if (!this.serviceSections.depends_on) this.serviceSections.depends_on = [];
+                        
+                        // Ensure boolean fields exist
+                        if (this.serviceSections.privileged === undefined) this.serviceSections.privileged = false;
+                        if (this.serviceSections.stdin_open === undefined) this.serviceSections.stdin_open = false;
+                        if (this.serviceSections.tty === undefined) this.serviceSections.tty = false;
+                        
+                        // Ensure string fields exist
+                        if (!this.serviceSections.hostname) this.serviceSections.hostname = '';
+                        if (!this.serviceSections.domainname) this.serviceSections.domainname = '';
+                        if (!this.serviceSections.mac_address) this.serviceSections.mac_address = '';
+                        if (!this.serviceSections.user) this.serviceSections.user = '';
+                        
+                        // Ensure object fields exist
+                        if (!this.serviceSections.sysctls) this.serviceSections.sysctls = {};
+                        if (!this.serviceSections.healthcheck) this.serviceSections.healthcheck = {};
+                        if (!this.serviceSections.logging) this.serviceSections.logging = {};
                         
                         // Parse CPU/RAM limits from extra fields
                         if (this.serviceSections.extra) {
@@ -2510,6 +2738,45 @@
                             const volStr = `${vol.host}:${vol.container}`;
                             return vol.mode === 'ro' ? `${volStr}:ro` : volStr;
                         });
+                    
+                    // Filter empty networks (but preserve dict format with IPs)
+                    if (this.serviceSections.networks) {
+                        if (Array.isArray(this.serviceSections.networks)) {
+                            this.serviceSections.networks = this.serviceSections.networks.filter(n => n && n.trim());
+                        }
+                        // If it's an object (dict with IPs), leave it as-is
+                    }
+                    
+                    // Filter empty DNS entries
+                    if (this.serviceSections.dns) {
+                        this.serviceSections.dns = this.serviceSections.dns.filter(d => d && d.trim());
+                    }
+                    if (this.serviceSections.dns_search) {
+                        this.serviceSections.dns_search = this.serviceSections.dns_search.filter(d => d && d.trim());
+                    }
+                    if (this.serviceSections.dns_opt) {
+                        this.serviceSections.dns_opt = this.serviceSections.dns_opt.filter(d => d && d.trim());
+                    }
+                    if (this.serviceSections.extra_hosts) {
+                        this.serviceSections.extra_hosts = this.serviceSections.extra_hosts.filter(h => h && h.trim());
+                    }
+                    
+                    // Filter empty capabilities
+                    if (this.serviceSections.cap_add) {
+                        this.serviceSections.cap_add = this.serviceSections.cap_add.filter(c => c && c.trim());
+                    }
+                    if (this.serviceSections.cap_drop) {
+                        this.serviceSections.cap_drop = this.serviceSections.cap_drop.filter(c => c && c.trim());
+                    }
+                    if (this.serviceSections.security_opt) {
+                        this.serviceSections.security_opt = this.serviceSections.security_opt.filter(s => s && s.trim());
+                    }
+                    if (this.serviceSections.tmpfs) {
+                        this.serviceSections.tmpfs = this.serviceSections.tmpfs.filter(t => t && t.trim());
+                    }
+                    if (this.serviceSections.depends_on) {
+                        this.serviceSections.depends_on = this.serviceSections.depends_on.filter(d => d && d.trim());
+                    }
                     
                     // Handle CPU/RAM limits - move to extra if set
                     if (this.serviceSections.cpus && parseFloat(this.serviceSections.cpus) > 0) {
