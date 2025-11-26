@@ -2232,6 +2232,60 @@ def api_clone_stack(stack_name):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/network-interfaces', methods=['GET'])
+def api_get_network_interfaces():
+    """Get available network interfaces for macvlan/ipvlan"""
+    try:
+        # Use ip command for most reliable detection
+        result = subprocess.run(['ip', '-o', '-4', 'addr', 'show'], 
+                               capture_output=True, text=True, timeout=5)
+        
+        interfaces = []
+        seen = set()
+        
+        for line in result.stdout.split('\n'):
+            if line.strip():
+                parts = line.split()
+                if len(parts) >= 4:
+                    # Format: 2: ens18 inet 192.168.1.100/24 ...
+                    iface = parts[1].rstrip(':')
+                    
+                    # Skip loopback and docker interfaces
+                    if iface.startswith(('lo', 'docker', 'br-', 'veth')) or iface in seen:
+                        continue
+                    
+                    # Extract IP address
+                    ip = 'N/A'
+                    for i, part in enumerate(parts):
+                        if part == 'inet' and i + 1 < len(parts):
+                            ip = parts[i + 1].split('/')[0]
+                            break
+                    
+                    interfaces.append({
+                        'name': iface,
+                        'ip': ip
+                    })
+                    seen.add(iface)
+        
+        # If no interfaces found, return safe defaults
+        if not interfaces:
+            interfaces = [
+                {'name': 'eth0', 'ip': 'N/A'},
+                {'name': 'ens18', 'ip': 'N/A'}
+            ]
+        
+        return jsonify(interfaces)
+        
+    except Exception as e:
+        print(f"Error detecting network interfaces: {e}")
+        # Fallback to common interface names
+        return jsonify([
+            {'name': 'ens18', 'ip': 'N/A'},
+            {'name': 'eth0', 'ip': 'N/A'},
+            {'name': 'enp2s0', 'ip': 'N/A'}
+        ])
+
+
 @app.route('/api/networks', methods=['GET'])
 def api_get_networks():
     """Get all Docker networks"""
@@ -2240,16 +2294,105 @@ def api_get_networks():
         network_list = []
         
         for network in networks:
-            network_list.append({
+            # Get containers using this network
+            containers_using = []
+            for container in docker_client.containers.list(all=True):
+                container_networks = container.attrs.get('NetworkSettings', {}).get('Networks', {})
+                if network.name in container_networks:
+                    project = container.labels.get('com.docker.compose.project', container.name)
+                    if project not in containers_using:
+                        containers_using.append(project)
+            
+            network_info = {
                 'id': network.id[:12],
                 'name': network.name,
                 'driver': network.attrs.get('Driver', 'unknown'),
                 'scope': network.attrs.get('Scope', 'local'),
                 'internal': network.attrs.get('Internal', False),
-                'ipam': network.attrs.get('IPAM', {})
-            })
+                'ipam': network.attrs.get('IPAM', {}),
+                'options': network.attrs.get('Options', {}),
+                'containers_using': containers_using
+            }
+            network_list.append(network_info)
         
         return jsonify(network_list)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/network', methods=['POST'])
+def api_create_network():
+    """Create a new Docker network"""
+    try:
+        data = request.json
+        name = data.get('name')
+        driver = data.get('driver', 'bridge')
+        
+        if not name:
+            return jsonify({'error': 'Network name required'}), 400
+        
+        # Build IPAM config
+        ipam_config = None
+        if data.get('subnet'):
+            ipam_config = docker.types.IPAMConfig(
+                pool_configs=[docker.types.IPAMPool(
+                    subnet=data.get('subnet'),
+                    gateway=data.get('gateway'),
+                    iprange=data.get('ip_range')
+                )]
+            )
+        
+        # Build options
+        options = {}
+        if data.get('parent'):
+            options['parent'] = data.get('parent')
+        
+        # Create network
+        network = docker_client.networks.create(
+            name=name,
+            driver=driver,
+            options=options if options else None,
+            ipam=ipam_config,
+            internal=data.get('internal', False)
+        )
+        
+        return jsonify({
+            'success': True,
+            'network_id': network.id[:12],
+            'network_name': network.name
+        })
+        
+    except docker.errors.APIError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/network/<network_id>', methods=['DELETE'])
+def api_delete_network(network_id):
+    """Delete a Docker network"""
+    try:
+        network = docker_client.networks.get(network_id)
+        
+        # Get containers using this network
+        containers_using = []
+        for container in docker_client.containers.list(all=True):
+            container_networks = container.attrs.get('NetworkSettings', {}).get('Networks', {})
+            if network.name in container_networks:
+                containers_using.append(container.name)
+        
+        if containers_using:
+            return jsonify({
+                'error': f'Network is in use by: {", ".join(containers_using)}'
+            }), 400
+        
+        network.remove()
+        return jsonify({'success': True})
+        
+    except docker.errors.NotFound:
+        return jsonify({'error': 'Network not found'}), 404
+    except docker.errors.APIError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
