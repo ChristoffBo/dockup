@@ -651,10 +651,24 @@ def save_stack_compose(stack_name, content):
     """Save compose file content for a stack"""
     stack_path = os.path.join(STACKS_DIR, stack_name)
     Path(stack_path).mkdir(parents=True, exist_ok=True)
+    
+    # Always save as compose.yaml (modern standard)
     compose_file = os.path.join(stack_path, 'compose.yaml')
     
     with open(compose_file, 'w') as f:
         f.write(content)
+    
+    # Clean up old compose files to avoid confusion
+    old_files = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml']
+    for old_file in old_files:
+        old_path = os.path.join(stack_path, old_file)
+        if os.path.exists(old_path):
+            try:
+                os.remove(old_path)
+                print(f"Cleaned up old compose file: {old_file} from {stack_name}")
+            except Exception as e:
+                print(f"Warning: Could not delete {old_file}: {e}")
+
 
 
 def stack_operation(stack_name, operation):
@@ -1830,13 +1844,37 @@ def get_service_sections(stack_name, service_name):
             'command': service.get('command', ''),
             'entrypoint': service.get('entrypoint', ''),
             'network_mode': service.get('network_mode', ''),
+            'networks': service.get('networks', []),
+            'hostname': service.get('hostname', ''),
+            'domainname': service.get('domainname', ''),
+            'mac_address': service.get('mac_address', ''),
+            'dns': service.get('dns', []),
+            'dns_search': service.get('dns_search', []),
+            'dns_opt': service.get('dns_opt', []),
+            'extra_hosts': service.get('extra_hosts', []),
+            'privileged': service.get('privileged', False),
+            'cap_add': service.get('cap_add', []),
+            'cap_drop': service.get('cap_drop', []),
+            'security_opt': service.get('security_opt', []),
+            'user': service.get('user', ''),
+            'sysctls': service.get('sysctls', {}),
+            'tmpfs': service.get('tmpfs', []),
+            'stdin_open': service.get('stdin_open', False),
+            'tty': service.get('tty', False),
+            'healthcheck': service.get('healthcheck', {}),
+            'depends_on': service.get('depends_on', []),
+            'logging': service.get('logging', {}),
             'restart': service.get('restart', 'unless-stopped'),
             'extra': {}
         }
         
         # Gather extra keys
         known_keys = ['image', 'container_name', 'environment', 'ports', 'volumes', 
-                      'devices', 'labels', 'command', 'entrypoint', 'network_mode', 'restart']
+                      'devices', 'labels', 'command', 'entrypoint', 'network_mode', 'networks',
+                      'hostname', 'domainname', 'mac_address', 'dns', 'dns_search', 'dns_opt',
+                      'extra_hosts', 'privileged', 'cap_add', 'cap_drop', 'security_opt', 'user',
+                      'sysctls', 'tmpfs', 'stdin_open', 'tty', 'healthcheck', 'depends_on', 
+                      'logging', 'restart']
         
         for key, value in service.items():
             if key not in known_keys:
@@ -1918,6 +1956,56 @@ def save_service_sections(stack_name, service_name):
         if 'network_mode' in data and data['network_mode']:
             new_service['network_mode'] = data['network_mode']
         
+        # Networks
+        if 'networks' in data and data['networks']:
+            new_service['networks'] = data['networks']
+        
+        # Hostname/Domain/MAC
+        if 'hostname' in data and data['hostname']:
+            new_service['hostname'] = data['hostname']
+        if 'domainname' in data and data['domainname']:
+            new_service['domainname'] = data['domainname']
+        if 'mac_address' in data and data['mac_address']:
+            new_service['mac_address'] = data['mac_address']
+        
+        # DNS
+        if 'dns' in data and data['dns']:
+            new_service['dns'] = data['dns']
+        if 'dns_search' in data and data['dns_search']:
+            new_service['dns_search'] = data['dns_search']
+        if 'dns_opt' in data and data['dns_opt']:
+            new_service['dns_opt'] = data['dns_opt']
+        if 'extra_hosts' in data and data['extra_hosts']:
+            new_service['extra_hosts'] = data['extra_hosts']
+        
+        # Security
+        if 'privileged' in data:
+            new_service['privileged'] = data['privileged']
+        if 'cap_add' in data and data['cap_add']:
+            new_service['cap_add'] = data['cap_add']
+        if 'cap_drop' in data and data['cap_drop']:
+            new_service['cap_drop'] = data['cap_drop']
+        if 'security_opt' in data and data['security_opt']:
+            new_service['security_opt'] = data['security_opt']
+        if 'user' in data and data['user']:
+            new_service['user'] = data['user']
+        
+        # Advanced
+        if 'sysctls' in data and data['sysctls']:
+            new_service['sysctls'] = data['sysctls']
+        if 'tmpfs' in data and data['tmpfs']:
+            new_service['tmpfs'] = data['tmpfs']
+        if 'stdin_open' in data:
+            new_service['stdin_open'] = data['stdin_open']
+        if 'tty' in data:
+            new_service['tty'] = data['tty']
+        if 'healthcheck' in data and data['healthcheck']:
+            new_service['healthcheck'] = data['healthcheck']
+        if 'depends_on' in data and data['depends_on']:
+            new_service['depends_on'] = data['depends_on']
+        if 'logging' in data and data['logging']:
+            new_service['logging'] = data['logging']
+        
         # Restart
         if 'restart' in data:
             new_service['restart'] = data['restart'] or 'unless-stopped'
@@ -1935,9 +2023,23 @@ def save_service_sections(stack_name, service_name):
         # Update compose data
         compose_data['services'][service_name] = new_service
         
+        # Always save to compose.yaml (standardize filename)
+        new_compose_file = os.path.join(stack_path, 'compose.yaml')
+        
         # Write to file
-        with open(compose_file, 'w') as f:
+        with open(new_compose_file, 'w') as f:
             yaml.safe_dump(compose_data, f, sort_keys=False, default_flow_style=False)
+        
+        # Always clean up old compose files to avoid duplicates
+        old_files = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml']
+        for old_file in old_files:
+            old_path = os.path.join(stack_path, old_file)
+            if os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                    print(f"Cleaned up old compose file: {old_file} from {stack_name}")
+                except Exception as e:
+                    print(f"Warning: Could not delete {old_file}: {e}")
         
         return jsonify({'success': True})
     
@@ -2126,6 +2228,28 @@ def api_clone_stack(stack_name):
         
         return jsonify({'success': True, 'new_stack': new_name})
         
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/networks', methods=['GET'])
+def api_get_networks():
+    """Get all Docker networks"""
+    try:
+        networks = docker_client.networks.list()
+        network_list = []
+        
+        for network in networks:
+            network_list.append({
+                'id': network.id[:12],
+                'name': network.name,
+                'driver': network.attrs.get('Driver', 'unknown'),
+                'scope': network.attrs.get('Scope', 'local'),
+                'internal': network.attrs.get('Internal', False),
+                'ipam': network.attrs.get('IPAM', {})
+            })
+        
+        return jsonify(network_list)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
