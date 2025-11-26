@@ -695,6 +695,10 @@
                 <i class="fas fa-hdd"></i>
                 Images
             </div>
+            <div class="nav-item" :class="{active: currentView === 'networks'}" @click="currentView = 'networks'; loadNetworks()">
+                <i class="fas fa-network-wired"></i>
+                Networks
+            </div>
             <div class="nav-item" :class="{active: currentView === 'settings'}" @click="currentView = 'settings'">
                 <i class="fas fa-cog"></i>
                 Settings
@@ -1239,6 +1243,80 @@
                     </button>
                 </div>
             </div>
+
+        <!-- Networks Page -->
+        <div v-if="currentView === 'networks'">
+            <div class="header">
+                <h1><i class="fas fa-network-wired"></i> Docker Networks</h1>
+                <p>Manage Docker networks - create macvlan, bridge, and custom networks</p>
+            </div>
+
+            <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
+                <button class="btn btn-primary" @click="showCreateNetworkModal = true; loadNetworkInterfaces()">
+                    <i class="fas fa-plus"></i> Create Network
+                </button>
+                <select v-model="networkFilter" style="padding: 8px 15px; background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; color: #e2e8f0;">
+                    <option value="all">All Networks</option>
+                    <option value="bridge">Bridge</option>
+                    <option value="macvlan">Macvlan</option>
+                    <option value="ipvlan">IPvlan</option>
+                    <option value="overlay">Overlay</option>
+                </select>
+                <button class="btn btn-secondary" @click="loadNetworks">
+                    <i class="fas fa-sync"></i> Refresh
+                </button>
+            </div>
+
+            <div v-if="filteredNetworks.length === 0" style="text-align: center; padding: 50px; color: #94a3b8;">
+                <i class="fas fa-network-wired" style="font-size: 48px; margin-bottom: 20px; opacity: 0.5;"></i>
+                <p>No networks found</p>
+            </div>
+
+            <div v-for="network in filteredNetworks" :key="network.id" class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <i class="fas fa-network-wired"></i> {{ network.name }}
+                        <span style="padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; background: rgba(147, 197, 253, 0.2); color: #93c5fd; margin-left: 10px;">
+                            {{ network.driver }}
+                        </span>
+                    </div>
+                    <button v-if="!['bridge', 'host', 'none'].includes(network.name)" 
+                            class="btn btn-danger btn-sm" 
+                            @click="deleteNetwork(network.id, network.name)"
+                            :disabled="network.containers_using.length > 0">
+                        <i class="fas fa-trash"></i> Delete
+                    </button>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 15px;">
+                    <div v-if="network.ipam && network.ipam.Config && network.ipam.Config.length > 0">
+                        <div style="font-size: 12px; color: #94a3b8; margin-bottom: 5px;">SUBNET</div>
+                        <div style="font-family: 'Courier New', monospace;">{{ network.ipam.Config[0].Subnet || 'N/A' }}</div>
+                    </div>
+                    <div v-if="network.ipam && network.ipam.Config && network.ipam.Config.length > 0">
+                        <div style="font-size: 12px; color: #94a3b8; margin-bottom: 5px;">GATEWAY</div>
+                        <div style="font-family: 'Courier New', monospace;">{{ network.ipam.Config[0].Gateway || 'N/A' }}</div>
+                    </div>
+                    <div v-if="network.options && network.options.parent">
+                        <div style="font-size: 12px; color: #94a3b8; margin-bottom: 5px;">PARENT</div>
+                        <div style="font-family: 'Courier New', monospace;">{{ network.options.parent }}</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 12px; color: #94a3b8; margin-bottom: 5px;">SCOPE</div>
+                        <div>{{ network.scope }}</div>
+                    </div>
+                </div>
+
+                <div v-if="network.containers_using.length > 0" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.1);">
+                    <div style="font-size: 12px; color: #94a3b8; margin-bottom: 8px;">USED BY:</div>
+                    <span v-for="container in network.containers_using" :key="container" 
+                          style="display: inline-block; padding: 4px 10px; background: rgba(34, 197, 94, 0.15); color: #22c55e; border-radius: 12px; font-size: 12px; margin-right: 8px; margin-bottom: 8px;">
+                        {{ container }}
+                    </span>
+                </div>
+            </div>
+        </div>
+
         </div>
 
         <!-- Edit Stack Modal with ZimaOS Split Editor -->
@@ -1887,6 +1965,57 @@
         </div>
 
         <!-- Toast Notifications -->
+
+        <!-- Create Network Modal -->
+        <div class="modal" v-if="showCreateNetworkModal" @click.self="showCreateNetworkModal = false">
+            <div class="modal-content" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h2>Create Docker Network</h2>
+                    <button class="close-btn" @click="showCreateNetworkModal = false">&times;</button>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Network Name *</label>
+                    <input type="text" class="form-input" v-model="newNetwork.name" placeholder="my_network">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Driver *</label>
+                    <select class="form-select" v-model="newNetwork.driver">
+                        <option value="bridge">bridge</option>
+                        <option value="macvlan">macvlan</option>
+                        <option value="ipvlan">ipvlan</option>
+                        <option value="overlay">overlay</option>
+                    </select>
+                </div>
+                <div v-if="newNetwork.driver === 'macvlan' || newNetwork.driver === 'ipvlan'" class="form-group">
+                    <label class="form-label">Parent Interface *</label>
+                    <select class="form-select" v-model="newNetwork.parent">
+                        <option v-for="iface in networkInterfaces" :key="iface.name" :value="iface.name">
+                            {{ iface.name }} ({{ iface.ip }})
+                        </option>
+                    </select>
+                    <small style="color: #94a3b8; display: block; margin-top: 5px;">Physical network interface to use for macvlan</small>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Subnet (optional)</label>
+                    <input type="text" class="form-input" v-model="newNetwork.subnet" placeholder="192.168.1.0/24">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Gateway (optional)</label>
+                    <input type="text" class="form-input" v-model="newNetwork.gateway" placeholder="192.168.1.1">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">IP Range (optional)</label>
+                    <input type="text" class="form-input" v-model="newNetwork.ip_range" placeholder="192.168.1.128/25">
+                </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px;"><input type="checkbox" v-model="newNetwork.internal"><span>Internal network</span></label>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-primary" @click="createNetwork" :disabled="!newNetwork.name"><i class="fas fa-plus"></i> Create</button>
+                    <button class="btn btn-secondary" @click="showCreateNetworkModal = false">Cancel</button>
+                </div>
+            </div>
+        </div>
         <div class="toast-container">
             <div v-for="toast in toasts" :key="toast.id" class="toast" :class="'toast-' + toast.type">
                 <strong>{{ toast.title }}</strong>
@@ -1956,10 +2085,28 @@
                     showCloneModal: false,
                     cloneStackName: '',
                     cloneNewName: '',
-                    stackTags: ''
+                    stackTags: '',
+                    // Networks
+                    networks: [],
+                    networkInterfaces: [],
+                    networkFilter: 'all',
+                    showCreateNetworkModal: false,
+                    newNetwork: {
+                        name: '',
+                        driver: 'bridge',
+                        parent: '',
+                        subnet: '',
+                        gateway: '',
+                        ip_range: '',
+                        internal: false
+                    }
                 };
             },
             computed: {
+                filteredNetworks() {
+                    if (this.networkFilter === 'all') return this.networks;
+                    return this.networks.filter(n => n.driver === this.networkFilter);
+                },
                 appriseUrlsText: {
                     get() {
                         return this.settings.apprise_urls.join('\n');
@@ -2036,6 +2183,7 @@
                 }
                 
                 this.loadStacks();
+                this.loadNetworks();
                 this.loadSettings();
                 this.loadHostStats();
                 this.connectWebSocket();
@@ -2057,6 +2205,53 @@
                         this.stacks = response.data;
                     } catch (error) {
                         this.showToast('Error', 'Failed to load stacks', 'error');
+                    }
+                },
+                async loadNetworks() {
+                    try {
+                        const response = await axios.get('/api/networks');
+                        this.networks = response.data;
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to load networks', 'error');
+                    }
+                },
+                async loadNetworkInterfaces() {
+                    try {
+                        const response = await axios.get('/api/network-interfaces');
+                        this.networkInterfaces = response.data;
+                        // Set default parent to first interface if available
+                        if (this.networkInterfaces.length > 0 && !this.newNetwork.parent) {
+                            this.newNetwork.parent = this.networkInterfaces[0].name;
+                        }
+                    } catch (error) {
+                        console.error('Failed to load network interfaces:', error);
+                        // Fallback to common interface names
+                        this.networkInterfaces = [
+                            {name: 'eth0', ip: 'N/A'},
+                            {name: 'ens18', ip: 'N/A'},
+                            {name: 'enp2s0', ip: 'N/A'}
+                        ];
+                    }
+                },
+                async createNetwork() {
+                    try {
+                        await axios.post('/api/network', this.newNetwork);
+                        this.showCreateNetworkModal = false;
+                        this.newNetwork = { name: '', driver: 'bridge', parent: '', subnet: '', gateway: '', ip_range: '', internal: false };
+                        await this.loadNetworks();
+                        this.showToast('Success', 'Network created successfully', 'success');
+                    } catch (error) {
+                        this.showToast('Error', error.response?.data?.error || 'Failed to create network', 'error');
+                    }
+                },
+                async deleteNetwork(networkId, networkName) {
+                    if (!confirm(`Delete network "${networkName}"? This cannot be undone.`)) return;
+                    try {
+                        await axios.delete(`/api/network/${networkId}`);
+                        await this.loadNetworks();
+                        this.showToast('Success', 'Network deleted successfully', 'success');
+                    } catch (error) {
+                        this.showToast('Error', error.response?.data?.error || 'Failed to delete network', 'error');
                     }
                 },
                 async loadSettings() {
