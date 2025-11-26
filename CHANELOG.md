@@ -1,3 +1,5 @@
+## latest (2025-11-26)
+added a network tab, can now create networks and delete them from the UI. hope I did not break anything.
 ## latest (2025-11-25)
 added advanced split editor functions.
 fixed a nasty duplicate compose bug
