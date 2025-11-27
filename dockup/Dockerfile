@@ -34,7 +34,8 @@ RUN pip install --no-cache-dir 'urllib3==1.26.18' && \
     croniter==2.0.1 \
     requests==2.31.0 \
     pytz==2024.1 \
-    psutil
+    psutil==5.9.8 \
+    bcrypt==4.1.2
 
 # Create directories
 RUN mkdir -p /app/static /app/data /stacks
@@ -42,6 +43,8 @@ RUN mkdir -p /app/static /app/data /stacks
 # Copy application files
 COPY app.py /app/
 COPY static/index.html /app/static/
+COPY static/login.html /app/static/
+COPY static/setup.html /app/static/
 
 # Expose port
 EXPOSE 5000

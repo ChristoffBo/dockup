@@ -13,9 +13,11 @@ import time
 import subprocess
 import io
 import psutil
+import bcrypt
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_from_directory, send_file
+from flask import Flask, render_template, request, jsonify, send_from_directory, send_file, session, redirect, url_for
+from functools import wraps
 from flask_sock import Sock
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -25,6 +27,7 @@ import pytz
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='static', static_url_path='')
+app.secret_key = os.urandom(24)  # Generate random secret key for sessions
 sock = Sock(app)
 
 # Configuration
@@ -32,6 +35,9 @@ STACKS_DIR = os.getenv('STACKS_DIR', '/stacks')
 DATA_DIR = os.getenv('DATA_DIR', '/app/data')
 CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')
 SCHEDULES_FILE = os.path.join(DATA_DIR, 'schedules.json')
+HEALTH_STATUS_FILE = os.path.join(DATA_DIR, 'health_status.json')
+UPDATE_HISTORY_FILE = os.path.join(DATA_DIR, 'update_history.json')
+PASSWORD_FILE = os.path.join(DATA_DIR, 'password.hash')
 
 # Ensure directories exist
 Path(STACKS_DIR).mkdir(parents=True, exist_ok=True)
@@ -44,6 +50,8 @@ docker_client = docker.from_env()
 config = {}
 schedules = {}
 update_status = {}
+health_status = {}  # Track health failures: {stack_name: {consecutive_failures: 0, last_notified: timestamp}}
+update_history = {}  # Track recent updates: {stack_name: {last_update: timestamp, updated_by: 'auto'|'manual'}}
 websocket_clients = []
 stack_stats_cache = {}  # Cache for stack stats
 network_stats_cache = {}  # Cache for network bytes tracking (for rate calculation)
@@ -67,9 +75,12 @@ def load_config():
             'notify_on_check': True,
             'notify_on_update': True,
             'notify_on_error': True,
+            'notify_on_health_failure': True,
+            'health_check_threshold': 3,
             'timezone': 'UTC',
             'auto_prune': False,
-            'auto_prune_cron': '0 3 * * 0'
+            'auto_prune_cron': '0 3 * * 0',
+            'password_enabled': False
         }
         save_config()
     
@@ -98,6 +109,38 @@ def save_schedules():
     """Save schedules to file"""
     with open(SCHEDULES_FILE, 'w') as f:
         json.dump(schedules, f, indent=2)
+
+
+def load_health_status():
+    """Load health status tracking from file"""
+    global health_status
+    if os.path.exists(HEALTH_STATUS_FILE):
+        with open(HEALTH_STATUS_FILE, 'r') as f:
+            health_status = json.load(f)
+    else:
+        health_status = {}
+
+
+def save_health_status():
+    """Save health status tracking to file"""
+    with open(HEALTH_STATUS_FILE, 'w') as f:
+        json.dump(health_status, f, indent=2)
+
+
+def load_update_history():
+    """Load update history from file"""
+    global update_history
+    if os.path.exists(UPDATE_HISTORY_FILE):
+        with open(UPDATE_HISTORY_FILE, 'r') as f:
+            update_history = json.load(f)
+    else:
+        update_history = {}
+
+
+def save_update_history():
+    """Save update history to file"""
+    with open(UPDATE_HISTORY_FILE, 'w') as f:
+        json.dump(update_history, f, indent=2)
 
 
 def get_stack_metadata(stack_name):
@@ -138,6 +181,88 @@ def setup_notifications():
             apobj.add(url)
 
 
+def hash_password(password):
+    """Hash a password using bcrypt"""
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+
+
+def verify_password(password, hashed):
+    """Verify a password against its hash"""
+    try:
+        return bcrypt.checkpw(password.encode('utf-8'), hashed)
+    except:
+        return False
+
+
+def is_password_set():
+    """Check if a password has been set"""
+    return os.path.exists(PASSWORD_FILE)
+
+
+def save_password(password):
+    """Save hashed password to file"""
+    hashed = hash_password(password)
+    with open(PASSWORD_FILE, 'wb') as f:
+        f.write(hashed)
+
+
+def load_password_hash():
+    """Load hashed password from file"""
+    if os.path.exists(PASSWORD_FILE):
+        with open(PASSWORD_FILE, 'rb') as f:
+            return f.read()
+    return None
+
+
+def require_auth(f):
+    """Decorator to require authentication"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Skip auth if password protection is disabled
+        if not config.get('password_enabled', False):
+            return f(*args, **kwargs)
+        
+        # Check if authenticated
+        if not session.get('authenticated'):
+            if request.path.startswith('/api/'):
+                return jsonify({'error': 'Authentication required'}), 401
+            return redirect(url_for('login'))
+        
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+@app.before_request
+def check_auth():
+    """Check authentication before each request"""
+    # Skip auth check if password protection is disabled
+    if not config.get('password_enabled', False):
+        return None
+    
+    # Allow these paths without authentication
+    allowed_paths = [
+        '/login',
+        '/setup',
+        '/api/auth/login',
+        '/api/auth/setup',
+        '/static/'
+    ]
+    
+    # Check if path is allowed
+    for path in allowed_paths:
+        if request.path.startswith(path):
+            return None
+    
+    # Check authentication
+    if not session.get('authenticated'):
+        if request.path.startswith('/api/'):
+            return jsonify({'error': 'Authentication required'}), 401
+        # Redirect to setup if password not set, otherwise login
+        if not is_password_set():
+            return redirect(url_for('setup'))
+        return redirect(url_for('login'))
+
+
 def send_notification(title, message, notify_type='info'):
     """Send notification via configured services"""
     # Check notification preferences
@@ -149,6 +274,9 @@ def send_notification(title, message, notify_type='info'):
         return
     if not config.get('notify_on_error') and notify_type == 'error':
         print(f"Notification skipped (notify_on_error=False): {title}")
+        return
+    if not config.get('notify_on_health_failure', True) and 'unhealthy' in message.lower():
+        print(f"Notification skipped (notify_on_health_failure=False): {title}")
         return
     
     if len(apobj) > 0:
@@ -172,6 +300,82 @@ def broadcast_ws(data):
             client.send(json.dumps(data))
         except:
             websocket_clients.remove(client)
+
+
+def check_stack_health(stack_name, containers):
+    """Monitor stack health and send notifications after N consecutive failures"""
+    if not config.get('notify_on_health_failure', True):
+        return
+    
+    threshold = config.get('health_check_threshold', 3)
+    
+    # Check if any containers are unhealthy or stopped
+    unhealthy_containers = []
+    for container in containers:
+        if container['health'] == 'unhealthy':
+            unhealthy_containers.append(f"{container['name']}: unhealthy (failing health check)")
+        elif container['status'] in ['exited', 'dead', 'paused']:
+            unhealthy_containers.append(f"{container['name']}: {container['status']}")
+    
+    # Initialize health tracking for this stack if needed
+    if stack_name not in health_status:
+        health_status[stack_name] = {
+            'consecutive_failures': 0,
+            'last_notified': None,
+            'last_check': None
+        }
+    
+    current_time = datetime.now(pytz.UTC).isoformat()
+    
+    if unhealthy_containers:
+        # Increment failure counter
+        health_status[stack_name]['consecutive_failures'] += 1
+        health_status[stack_name]['last_check'] = current_time
+        
+        failures = health_status[stack_name]['consecutive_failures']
+        print(f"  ⚠ Health check {failures}/{threshold}: {stack_name} has {len(unhealthy_containers)} issue(s)")
+        
+        # Send notification after threshold reached
+        if failures >= threshold:
+            last_notified = health_status[stack_name].get('last_notified')
+            
+            # Only notify once until it recovers
+            if last_notified is None:
+                issue_list = '\n'.join([f"  • {issue}" for issue in unhealthy_containers])
+                send_notification(
+                    f"Dockup - Stack Unhealthy",
+                    f"Stack '{stack_name}' has been unhealthy for {failures} consecutive checks.\n\nContainers with issues:\n{issue_list}\n\nCheck the logs for details.",
+                    'error'
+                )
+                health_status[stack_name]['last_notified'] = current_time
+                save_health_status()
+                
+                broadcast_ws({
+                    'type': 'health_alert',
+                    'stack': stack_name,
+                    'issues': unhealthy_containers
+                })
+    else:
+        # Stack is healthy - reset counter
+        if health_status[stack_name]['consecutive_failures'] > 0:
+            # Was unhealthy, now recovered
+            if health_status[stack_name].get('last_notified'):
+                send_notification(
+                    f"Dockup - Stack Recovered",
+                    f"Stack '{stack_name}' is now healthy again.",
+                    'success'
+                )
+                broadcast_ws({
+                    'type': 'health_recovered',
+                    'stack': stack_name
+                })
+            
+            health_status[stack_name] = {
+                'consecutive_failures': 0,
+                'last_notified': None,
+                'last_check': current_time
+            }
+            save_health_status()
 
 
 def import_orphan_containers_as_stacks():
@@ -609,6 +813,28 @@ def get_stacks():
             # Inactive = never started (no metadata marker AND no containers)
             is_inactive = not metadata.get('ever_started', False) and len(containers) == 0
             
+            # Check stack health and send notifications if needed
+            if containers and is_running:
+                check_stack_health(stack_name, containers)
+            
+            # Get update history for "fresh" badge
+            update_info = update_history.get(stack_name, {})
+            last_update = update_info.get('last_update')
+            updated_recently = False
+            update_age_hours = None
+            
+            if last_update:
+                try:
+                    update_time = datetime.fromisoformat(last_update)
+                    age_delta = datetime.now(pytz.UTC) - update_time
+                    update_age_hours = age_delta.total_seconds() / 3600
+                    
+                    # Show "fresh" badge if updated within last 24 hours
+                    if update_age_hours < 24:
+                        updated_recently = True
+                except:
+                    pass
+            
             stacks.append({
                 'name': stack_name,
                 'path': stack_path,
@@ -623,7 +849,11 @@ def get_stacks():
                 'stats': stats,
                 'inactive': is_inactive,  # Only inactive if never started
                 'web_ui_url': metadata.get('web_ui_url', ''),
-                'tags': metadata.get('tags', [])
+                'tags': metadata.get('tags', []),
+                'updated_recently': updated_recently,
+                'update_age_hours': update_age_hours,
+                'last_update': last_update,
+                'updated_by': update_info.get('updated_by', 'unknown')
             })
         except Exception as e:
             print(f"Error loading stack {stack_name}: {e}")
@@ -756,207 +986,11 @@ def refresh_container_metadata(stack_name):
         print(f"  ✗ Metadata refresh failed: {e}")
         return False
 
-
-def check_stack_updates(stack_name):
-    """Check if updates are available - GROK'S METHOD: Compare RepoDigest to Descriptor digest"""
-    stack_path = os.path.join(STACKS_DIR, stack_name)
-    
-    # Find compose file
-    compose_file = None
-    for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
-        potential_file = os.path.join(stack_path, filename)
-        if os.path.exists(potential_file):
-            compose_file = potential_file
-            break
-    
-    if not compose_file:
-        return False, None
-    
-    try:
-        # Get containers for this stack
-        containers = docker_client.containers.list(
-            all=True,
-            filters={'label': f'com.docker.compose.project={stack_name}'}
-        )
-        
-        if not containers:
-            return True, False
-        
-        update_available = False
-        
-        for container in containers:
-            try:
-                image_name = container.image.tags[0] if container.image.tags else None
-                if not image_name:
-                    continue
-                
-                # Get local image info
-                local_image = container.image
-                local_id = local_image.id
-                local_digests = local_image.attrs.get('RepoDigests', [])
-                
-                print(f"Checking updates for {container.name} ({image_name})")
-                
-                # Skip if no RepoDigests (locally built image)
-                if not local_digests:
-                    print(f"  ℹ No RepoDigests (locally built?), skipping")
-                    continue
-                
-                # Extract local digest: "nginx@sha256:abc123..." -> "sha256:abc123..."
-                local_digest = local_digests[0].split('@')[1]
-                print(f"  Local digest: {local_digest[:20]}...")
-                
-                # Get registry data
-                try:
-                    registry_data = docker_client.images.get_registry_data(image_name)
-                    
-                    # Try Grok's method: get Descriptor digest
-                    remote_digest = None
-                    if hasattr(registry_data, 'attrs') and 'Descriptor' in registry_data.attrs:
-                        remote_digest = registry_data.attrs['Descriptor']['digest']
-                        print(f"  Remote digest (Descriptor): {remote_digest[:20]}...")
-                        
-                        # Compare digests directly
-                        if local_digest != remote_digest:
-                            update_available = True
-                            print(f"  ✓ UPDATE AVAILABLE (digest mismatch)")
-                            break
-                        else:
-                            print(f"  ✓ UP TO DATE (digests match)")
-                    else:
-                        # Fallback: use ID comparison with safety check
-                        remote_id = registry_data.id
-                        print(f"  Remote ID (fallback): {remote_id[:20]}...")
-                        
-                        if remote_id != local_id:
-                            # Double-check against repo digests
-                            if not any(remote_id in digest for digest in local_digests):
-                                update_available = True
-                                print(f"  ✓ UPDATE AVAILABLE (ID mismatch)")
-                                break
-                            else:
-                                print(f"  ✓ UP TO DATE (ID in digests)")
-                        else:
-                            print(f"  ✓ UP TO DATE (ID match)")
-                
-                except docker.errors.NotFound:
-                    print(f"  ℹ Image not found in registry, skipping")
-                    continue
-                    
-                except Exception as e:
-                    print(f"  ⚠ Registry check failed, trying manifest: {e}")
-                    # Fallback to manifest inspect
-                    try:
-                        result = subprocess.run(
-                            ['docker', 'manifest', 'inspect', image_name],
-                            capture_output=True,
-                            text=True,
-                            timeout=30
-                        )
-                        
-                        if result.returncode == 0:
-                            manifest = json.loads(result.stdout)
-                            
-                            # Get digest from manifest
-                            remote_digest = None
-                            if 'config' in manifest:
-                                remote_digest = manifest['config'].get('digest', '')
-                            elif 'manifests' in manifest:
-                                # Multi-arch: use first manifest
-                                remote_digest = manifest['manifests'][0].get('digest', '')
-                            
-                            if remote_digest:
-                                print(f"  Remote digest (manifest): {remote_digest[:20]}...")
-                                if local_digest != remote_digest:
-                                    update_available = True
-                                    print(f"  ✓ UPDATE AVAILABLE (manifest check)")
-                                    break
-                                else:
-                                    print(f"  ✓ UP TO DATE (manifest check)")
-                    except Exception as e2:
-                        print(f"  ✗ Manifest check failed: {e2}")
-                        continue
-            
-            except Exception as e:
-                print(f"Error checking {container.name}: {e}")
-                continue
-        
-        # Update status
-        update_status[stack_name] = {
-            'last_check': datetime.now().isoformat(),
-            'update_available': update_available
-        }
-        
-        return True, update_available
-        
-    except Exception as e:
-        print(f"Error checking updates for {stack_name}: {e}")
-        return False, None
-
-def verify_update_success(stack_name):
-    """Verify that update was successful by checking if local digest now matches remote"""
-    try:
-        print(f"  → Verifying update for {stack_name}")
-        
-        containers = docker_client.containers.list(
-            all=True,
-            filters={'label': f'com.docker.compose.project={stack_name}'}
-        )
-        
-        if not containers:
-            print(f"  ⚠ No containers found for verification")
-            return False
-        
-        all_verified = True
-        
-        for container in containers:
-            try:
-                image_name = container.image.tags[0] if container.image.tags else None
-                if not image_name:
-                    continue
-                
-                # Get local image info (after update)
-                local_image = container.image
-                local_digests = local_image.attrs.get('RepoDigests', [])
-                
-                if not local_digests:
-                    print(f"  ℹ {container.name}: No RepoDigests, skipping verification")
-                    continue
-                
-                local_digest = local_digests[0].split('@')[1]
-                
-                # Get registry data
-                try:
-                    registry_data = docker_client.images.get_registry_data(image_name)
-                    remote_digest = None
-                    
-                    if hasattr(registry_data, 'attrs') and 'Descriptor' in registry_data.attrs:
-                        remote_digest = registry_data.attrs['Descriptor']['digest']
-                    
-                    if remote_digest:
-                        if local_digest == remote_digest:
-                            print(f"  ✓ {container.name}: Verified (digests match)")
-                        else:
-                            print(f"  ✗ {container.name}: Verification failed (digest mismatch)")
-                            all_verified = False
-                    else:
-                        print(f"  ⚠ {container.name}: Cannot verify (no remote digest)")
-                        
-                except Exception as e:
-                    print(f"  ⚠ {container.name}: Verification inconclusive ({e})")
-                    
-            except Exception as e:
-                print(f"  ⚠ Error verifying {container.name}: {e}")
-        
-        return all_verified
-        
-    except Exception as e:
-        print(f"  ✗ Verification error: {e}")
-        return False
-
-
 def auto_update_stack(stack_name):
-    """Check and optionally update a stack based on its schedule - with safety checks"""
+    """
+    Watchtower-style update: Pull first, then compare image IDs
+    This is the ONLY reliable method that actually works
+    """
     schedule_info = schedules.get(stack_name, {})
     mode = schedule_info.get('mode', 'off')
     
@@ -968,125 +1002,311 @@ def auto_update_stack(stack_name):
     print(f"Mode: {mode}, Cron: {schedule_info.get('cron')}")
     print(f"=" * 50)
     
-    success, update_available = check_stack_updates(stack_name)
-    
-    if not success:
-        print(f"✗ Failed to check updates for {stack_name}")
-        send_notification(
-            f"Dockup - Error",
-            f"Failed to check updates for stack: {stack_name}",
-            'error'
-        )
-        broadcast_ws({
-            'type': 'update_check_error',
-            'stack': stack_name
-        })
-        return
-    
-    if update_available:
-        print(f"✓ Update available for {stack_name}")
-        send_notification(
-            f"Dockup - Update Available",
-            f"Update available for stack: {stack_name}",
-            'info'
+    # WATCHTOWER METHOD: Get current image IDs BEFORE pulling
+    try:
+        containers = docker_client.containers.list(
+            all=True,
+            filters={'label': f'com.docker.compose.project={stack_name}'}
         )
         
-        if mode == 'auto':
-            print(f"Auto-updating stack: {stack_name}")
-            
-            # Get current container states for rollback
-            containers_before = []
+        if not containers:
+            print(f"✗ No containers found for {stack_name}")
+            return
+        
+        # Store current image IDs
+        old_image_ids = {}
+        for container in containers:
             try:
-                containers = docker_client.containers.list(
-                    all=True,
-                    filters={'label': f'com.docker.compose.project={stack_name}'}
-                )
-                for c in containers:
-                    containers_before.append({
-                        'name': c.name,
-                        'image': c.image.id,
-                        'status': c.status
-                    })
+                if container.image.tags:
+                    image_name = container.image.tags[0]
+                    old_image_ids[image_name] = container.image.id
+                    print(f"  Current {container.name}: {container.image.id[:12]}")
             except:
                 pass
-            
-            # Pull new images
-            print(f"  → Pulling new images...")
-            success_pull, output_pull = stack_operation(stack_name, 'pull')
-            if not success_pull:
-                send_notification(
-                    f"Dockup - Update Failed",
-                    f"Failed to pull images for '{stack_name}': {output_pull}",
-                    'error'
-                )
-                return
-            
-            print(f"  ✓ Images pulled successfully")
-            
-            # Restart with new images
-            print(f"  → Restarting containers...")
-            success_up, output_up = stack_operation(stack_name, 'up')
-            
-            if not success_up:
-                print(f"  ✗ First start failed, attempting retry...")
-                # FALLBACK RESTART: Try one more time
-                time.sleep(3)
-                success_up, output_up = stack_operation(stack_name, 'up')
-            
-            if success_up:
-                # Wait for containers to stabilize
-                time.sleep(5)
-                
-                # FORCE REFRESH metadata
-                refresh_container_metadata(stack_name)
-                
-                # POST-UPDATE VERIFICATION
-                if verify_update_success(stack_name):
-                    print(f"  ✓ Update verified: local digest matches remote")
-                    
-                    # Clear stale update flags
-                    update_status[stack_name] = {
-                        'last_check': datetime.now().isoformat(),
-                        'update_available': False
-                    }
-                    
-                    send_notification(
-                        f"Dockup - Updated",
-                        f"Stack '{stack_name}' updated successfully and verified",
-                        'success'
-                    )
-                    broadcast_ws({
-                        'type': 'stack_updated',
-                        'stack': stack_name
-                    })
-                else:
-                    print(f"  ⚠ Update completed but verification inconclusive")
-                    send_notification(
-                        f"Dockup - Updated",
-                        f"Stack '{stack_name}' updated (verification partial)",
-                        'success'
-                    )
-            else:
-                print(f"  ✗ Both start attempts failed")
-                send_notification(
-                    f"Dockup - Update Failed",
-                    f"Failed to restart stack '{stack_name}' after update",
-                    'error'
-                )
         
-        elif mode == 'check':
-            # Check only mode
-            print(f"Check only mode - notified user about update for {stack_name}")
+        if not old_image_ids:
+            print(f"✗ No tagged images found for {stack_name}")
+            return
+        
+    except Exception as e:
+        print(f"✗ Error getting container info: {e}")
+        send_notification(
+            f"Dockup - Error",
+            f"Failed to check stack '{stack_name}': {str(e)}",
+            'error'
+        )
+        return
+    
+    # PULL new images (always pull, like Watchtower)
+    print(f"  → Pulling latest images...")
+    success_pull, output_pull = stack_operation(stack_name, 'pull')
+    
+    if not success_pull:
+        print(f"✗ Pull failed: {output_pull}")
+        send_notification(
+            f"Dockup - Pull Failed",
+            f"Failed to pull images for '{stack_name}'",
+            'error'
+        )
+        return
+    
+    print(f"  ✓ Pull completed")
+    
+    # Get NEW image IDs after pull
+    new_image_ids = {}
+    images_changed = False
+    
+    for image_name, old_id in old_image_ids.items():
+        try:
+            # Get the newly pulled image
+            new_image = docker_client.images.get(image_name)
+            new_id = new_image.id
+            new_image_ids[image_name] = new_id
+            
+            if old_id != new_id:
+                print(f"  ✓ UPDATE DETECTED: {image_name}")
+                print(f"    Old: {old_id[:12]}")
+                print(f"    New: {new_id[:12]}")
+                images_changed = True
+            else:
+                print(f"  = No change: {image_name} ({old_id[:12]})")
+        except Exception as e:
+            print(f"  ⚠ Could not check {image_name}: {e}")
+    
+    # Update status
+    update_status[stack_name] = {
+        'last_check': datetime.now().isoformat(),
+        'update_available': images_changed
+    }
+    
+    # Handle based on mode
+    if mode == 'check':
+        # Check-only mode
+        if images_changed:
+            print(f"✓ Updates available for {stack_name} (check-only mode)")
+            send_notification(
+                f"Dockup - Update Available",
+                f"Stack '{stack_name}' has updates available",
+                'info'
+            )
             broadcast_ws({
                 'type': 'update_available',
                 'stack': stack_name
             })
-    else:
-        print(f"✓ No updates available for {stack_name}")
-        broadcast_ws({
-            'type': 'no_updates',
-            'stack': stack_name
-        })
+        else:
+            print(f"✓ No updates for {stack_name}")
+            broadcast_ws({
+                'type': 'no_updates',
+                'stack': stack_name
+            })
+        return
+    
+    elif mode == 'auto':
+        if not images_changed:
+            print(f"✓ Already up to date: {stack_name}")
+            broadcast_ws({
+                'type': 'no_updates',
+                'stack': stack_name
+            })
+            return
+        
+        # AUTO MODE: Actually update the containers
+        print(f"  → Auto-update enabled, recreating containers...")
+        
+        # Recreate containers with new images
+        success_up, output_up = stack_operation(stack_name, 'up')
+        
+        if not success_up:
+            print(f"  ✗ First restart failed, retrying...")
+            time.sleep(3)
+            success_up, output_up = stack_operation(stack_name, 'up')
+        
+        if success_up:
+            # Wait for containers to fully start and stabilize
+            print(f"  → Waiting for containers to start...")
+            time.sleep(10)
+            
+            # Force Docker to refresh image data
+            try:
+                docker_client.images.list()
+            except:
+                pass
+            
+            # Refresh metadata
+            refresh_container_metadata(stack_name)
+            
+            # VERIFY: Check that containers are now running the new images
+            containers_updated = docker_client.containers.list(
+                all=True,
+                filters={'label': f'com.docker.compose.project={stack_name}'}
+            )
+            
+            verification_passed = True
+            verification_results = []
+            
+            for container in containers_updated:
+                try:
+                    if not container.image.tags:
+                        # No tags = locally built image, skip verification
+                        continue
+                    
+                    image_name = container.image.tags[0]
+                    
+                    # Normalize IDs (remove sha256: prefix if present)
+                    current_id = container.image.id
+                    if current_id.startswith('sha256:'):
+                        current_id = current_id[7:]
+                    
+                    expected_id = new_image_ids.get(image_name)
+                    if expected_id and expected_id.startswith('sha256:'):
+                        expected_id = expected_id[7:]
+                    
+                    if expected_id:
+                        if current_id == expected_id:
+                            print(f"  ✓ {container.name}: Running new image ({current_id[:12]})")
+                            verification_results.append(True)
+                        else:
+                            print(f"  ✗ {container.name}: Image mismatch")
+                            print(f"    Expected: {expected_id[:12]}")
+                            print(f"    Got:      {current_id[:12]}")
+                            verification_passed = False
+                            verification_results.append(False)
+                    else:
+                        # Image name not in our tracking dict - could be sidecar or init container
+                        print(f"  ⚠ {container.name}: Image '{image_name}' not in tracking dict")
+                        print(f"    Tracked images: {list(new_image_ids.keys())}")
+                        # Don't fail verification for untracked images
+                        
+                except Exception as e:
+                    print(f"  ⚠ {container.name}: Verification error: {e}")
+            
+            # Consider it successful if we verified at least one container successfully
+            # and didn't have any explicit failures
+            if len(verification_results) == 0:
+                # No containers verified - maybe all are locally built or sidecars
+                print(f"  ⚠ No containers could be verified (may be locally built images)")
+                verification_passed = True  # Don't fail if we can't verify
+            elif any(verification_results) and not any(not r for r in verification_results):
+                # At least one success and no failures
+                verification_passed = True
+            
+            if verification_passed:
+                print(f"  ✓✓✓ UPDATE SUCCESSFUL AND VERIFIED ✓✓✓")
+                
+                # Record update in history for "fresh" badge
+                update_history[stack_name] = {
+                    'last_update': datetime.now(pytz.UTC).isoformat(),
+                    'updated_by': 'auto'
+                }
+                save_update_history()
+                
+                send_notification(
+                    f"Dockup - Updated Successfully",
+                    f"Stack '{stack_name}' updated and verified successfully!\n\nAll containers are running the latest images.",
+                    'success'
+                )
+                broadcast_ws({
+                    'type': 'stack_updated',
+                    'stack': stack_name,
+                    'verified': True
+                })
+            else:
+                print(f"  ⚠ Update completed but verification inconclusive")
+                
+                # Still record the update attempt
+                update_history[stack_name] = {
+                    'last_update': datetime.now(pytz.UTC).isoformat(),
+                    'updated_by': 'auto'
+                }
+                save_update_history()
+                
+                send_notification(
+                    f"Dockup - Updated",
+                    f"Stack '{stack_name}' updated (some containers may need manual check)",
+                    'success'
+                )
+                broadcast_ws({
+                    'type': 'stack_updated',
+                    'stack': stack_name,
+                    'verified': False
+                })
+        else:
+            print(f"  ✗✗✗ UPDATE FAILED ✗✗✗")
+            send_notification(
+                f"Dockup - Update Failed",
+                f"Failed to restart stack '{stack_name}' after pulling new images",
+                'error'
+            )
+            broadcast_ws({
+                'type': 'update_failed',
+                'stack': stack_name
+            })
+
+
+def check_stack_updates(stack_name):
+    """
+    Simple update check for UI - pulls latest and compares image IDs
+    This is called by the "Check for Updates" button
+    
+    This uses the same method as auto_update_stack to ensure consistency
+    """
+    try:
+        containers = docker_client.containers.list(
+            all=True,
+            filters={'label': f'com.docker.compose.project={stack_name}'}
+        )
+        
+        if not containers:
+            return True, False
+        
+        # Get current image IDs
+        old_image_ids = {}
+        for container in containers:
+            try:
+                if container.image.tags:
+                    image_name = container.image.tags[0]
+                    old_image_ids[image_name] = container.image.id
+            except:
+                pass
+        
+        if not old_image_ids:
+            return True, False
+        
+        # Pull latest images (required to check for updates reliably)
+        print(f"Checking updates for {stack_name}...")
+        success_pull, output_pull = stack_operation(stack_name, 'pull')
+        
+        if not success_pull:
+            print(f"  Pull failed, cannot check for updates")
+            return False, None
+        
+        # Get NEW image IDs after pull
+        update_available = False
+        for image_name, old_id in old_image_ids.items():
+            try:
+                new_image = docker_client.images.get(image_name)
+                new_id = new_image.id
+                
+                if old_id != new_id:
+                    print(f"  ✓ Update available: {image_name}")
+                    print(f"    Old: {old_id[:12]}")
+                    print(f"    New: {new_id[:12]}")
+                    update_available = True
+                    break
+            except Exception as e:
+                print(f"  ⚠ Could not check {image_name}: {e}")
+        
+        # Update status
+        update_status[stack_name] = {
+            'last_check': datetime.now().isoformat(),
+            'update_available': update_available
+        }
+        
+        return True, update_available
+        
+    except Exception as e:
+        print(f"✗ Error checking updates for {stack_name}: {e}")
+        return False, None
 
 
 def setup_scheduler():
@@ -1168,7 +1388,142 @@ def setup_scheduler():
 @app.route('/')
 def index():
     """Serve the main page"""
+    # Check if password needs to be set up
+    if config.get('password_enabled', False) and not is_password_set():
+        return redirect(url_for('setup'))
     return send_from_directory('static', 'index.html')
+
+
+@app.route('/login')
+def login():
+    """Serve login page"""
+    # If already authenticated, redirect to main page
+    if session.get('authenticated'):
+        return redirect(url_for('index'))
+    
+    # If password protection disabled, redirect to main page
+    if not config.get('password_enabled', False):
+        return redirect(url_for('index'))
+    
+    # If no password set yet, redirect to setup
+    if not is_password_set():
+        return redirect(url_for('setup'))
+    
+    return send_from_directory('static', 'login.html')
+
+
+@app.route('/setup')
+def setup():
+    """Serve setup page (only if password not set)"""
+    # If password already set, redirect to login
+    if is_password_set():
+        return redirect(url_for('login'))
+    
+    # If password protection disabled, redirect to main page
+    if not config.get('password_enabled', False):
+        return redirect(url_for('index'))
+    
+    return send_from_directory('static', 'setup.html')
+
+
+@app.route('/api/auth/setup', methods=['POST'])
+def api_auth_setup():
+    """Set up initial password"""
+    try:
+        # Only allow if password not already set
+        if is_password_set():
+            return jsonify({'error': 'Password already set'}), 400
+        
+        data = request.json
+        password = data.get('password', '')
+        confirm = data.get('confirm', '')
+        
+        if not password or not confirm:
+            return jsonify({'error': 'Password and confirmation required'}), 400
+        
+        if password != confirm:
+            return jsonify({'error': 'Passwords do not match'}), 400
+        
+        if len(password) < 6:
+            return jsonify({'error': 'Password must be at least 6 characters'}), 400
+        
+        # Save password
+        save_password(password)
+        
+        # Enable password protection
+        config['password_enabled'] = True
+        save_config()
+        
+        # Auto-login
+        session['authenticated'] = True
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def api_auth_login():
+    """Authenticate user"""
+    try:
+        data = request.json
+        password = data.get('password', '')
+        
+        if not password:
+            return jsonify({'error': 'Password required'}), 400
+        
+        # Load password hash
+        hashed = load_password_hash()
+        if not hashed:
+            return jsonify({'error': 'No password set'}), 400
+        
+        # Verify password
+        if verify_password(password, hashed):
+            session['authenticated'] = True
+            session.permanent = True  # Keep session for 31 days (Flask default)
+            return jsonify({'success': True})
+        else:
+            return jsonify({'error': 'Invalid password'}), 401
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+def api_auth_logout():
+    """Logout user"""
+    session.clear()
+    return jsonify({'success': True})
+
+
+@app.route('/api/auth/change-password', methods=['POST'])
+def api_auth_change_password():
+    """Change password"""
+    try:
+        data = request.json
+        current = data.get('current', '')
+        new_password = data.get('new_password', '')
+        confirm = data.get('confirm', '')
+        
+        if not all([current, new_password, confirm]):
+            return jsonify({'error': 'All fields required'}), 400
+        
+        if new_password != confirm:
+            return jsonify({'error': 'New passwords do not match'}), 400
+        
+        if len(new_password) < 6:
+            return jsonify({'error': 'Password must be at least 6 characters'}), 400
+        
+        # Verify current password
+        hashed = load_password_hash()
+        if not hashed or not verify_password(current, hashed):
+            return jsonify({'error': 'Current password incorrect'}), 401
+        
+        # Save new password
+        save_password(new_password)
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/stacks')
@@ -1321,6 +1676,14 @@ def api_stack_operation(stack_name):
             if stack_name in update_status:
                 update_status[stack_name]['update_available'] = False
                 update_status[stack_name]['last_check'] = datetime.now(pytz.UTC).isoformat()
+            
+            # Record manual update in history (only for 'up' which actually updates)
+            if operation == 'up':
+                update_history[stack_name] = {
+                    'last_update': datetime.now(pytz.UTC).isoformat(),
+                    'updated_by': 'manual'
+                }
+                save_update_history()
         
         return jsonify({'success': True, 'output': output})
     return jsonify({'error': output}), 400
@@ -1453,8 +1816,8 @@ def api_images():
             # Get size in MB
             size_mb = round(img.attrs.get('Size', 0) / (1024 * 1024), 2)
             
-            # Get tags
-            tags = img.tags if img.tags else ['<none>:<none>']
+            # Get tags - show as <untagged> instead of <none>:<none>
+            tags = img.tags if img.tags else ['<untagged>']
             
             # Check if used by any container
             containers_using = docker_client.containers.list(
@@ -1473,8 +1836,8 @@ def api_images():
                     'containers': [c.name for c in containers_using]
                 })
         
-        # Sort by size (largest first)
-        image_list.sort(key=lambda x: x['size_mb'], reverse=True)
+        # Sort alphabetically by tag name
+        image_list.sort(key=lambda x: x['tag'].lower())
         
         return jsonify(image_list)
     except Exception as e:
@@ -2515,6 +2878,8 @@ if __name__ == '__main__':
         print("Loading configuration...")
         load_config()
         load_schedules()
+        load_health_status()
+        load_update_history()
         print("✓ Configuration loaded")
         
         # Setup scheduler

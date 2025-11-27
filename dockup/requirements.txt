@@ -8,3 +8,4 @@ croniter==2.0.1
 urllib3==1.26.18
 requests==2.31.0
 pytz==2024.1
+bcrypt==4.1.2
