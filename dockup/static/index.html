@@ -169,6 +169,25 @@
             color: #eab308;
         }
 
+        /* Fresh update badge */
+        .fresh-badge {
+            padding: 3px 10px;
+            border-radius: 15px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: rgba(59, 130, 246, 0.15);
+            color: #3b82f6;
+            animation: glow 2s ease-in-out infinite;
+        }
+
+        @keyframes glow {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
         /* Buttons */
         .btn {
             padding: 8px 16px;
@@ -703,6 +722,10 @@
                 <i class="fas fa-cog"></i>
                 Settings
             </div>
+            <div class="nav-item" @click="logout" style="margin-top: auto; color: #ef4444;" v-if="isPasswordEnabled">
+                <i class="fas fa-sign-out-alt"></i>
+                Logout
+            </div>
         </div>
 
         <!-- Main Content -->
@@ -907,6 +930,11 @@
                                     <span v-if="getStackHealth(stack) === 'healthy'">Healthy</span>
                                     <span v-else-if="getStackHealth(stack) === 'unhealthy'">Unhealthy</span>
                                     <span v-else-if="getStackHealth(stack) === 'starting'">Starting</span>
+                                </span>
+                                
+                                <!-- Fresh update badge (updated within 24h) -->
+                                <span v-if="stack.updated_recently" class="fresh-badge" :title="'Last updated ' + formatUpdateTime(stack)">
+                                    <i class="fas fa-sparkles"></i> Updated {{ formatUpdateAge(stack.update_age_hours) }}
                                 </span>
                                 
                                 <!-- Uptime -->
@@ -1191,6 +1219,43 @@
                     </div>
 
                     <div class="settings-section">
+                        <h3><i class="fas fa-lock"></i> Password Protection</h3>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.password_enabled">
+                                <span>Enable password protection</span>
+                            </label>
+                            <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                Require password to access Dockup
+                            </small>
+                        </div>
+                        
+                        <div class="form-group" style="margin-top: 20px;">
+                            <button class="btn btn-secondary" @click="showChangePassword = !showChangePassword">
+                                <i class="fas fa-key"></i> Change Password
+                            </button>
+                        </div>
+
+                        <div v-if="showChangePassword" style="margin-top: 20px; padding: 20px; background: rgba(15, 23, 42, 0.5); border-radius: 8px;">
+                            <div class="form-group">
+                                <label class="form-label">Current Password</label>
+                                <input type="password" class="form-input" v-model="passwordChange.current" placeholder="Current password">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">New Password</label>
+                                <input type="password" class="form-input" v-model="passwordChange.newPassword" placeholder="New password (min 6 characters)">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Confirm New Password</label>
+                                <input type="password" class="form-input" v-model="passwordChange.confirm" placeholder="Confirm new password">
+                            </div>
+                            <button class="btn btn-primary" @click="changePassword">
+                                <i class="fas fa-save"></i> Update Password
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
                         <h3><i class="fas fa-toggle-on"></i> Notification Preferences</h3>
                         <div class="form-group">
                             <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
@@ -1209,6 +1274,17 @@
                                 <input type="checkbox" v-model="settings.notify_on_error">
                                 <span>Notify on errors</span>
                             </label>
+                        </div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.notify_on_health_failure">
+                                <span>Notify when stacks become unhealthy</span>
+                            </label>
+                        </div>
+                        <div class="form-group" v-if="settings.notify_on_health_failure">
+                            <label class="form-label">Health Check Threshold</label>
+                            <input type="number" class="form-control" v-model.number="settings.health_check_threshold" min="1" max="10" placeholder="3">
+                            <small style="color: #94a3b8;">Number of consecutive failures before notification (default: 3)</small>
                         </div>
                     </div>
 
@@ -2039,8 +2115,18 @@
                         default_cron: '0 2 * * *',
                         notify_on_check: true,
                         notify_on_update: true,
-                        notify_on_error: true
+                        notify_on_error: true,
+                        notify_on_health_failure: true,
+                        health_check_threshold: 3,
+                        password_enabled: false
                     },
+                    showChangePassword: false,
+                    passwordChange: {
+                        current: '',
+                        newPassword: '',
+                        confirm: ''
+                    },
+                    isPasswordEnabled: false,
                     showEditModal: false,
                     editingStack: null,
                     editStackName: '',
@@ -2258,6 +2344,7 @@
                     try {
                         const response = await axios.get('/api/config');
                         this.settings = response.data;
+                        this.isPasswordEnabled = response.data.password_enabled || false;
                     } catch (error) {
                         this.showToast('Error', 'Failed to load settings', 'error');
                     }
@@ -3204,6 +3291,24 @@
                     return null;
                 },
                 
+                formatUpdateAge(hours) {
+                    if (!hours) return '';
+                    if (hours < 1) return 'just now';
+                    if (hours < 2) return '1h ago';
+                    if (hours < 24) return Math.floor(hours) + 'h ago';
+                    return '24h ago';
+                },
+                
+                formatUpdateTime(stack) {
+                    if (!stack.last_update) return '';
+                    try {
+                        const date = new Date(stack.last_update);
+                        return date.toLocaleString();
+                    } catch {
+                        return '';
+                    }
+                },
+                
                 async cloneStack(stackName) {
                     this.cloneStackName = stackName;
                     this.cloneNewName = stackName + '-clone';
@@ -3230,6 +3335,49 @@
                         }
                     } catch (error) {
                         this.showToast('Clone Failed', error.response?.data?.error || 'Failed to clone stack', 'error');
+                    }
+                },
+                
+                async logout() {
+                    if (!confirm('Are you sure you want to logout?')) return;
+                    try {
+                        await axios.post('/api/auth/logout');
+                        window.location.href = '/login';
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to logout', 'error');
+                    }
+                },
+                
+                async changePassword() {
+                    if (!this.passwordChange.current || !this.passwordChange.newPassword || !this.passwordChange.confirm) {
+                        this.showToast('Error', 'All fields are required', 'error');
+                        return;
+                    }
+                    
+                    if (this.passwordChange.newPassword !== this.passwordChange.confirm) {
+                        this.showToast('Error', 'New passwords do not match', 'error');
+                        return;
+                    }
+                    
+                    if (this.passwordChange.newPassword.length < 6) {
+                        this.showToast('Error', 'Password must be at least 6 characters', 'error');
+                        return;
+                    }
+                    
+                    try {
+                        const response = await axios.post('/api/auth/change-password', {
+                            current: this.passwordChange.current,
+                            new_password: this.passwordChange.newPassword,
+                            confirm: this.passwordChange.confirm
+                        });
+                        
+                        if (response.data.success) {
+                            this.showToast('Success', 'Password changed successfully', 'success');
+                            this.showChangePassword = false;
+                            this.passwordChange = { current: '', newPassword: '', confirm: '' };
+                        }
+                    } catch (error) {
+                        this.showToast('Error', error.response?.data?.error || 'Failed to change password', 'error');
                     }
                 },
                 
