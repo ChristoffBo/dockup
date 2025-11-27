@@ -1,4 +1,6 @@
 ## latest (2025-11-27)
+Marked as feature complete for now.
+## latest (2025-11-27)
 added auth, can be switched on in settings and alternatively first run.
 ## latest (2025-11-26)
 added a network tab, can now create networks and delete them from the UI. hope I did not break anything.
