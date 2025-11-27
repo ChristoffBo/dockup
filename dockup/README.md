@@ -300,12 +300,12 @@ Each stack stores metadata in `.dockup-meta.json`:
 - Update history
 - Custom settings
 - Web UI URL
+- Tagging
 
 ### Safety Features
 - **No destructive defaults** — Everything requires confirmation
 - **Health verification** — Updates wait for containers to be healthy
 - **Safe orphan import** — Never modifies running containers
-- **Backup before update** — Optional backup creation before auto-updates
 - **Port conflict detection** — Warns before starting conflicting services
 
 ---
