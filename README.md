@@ -300,6 +300,7 @@ Each stack stores metadata in `.dockup-meta.json`:
 - Update history
 - Custom settings
 - Web UI URL
+- Tagging
 
 ### Safety Features
 - **No destructive defaults** — Everything requires confirmation
