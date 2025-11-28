@@ -1,3 +1,5 @@
+## latest (2025-11-28)
+squashed some bugs upgraded dependencies
 ## latest (2025-11-27)
 Marked as feature complete for now.
 ## latest (2025-11-27)
