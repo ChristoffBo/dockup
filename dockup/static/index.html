@@ -2783,29 +2783,27 @@
                         
                         const action = this.editingStack ? 'updated' : 'created';
                         const path = `/stacks/${this.editStackName}/compose.yaml`;
-                        // Save Web UI URL metadata
-              await axios.post(
-    `/api/stack/${this.editStackName}/metadata`,
-    {
-        web_ui_url: this.editStack.web_ui_url || ""
-    }
-);
                         
-                        // Save Web UI URL if editing
+                        // Save metadata (Web UI URL and tags)
+                        const metadataToSave = {
+                            web_ui_url: this.editStack.web_ui_url || ""
+                        };
+                        
+                        // Add tags if editing
                         if (this.editingStack) {
-                            await this.saveWebUiUrl();
-                            
-                            // Save tags
                             try {
                                 const tags = this.stackTags
                                     .split(',')
                                     .map(t => t.trim())
                                     .filter(t => t.length > 0);
-                                await axios.post(`/api/stack/${this.editingStack}/metadata`, { tags: tags });
+                                metadataToSave.tags = tags;
                             } catch (error) {
-                                console.error('Failed to save tags:', error);
+                                console.error('Failed to parse tags:', error);
                             }
                         }
+                        
+                        // Save all metadata in one call
+                        await axios.post(`/api/stack/${this.editStackName}/metadata`, metadataToSave);
                         
                         this.showToast('Success', `Stack ${action} successfully at ${path}`, 'success');
                         this.showEditModal = false;
