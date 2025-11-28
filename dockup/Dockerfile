@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Install Docker CLI and Docker Compose
 RUN apt-get update && \
@@ -21,21 +21,19 @@ RUN apt-get update && \
 # Set working directory
 WORKDIR /app
 
-# Install Python dependencies
-# Force urllib3 1.26.x first to avoid compatibility issues
-RUN pip install --no-cache-dir 'urllib3==1.26.18' && \
-    pip install --no-cache-dir \
-    flask==3.0.0 \
+# Install Python dependencies with latest versions
+RUN pip install --no-cache-dir \
+    flask==3.1.2 \
     flask-sock==0.7.0 \
-    docker==7.0.0 \
-    pyyaml==6.0.1 \
+    docker==7.1.0 \
+    pyyaml==6.0.2 \
     apscheduler==3.10.4 \
-    apprise==1.6.0 \
-    croniter==2.0.1 \
-    requests==2.31.0 \
-    pytz==2024.1 \
-    psutil==5.9.8 \
-    bcrypt==4.1.2
+    apprise==1.9.0 \
+    croniter==5.0.1 \
+    requests==2.32.3 \
+    pytz==2024.2 \
+    psutil==6.1.0 \
+    bcrypt==4.2.1
 
 # Create directories
 RUN mkdir -p /app/static /app/data /stacks
