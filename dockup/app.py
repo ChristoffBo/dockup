@@ -1677,8 +1677,9 @@ def api_stack_operation(stack_name):
                 update_status[stack_name]['update_available'] = False
                 update_status[stack_name]['last_check'] = datetime.now(pytz.UTC).isoformat()
             
-            # Record manual update in history (only for 'up' which actually updates)
-            if operation == 'up':
+            # Record manual update in history ONLY if 'pull' was done (which actually updates images)
+            # Don't record on 'up' as that's just starting containers
+            if operation == 'pull':
                 update_history[stack_name] = {
                     'last_update': datetime.now(pytz.UTC).isoformat(),
                     'updated_by': 'manual'
