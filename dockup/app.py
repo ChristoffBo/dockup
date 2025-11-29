@@ -14,6 +14,8 @@ import subprocess
 import io
 import psutil
 import bcrypt
+import requests
+import secrets
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory, send_file, session, redirect, url_for
@@ -55,6 +57,7 @@ update_history = {}  # Track recent updates: {stack_name: {last_update: timestam
 websocket_clients = []
 stack_stats_cache = {}  # Cache for stack stats
 network_stats_cache = {}  # Cache for network bytes tracking (for rate calculation)
+peer_sessions = {}  # Cache for peer authentication sessions
 
 # Initialize Apprise
 apobj = apprise.Apprise()
@@ -80,10 +83,21 @@ def load_config():
             'timezone': 'UTC',
             'auto_prune': False,
             'auto_prune_cron': '0 3 * * 0',
-            'password_enabled': False
+            'password_enabled': False,
+            'instance_name': 'DockUp',
+            'api_token': secrets.token_urlsafe(32),
+            'peers': {}
         }
         save_config()
     
+    
+    # Add missing fields to existing configs
+    if 'instance_name' not in config:
+        config['instance_name'] = 'DockUp'
+    if 'api_token' not in config:
+        config['api_token'] = secrets.token_urlsafe(32)
+    if 'peers' not in config:
+        config['peers'] = {}
     # Setup notification services
     setup_notifications()
 
@@ -681,6 +695,50 @@ def format_timestamp(timestamp_str):
         return timestamp_str
 
 
+
+
+def require_api_token(f):
+    """Decorator to require valid API token for peer requests"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Check if request is from localhost (always allowed)
+        if request.remote_addr in ['127.0.0.1', '::1', 'localhost']:
+            return f(*args, **kwargs)
+        
+        # Check for valid API token in headers
+        token = request.headers.get('X-API-Token', '')
+        if token != config.get('api_token', ''):
+            return jsonify({'error': 'Invalid or missing API token'}), 401
+        
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def get_peer_session(peer_id):
+    """Get cached session for peer or create new one"""
+    global peer_sessions
+    
+    peer = config['peers'].get(peer_id)
+    if not peer or not peer.get('enabled', True):
+        return None
+    
+    # Check if we have a cached session
+    if peer_id in peer_sessions:
+        session = peer_sessions[peer_id]
+        # Test if session is still valid
+        try:
+            test = session.get(f"{peer['url']}/api/ping", timeout=3, headers={'X-API-Token': peer['api_token']})
+            if test.status_code == 200:
+                return session
+        except:
+            pass
+    
+    # Create new session
+    session = requests.Session()
+    session.headers.update({'X-API-Token': peer['api_token']})
+    peer_sessions[peer_id] = session
+    return session
+
 def get_stacks():
     """Get all Docker Compose stacks by scanning the stacks directory (like Dockge)"""
     stacks = []
@@ -835,12 +893,25 @@ def get_stacks():
                 except:
                     pass
             
+            # Determine status: running, stopped, or partial
+            running_count = sum(1 for c in containers if c['status'] == 'running')
+            if running_count == len(containers) and len(containers) > 0:
+                status = 'running'
+            elif running_count > 0:
+                status = 'partial'
+            elif len(containers) > 0:
+                status = 'stopped'
+            else:
+                status = 'inactive'
+            
             stacks.append({
                 'name': stack_name,
                 'path': stack_path,
                 'compose_file': compose_file,
                 'services': services,
-                'containers': containers,
+                'containers': containers,  # KEEP AS ARRAY
+                'status': status,
+                'health': 'healthy' if all(c['health'] in ['healthy', 'none'] for c in containers) else 'unhealthy' if any(c['health'] == 'unhealthy' for c in containers) else 'starting',
                 'running': is_running,
                 'update_mode': schedule_info.get('mode', 'off'),
                 'cron': schedule_info.get('cron', config.get('default_cron', '0 2 * * *')),
@@ -2145,7 +2216,12 @@ def api_stack_check_updates(stack_name):
 @app.route('/api/config', methods=['GET'])
 def api_config_get():
     """Get configuration"""
-    return jsonify(config)
+    # Return config without peers (but include api_token for copying)
+    safe_config = {k: v for k, v in config.items() if k != 'peers'}
+    safe_config['instance_name'] = config.get('instance_name', 'DockUp')
+    # Return full token - user needs to copy it to connect other instances
+    safe_config['api_token'] = config.get('api_token', '')
+    return jsonify(safe_config)
 
 
 @app.route('/api/config', methods=['POST'])
@@ -2154,8 +2230,19 @@ def api_config_set():
     global config
     data = request.json
     
+    # Preserve critical fields that shouldn't be overwritten
+    preserved = {
+        'api_token': config.get('api_token'),
+        'peers': config.get('peers', {})
+    }
+    
     # Update config
     config.update(data)
+    
+    # Restore preserved fields
+    config['api_token'] = preserved['api_token']
+    config['peers'] = preserved['peers']
+    
     save_config()
     setup_notifications()
     
@@ -2868,6 +2955,265 @@ def api_stack_metadata(stack_name):
         return jsonify({'success': True})
 
 
+
+@app.route('/api/ping')
+@require_api_token
+def api_ping():
+    """Ping endpoint for peer health checks"""
+    return jsonify({'status': 'ok', 'instance_name': config.get('instance_name', 'DockUp')})
+
+
+@app.route('/api/stacks/all')
+@require_auth
+def api_get_all_stacks():
+    """Get local stacks + all peer stacks"""
+    all_stacks = []
+    
+    # Get local stacks
+    local_stacks = get_stacks()
+    for stack in local_stacks:
+        stack['peer_id'] = None
+        stack['peer_name'] = config.get('instance_name', 'DockUp')
+        stack['is_local'] = True
+        if stack.get('name') in stack_stats_cache:
+            stack['stats'] = stack_stats_cache[stack['name']]
+    
+    all_stacks.extend(local_stacks)
+    
+    # Get stacks from each peer
+    for peer_id, peer in config.get('peers', {}).items():
+        if not peer.get('enabled', True):
+            continue
+        
+        try:
+            session = get_peer_session(peer_id)
+            if not session:
+                continue
+            
+            response = session.get(f"{peer['url']}/api/stacks", timeout=5)
+            if response.status_code == 200:
+                peer_stacks = response.json()
+                for stack in peer_stacks:
+                    stack['peer_id'] = peer_id
+                    stack['peer_name'] = peer.get('name', peer_id)
+                    stack['is_local'] = False
+                all_stacks.extend(peer_stacks)
+        except Exception as e:
+            print(f"Error fetching stacks from peer {peer_id}: {e}")
+    
+    return jsonify(all_stacks)
+
+
+@app.route('/api/peers')
+@require_auth
+def api_get_peers():
+    """Get all configured peers"""
+    # Don't send API tokens
+    safe_peers = {}
+    for peer_id, peer in config.get('peers', {}).items():
+        safe_peer = {k: v for k, v in peer.items() if k != 'api_token'}
+        safe_peer['has_token'] = bool(peer.get('api_token'))
+        safe_peers[peer_id] = safe_peer
+    
+    return jsonify(safe_peers)
+
+
+@app.route('/api/peers', methods=['POST'])
+@require_auth
+def api_add_peer():
+    """Add new peer"""
+    data = request.json
+    peer_id = data.get('id')
+    
+    if not peer_id:
+        return jsonify({'error': 'Peer ID is required'}), 400
+    
+    if 'peers' not in config:
+        config['peers'] = {}
+    
+    config['peers'][peer_id] = {
+        'name': data.get('name', peer_id),
+        'url': data.get('url', ''),
+        'api_token': data.get('api_token', ''),
+        'enabled': data.get('enabled', True)
+    }
+    
+    save_config()
+    
+    print(f"Added peer {peer_id}: {config['peers'][peer_id]}")
+    print(f"Total peers: {len(config.get('peers', {}))}")
+    
+    return jsonify({'success': True})
+
+
+@app.route('/api/peers/<peer_id>', methods=['PUT'])
+@require_auth
+def api_update_peer(peer_id):
+    """Update peer configuration"""
+    if peer_id not in config.get('peers', {}):
+        return jsonify({'error': 'Peer not found'}), 404
+    
+    data = request.json
+    
+    # Update fields, preserving token if not provided
+    if 'api_token' not in data:
+        data['api_token'] = config['peers'][peer_id].get('api_token', '')
+    
+    config['peers'][peer_id].update(data)
+    save_config()
+    
+    # Clear cached session
+    if peer_id in peer_sessions:
+        del peer_sessions[peer_id]
+    
+    return jsonify({'success': True})
+
+
+@app.route('/api/peers/<peer_id>', methods=['DELETE'])
+@require_auth
+def api_delete_peer(peer_id):
+    """Delete peer"""
+    if peer_id in config.get('peers', {}):
+        del config['peers'][peer_id]
+        save_config()
+        
+        # Clear cached session
+        if peer_id in peer_sessions:
+            del peer_sessions[peer_id]
+    
+    return jsonify({'success': True})
+
+
+@app.route('/api/peers/<peer_id>/test')
+@require_auth
+def api_test_peer(peer_id):
+    """Test connection to peer"""
+    peer = config.get('peers', {}).get(peer_id)
+    if not peer:
+        return jsonify({'error': 'Peer not found'}), 404
+    
+    try:
+        session = requests.Session()
+        session.headers.update({'X-API-Token': peer['api_token']})
+        
+        response = session.get(f"{peer['url']}/api/ping", timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return jsonify({
+                'online': True,
+                'instance_name': data.get('instance_name', 'Unknown')
+            })
+        else:
+            return jsonify({
+                'online': False,
+                'error': f'HTTP {response.status_code}'
+            })
+    except requests.exceptions.Timeout:
+        return jsonify({'online': False, 'error': 'Connection timeout'})
+    except Exception as e:
+        return jsonify({'online': False, 'error': str(e)})
+
+
+@app.route('/api/peer/<peer_id>/stacks')
+@require_auth
+def api_peer_stacks(peer_id):
+    """Get stacks from peer"""
+    session = get_peer_session(peer_id)
+    if not session:
+        return jsonify({'error': 'Failed to connect to peer'}), 503
+    
+    try:
+        peer = config['peers'][peer_id]
+        response = session.get(f"{peer['url']}/api/stacks", timeout=10)
+        
+        if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            return jsonify({'error': f'Peer returned {response.status_code}'}), response.status_code
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/peer/<peer_id>/stack/<stack_name>')
+@require_auth
+def api_peer_stack(peer_id, stack_name):
+    """Get stack details from peer"""
+    session = get_peer_session(peer_id)
+    if not session:
+        return jsonify({'error': 'Failed to connect to peer'}), 503
+    
+    try:
+        peer = config['peers'][peer_id]
+        response = session.get(f"{peer['url']}/api/stack/{stack_name}", timeout=10)
+        
+        if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            return jsonify({'error': f'Peer returned {response.status_code}'}), response.status_code
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/peer/<peer_id>/stack/<stack_name>/operation', methods=['POST'])
+@require_auth
+def api_peer_stack_operation(peer_id, stack_name):
+    """Perform operation on peer stack"""
+    session = get_peer_session(peer_id)
+    if not session:
+        return jsonify({'error': 'Failed to connect to peer'}), 503
+    
+    try:
+        peer = config['peers'][peer_id]
+        response = session.post(
+            f"{peer['url']}/api/stack/{stack_name}/operation",
+            json=request.json,
+            timeout=60
+        )
+        
+        if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            return jsonify({'error': f'Peer returned {response.status_code}'}), response.status_code
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/peer/<peer_id>/stack/<stack_name>/logs/<container_id>')
+@require_auth
+def api_peer_logs(peer_id, stack_name, container_id):
+    """Get logs from peer container"""
+    session = get_peer_session(peer_id)
+    if not session:
+        return jsonify({'error': 'Failed to connect to peer'}), 503
+    
+    try:
+        peer = config['peers'][peer_id]
+        tail = request.args.get('tail', 100, type=int)
+        response = session.get(
+            f"{peer['url']}/api/stack/{stack_name}/logs/{container_id}",
+            params={'tail': tail},
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            return jsonify({'error': f'Peer returned {response.status_code}'}), response.status_code
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/config/regenerate-token', methods=['POST'])
+@require_auth
+def api_regenerate_token():
+    """Regenerate API token"""
+    config['api_token'] = secrets.token_urlsafe(32)
+    save_config()
+    return jsonify({'token': config['api_token']})
+
+
+
 if __name__ == '__main__':
     try:
         # Test Docker connection
@@ -2897,6 +3243,13 @@ if __name__ == '__main__':
         stats_thread = threading.Thread(target=update_stats_background, daemon=True)
         stats_thread.start()
         print("✓ Stats updater started")
+        
+        # Display instance info
+        print("=" * 50)
+        print(f"Instance Name: {config.get('instance_name', 'DockUp')}")
+        print(f"API Token: {config.get('api_token', 'Not set')[:16]}...")
+        print(f"Configured Peers: {len(config.get('peers', {}))}")
+        print("=" * 50)
         
         # Start Flask app
         print("Starting Dockup on port 5000...")
