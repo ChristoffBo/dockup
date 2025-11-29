@@ -1,3 +1,5 @@
+## latest (2025-11-29)
+Added Peer mode, can now connect two dockups in peer mode.
 ## latest (2025-11-28)
 squashed some bugs upgraded dependencies
 ## latest (2025-11-27)
