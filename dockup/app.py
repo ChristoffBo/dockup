@@ -29,7 +29,15 @@ import pytz
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='static', static_url_path='')
-app.secret_key = os.urandom(24)  # Generate random secret key for sessions
+# Persistent secret key (survives container restarts)
+SECRET_KEY_FILE = '/app/data/secret.key'
+if os.path.exists(SECRET_KEY_FILE):
+    with open(SECRET_KEY_FILE, 'rb') as f:
+        app.secret_key = f.read()
+else:
+    app.secret_key = os.urandom(24)
+    with open(SECRET_KEY_FILE, 'wb') as f:
+        f.write(app.secret_key)
 sock = Sock(app)
 
 # Configuration
