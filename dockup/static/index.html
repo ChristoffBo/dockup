@@ -207,6 +207,20 @@
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
         }
 
+
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            background: rgba(71, 85, 105, 0.3) !important;
+            border-color: rgba(71, 85, 105, 0.5) !important;
+            color: #64748b !important;
+            pointer-events: none;
+        }
+
+        .btn:disabled:hover {
+            transform: none;
+            box-shadow: none;
+        }
         .btn-primary {
             background: #93c5fd;
             color: #1e293b;
@@ -912,16 +926,16 @@
                             <div style="display: flex; align-items: center; gap: 10px;">
                                 <!-- Status badge -->
                                 <span class="status-badge" :class="{
-                                    'status-running': stack.running,
-                                    'status-stopped': !stack.running && stack.containers.length > 0,
+                                    'status-running': stack.status === 'running',
+                                    'status-stopped': stack.status === 'stopped',
                                     'status-restarting': stack.containers.some(c => c.status === 'restarting')
                                 }">
                                     <span v-if="stack.containers.some(c => c.status === 'restarting')">Restarting</span>
-                                    <span v-else>{{ stack.running ? 'Running' : 'Stopped' }}</span>
+                                    <span v-else>{{ stack.status === 'running' ? 'Running' : 'Stopped' }}</span>
                                 </span>
                                 
                                 <!-- Health badge (only if running and has health checks) -->
-                                <span v-if="stack.running && getStackHealth(stack)" class="health-badge" :class="{
+                                <span v-if="stack.status === 'running' && getStackHealth(stack)" class="health-badge" :class="{
                                     'health-healthy': getStackHealth(stack) === 'healthy',
                                     'health-unhealthy': getStackHealth(stack) === 'unhealthy',
                                     'health-starting': getStackHealth(stack) === 'starting'
@@ -938,7 +952,7 @@
                                 </span>
                                 
                                 <!-- Uptime -->
-                                <span v-if="stack.running && getStackUptime(stack)" style="font-size: 12px; color: #94a3b8;">
+                                <span v-if="stack.status === 'running' && getStackUptime(stack)" style="font-size: 12px; color: #94a3b8;">
                                     <i class="fas fa-clock"></i> {{ getStackUptime(stack) }}
                                 </span>
                             </div>
@@ -949,15 +963,15 @@
                                 <span class="stack-info-label">Services:</span>
                                 <span class="stack-info-value">{{ stack.services.length }}</span>
                             </div>
-                            <div class="stack-info-row" v-if="stack.running">
+                            <div class="stack-info-row" v-if="stack.status === 'running'">
                                 <span class="stack-info-label">CPU:</span>
                                 <span class="stack-info-value">{{ stack.stats.cpu_percent }}%</span>
                             </div>
-                            <div class="stack-info-row" v-if="stack.running">
+                            <div class="stack-info-row" v-if="stack.status === 'running'">
                                 <span class="stack-info-label">RAM:</span>
                                 <span class="stack-info-value">{{ stack.stats.mem_usage_mb }} MB ({{ stack.stats.mem_percent }}%)</span>
                             </div>
-                            <div class="stack-info-row" v-if="stack.running">
+                            <div class="stack-info-row" v-if="stack.status === 'running'">
                                 <span class="stack-info-label">Network:</span>
                                 <span class="stack-info-value">
                                     <i class="fas fa-arrow-down"></i> {{ stack.stats.net_rx_mbps || 0 }} Mbps
@@ -982,13 +996,13 @@
                         </div>
 
                         <div class="btn-group" style="margin-top: 15px;">
-                            <button class="btn btn-success" v-if="!stack.running" @click="stackOperationWithTerminal(stack.name, 'up')">
+                            <button class="btn btn-success" v-if="stack.status !== 'running'" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'up') : remoteStackOperation(stack, 'up')">
                                 <i class="fas fa-play"></i> Start
                             </button>
-                            <button class="btn btn-danger" v-if="stack.running" @click="stackOperationWithTerminal(stack.name, 'stop')">
+                            <button class="btn btn-danger" v-if="stack.status === 'running'" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'stop') : remoteStackOperation(stack, 'stop')">
                                 <i class="fas fa-stop"></i> Stop
                             </button>
-                            <button class="btn btn-warning" v-if="stack.running" @click="stackOperationWithTerminal(stack.name, 'restart')">
+                            <button class="btn btn-warning" v-if="stack.status === 'running'" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'restart') : remoteStackOperation(stack, 'restart')">
                                 <i class="fas fa-redo"></i> Restart
                             </button>
                             <button class="btn btn-warning" v-if="stack.update_available" @click="updateStack(stack.name)">
@@ -997,28 +1011,28 @@
                             <button class="btn btn-primary" @click="checkUpdates(stack.name)">
                                 <i class="fas fa-sync"></i> Check
                             </button>
-                            <button class="btn btn-primary" @click="quickSetMode(stack.name, 'check')">
+                            <button class="btn btn-primary" @click="quickSetMode(stack.name, 'check')" :disabled="!stack.is_local" :title="!stack.is_local ? 'Configure on remote DockUp instance' : ''">
                                 <i class="fas fa-search"></i> Check Only
                             </button>
-                            <button class="btn btn-success" @click="quickSetMode(stack.name, 'auto')">
+                            <button class="btn btn-success" @click="quickSetMode(stack.name, 'auto')" :disabled="!stack.is_local" :title="!stack.is_local ? 'Configure on remote DockUp instance' : ''">
                                 <i class="fas fa-magic"></i> Auto Update
                             </button>
-                            <button class="btn btn-primary" @click="editStack(stack.name)">
+                            <button class="btn btn-primary" @click="editStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Cannot edit remote stacks' : ''">
                                 <i class="fas fa-edit"></i> Edit
                             </button>
-                            <button class="btn btn-secondary" @click="viewLogs(stack.name)">
+                            <button class="btn btn-secondary" @click="viewLogs(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'View logs on remote DockUp instance' : ''">
                                 <i class="fas fa-file-alt"></i> Logs
                             </button>
-                            <button class="btn btn-secondary" @click="configureSchedule(stack.name)">
+                            <button class="btn btn-secondary" @click="configureSchedule(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Configure schedule on remote DockUp instance' : ''">
                                 <i class="fas fa-clock"></i> Schedule
                             </button>
-                            <button class="btn btn-warning" @click="deleteImagesOnly(stack.name)">
+                            <button class="btn btn-warning" @click="deleteImagesOnly(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Manage images on remote DockUp instance' : ''">
                                 <i class="fas fa-images"></i> Delete Images
                             </button>
-                            <button class="btn btn-secondary" @click="cloneStack(stack.name)">
+                            <button class="btn btn-secondary" @click="cloneStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Cannot clone remote stacks' : ''">
                                 <i class="fas fa-clone"></i> Clone
                             </button>
-                            <button class="btn btn-danger" @click="confirmDeleteStack(stack.name)">
+                            <button class="btn btn-danger" @click="confirmDeleteStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Delete on remote DockUp instance' : ''">
                                 <i class="fas fa-trash"></i> Delete
                             </button>
                         </div>
@@ -1067,10 +1081,10 @@
                             <button class="btn btn-success" @click="stackOperationWithTerminal(stack.name, 'up')">
                                 <i class="fas fa-play"></i> Start
                             </button>
-                            <button class="btn btn-primary" @click="editStack(stack.name)">
+                            <button class="btn btn-primary" @click="editStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Cannot edit remote stacks' : ''">
                                 <i class="fas fa-edit"></i> Edit
                             </button>
-                            <button class="btn btn-danger" @click="confirmDeleteStack(stack.name)">
+                            <button class="btn btn-danger" @click="confirmDeleteStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Delete on remote DockUp instance' : ''">
                                 <i class="fas fa-trash"></i> Delete
                             </button>
                         </div>
@@ -1317,6 +1331,77 @@
                     <button class="btn btn-warning" @click="applyToAll">
                         <i class="fas fa-magic"></i> Apply to All Stacks
                     </button>
+                </div>
+
+                <div class="card" style="margin-top: 20px;">
+                    <h2 style="margin-bottom: 20px;"><i class="fas fa-server"></i> Remote DockUp Instances</h2>
+                    <p style="color: #94a3b8; margin-bottom: 20px;">Connect to other DockUp instances to manage all your servers from one interface</p>
+                    
+                    <div class="settings-section">
+                        <h3><i class="fas fa-id-card"></i> This Instance</h3>
+                        <div class="form-group">
+                            <label class="form-label">Instance Name</label>
+                            <input type="text" class="form-input" v-model="instanceName" @blur="saveInstanceName" placeholder="DockUp">
+                            <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                Name to identify this instance when connected from other servers
+                            </small>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">API Token</label>
+                            <div style="display: flex; gap: 10px;">
+                                <input :type="showFullToken ? 'text' : 'password'" class="form-input" :value="fullApiToken" readonly style="flex: 1; font-family: monospace;">
+                                <button class="btn btn-secondary" @click="showFullToken = !showFullToken">
+                                    <i class="fas" :class="showFullToken ? 'fa-eye-slash' : 'fa-eye'"></i>
+                                </button>
+                                <button class="btn btn-secondary" @click="copyToken" title="Copy to clipboard">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                                <button class="btn btn-secondary" @click="regenerateApiToken">
+                                    <i class="fas fa-sync"></i> Regenerate
+                                </button>
+                            </div>
+                            <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                Other DockUp instances need this token to connect to this instance
+                            </small>
+                        </div>
+                    </div>
+                    
+                    <div class="settings-section">
+                        <h3><i class="fas fa-link"></i> Connected Peers</h3>
+                        <button class="btn btn-primary" @click="showAddPeerModal = true" style="margin-bottom: 15px;">
+                            <i class="fas fa-plus"></i> Add Remote Instance
+                        </button>
+                        
+                        <div v-if="Object.keys(peers).length === 0" style="text-align: center; padding: 30px; color: #94a3b8; background: rgba(15, 23, 42, 0.3); border-radius: 8px;">
+                            <i class="fas fa-server" style="font-size: 36px; margin-bottom: 10px; opacity: 0.5;"></i>
+                            <p>No remote instances configured</p>
+                        </div>
+                        
+                        <div v-for="(peer, peerId) in peers" :key="peerId" class="card" style="background: rgba(15, 23, 42, 0.5); margin-bottom: 15px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <h4 style="margin-bottom: 5px;">{{ peer.name }}</h4>
+                                    <p style="color: #94a3b8; font-size: 14px; margin: 0;">{{ peer.url }}</p>
+                                    <p style="color: #64748b; font-size: 12px; margin-top: 5px;">
+                                        <i class="fas" :class="peer.enabled ? 'fa-check-circle' : 'fa-times-circle'"></i>
+                                        {{ peer.enabled ? 'Enabled' : 'Disabled' }}
+                                    </p>
+                                </div>
+                                <div style="display: flex; gap: 10px;">
+                                    <button class="btn btn-primary btn-sm" @click="testPeerConnection(peerId)" :disabled="testingPeer === peerId">
+                                        <i class="fas" :class="testingPeer === peerId ? 'fa-spinner fa-spin' : 'fa-plug'"></i>
+                                        Test
+                                    </button>
+                                    <button class="btn btn-secondary btn-sm" @click="editPeer(peerId)">
+                                        <i class="fas fa-edit"></i> Edit
+                                    </button>
+                                    <button class="btn btn-danger btn-sm" @click="deletePeer(peerId)">
+                                        <i class="fas fa-trash"></i> Remove
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -2097,6 +2182,87 @@
                 <strong>{{ toast.title }}</strong>
                 <div style="margin-top: 5px;">{{ toast.message }}</div>
             </div>
+
+        <!-- Add Peer Modal -->
+        <div v-if="showAddPeerModal" class="modal-overlay" @click.self="showAddPeerModal = false">
+            <div class="modal">
+                <div class="modal-header">
+                    <h2><i class="fas fa-server"></i> Add Remote DockUp Instance</h2>
+                    <button class="modal-close" @click="showAddPeerModal = false">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label">Instance ID</label>
+                        <input type="text" class="form-input" v-model="newPeer.id" placeholder="node-02">
+                        <small style="color: #94a3b8;">Unique identifier (lowercase, no spaces)</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Display Name</label>
+                        <input type="text" class="form-input" v-model="newPeer.name" placeholder="Proxmox Node 2">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">URL</label>
+                        <input type="text" class="form-input" v-model="newPeer.url" placeholder="http://10.0.0.102:5000">
+                        <small style="color: #94a3b8;">Full URL including http:// or https://</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">API Token</label>
+                        <input type="text" class="form-input" v-model="newPeer.api_token" placeholder="Paste API token from remote instance">
+                        <small style="color: #94a3b8;">Get this from the remote instance's Settings page</small>
+                    </div>
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                            <input type="checkbox" v-model="newPeer.enabled">
+                            <span>Enabled</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @click="showAddPeerModal = false">Cancel</button>
+                    <button class="btn btn-primary" @click="addPeer">
+                        <i class="fas fa-plus"></i> Add Peer
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Edit Peer Modal -->
+        <div v-if="showEditPeerModal" class="modal-overlay" @click.self="showEditPeerModal = false">
+            <div class="modal">
+                <div class="modal-header">
+                    <h2><i class="fas fa-edit"></i> Edit Remote Instance</h2>
+                    <button class="modal-close" @click="showEditPeerModal = false">&times;</button>
+                </div>
+                <div class="modal-body" v-if="editingPeer">
+                    <div class="form-group">
+                        <label class="form-label">Display Name</label>
+                        <input type="text" class="form-input" v-model="editingPeer.name">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">URL</label>
+                        <input type="text" class="form-input" v-model="editingPeer.url">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">API Token</label>
+                        <input type="text" class="form-input" v-model="editingPeer.api_token" placeholder="Leave blank to keep existing token">
+                        <small style="color: #94a3b8;">Only enter if changing the token</small>
+                    </div>
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                            <input type="checkbox" v-model="editingPeer.enabled">
+                            <span>Enabled</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @click="showEditPeerModal = false">Cancel</button>
+                    <button class="btn btn-primary" @click="updatePeer">
+                        <i class="fas fa-save"></i> Save Changes
+                    </button>
+                </div>
+            </div>
+        </div>
+
         </div>
     </div>
 
@@ -2185,7 +2351,25 @@
                         gateway: '',
                         ip_range: '',
                         internal: false
-                    }
+                    },
+                    // Peer mode
+                    peers: {},
+                    selectedServer: 'local',
+                    showAddPeerModal: false,
+                    newPeer: {
+                        id: '',
+                        name: '',
+                        url: '',
+                        api_token: '',
+                        enabled: true
+                    },
+                    editingPeer: null,
+                    showEditPeerModal: false,
+                    instanceName: 'DockUp',
+                    apiToken: '',
+                    fullApiToken: '',
+                    showFullToken: false,
+                    testingPeer: null
                 };
             },
             computed: {
@@ -2287,7 +2471,7 @@
             methods: {
                 async loadStacks() {
                     try {
-                        const response = await axios.get('/api/stacks');
+                        const response = await axios.get('/api/stacks/all');
                         this.stacks = response.data;
                     } catch (error) {
                         this.showToast('Error', 'Failed to load stacks', 'error');
@@ -2344,6 +2528,9 @@
                     try {
                         const response = await axios.get('/api/config');
                         this.settings = response.data;
+                this.instanceName = response.data.instance_name || 'DockUp';
+                this.apiToken = response.data.api_token ? response.data.api_token.substring(0, 16) + '...' : '';
+                this.fullApiToken = response.data.api_token || '';
                         this.isPasswordEnabled = response.data.password_enabled || false;
                     } catch (error) {
                         this.showToast('Error', 'Failed to load settings', 'error');
@@ -3376,6 +3563,126 @@
                         }
                     } catch (error) {
                         this.showToast('Error', error.response?.data?.error || 'Failed to change password', 'error');
+                    }
+                },
+                
+                async loadPeers() {
+                    try {
+                        const response = await axios.get('/api/peers');
+                        this.peers = response.data;
+                    } catch (error) {
+                        console.error('Failed to load peers:', error);
+                    }
+                },
+                async addPeer() {
+                    if (!this.newPeer.id || !this.newPeer.name || !this.newPeer.url || !this.newPeer.api_token) {
+                        this.showToast('Error', 'All fields are required', 'error');
+                        return;
+                    }
+                    try {
+                        await axios.post('/api/peers', this.newPeer);
+                        this.showToast('Success', 'Peer added successfully', 'success');
+                        this.showAddPeerModal = false;
+                        this.newPeer = { id: '', name: '', url: '', api_token: '', enabled: true };
+                        await this.loadPeers();
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', error.response?.data?.error || 'Failed to add peer', 'error');
+                    }
+                },
+                async updatePeer() {
+                    if (!this.editingPeer) return;
+                    try {
+                        await axios.put(`/api/peers/${this.editingPeer.id}`, this.editingPeer);
+                        this.showToast('Success', 'Peer updated successfully', 'success');
+                        this.showEditPeerModal = false;
+                        this.editingPeer = null;
+                        await this.loadPeers();
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', error.response?.data?.error || 'Failed to update peer', 'error');
+                    }
+                },
+                async deletePeer(peerId) {
+                    if (!confirm('Are you sure you want to remove this peer?')) return;
+                    try {
+                        await axios.delete(`/api/peers/${peerId}`);
+                        this.showToast('Success', 'Peer removed successfully', 'success');
+                        await this.loadPeers();
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to remove peer', 'error');
+                    }
+                },
+                async testPeerConnection(peerId) {
+                    this.testingPeer = peerId;
+                    try {
+                        const response = await axios.get(`/api/peers/${peerId}/test`);
+                        if (response.data.online) {
+                            this.showToast('Success', `Connected to ${response.data.instance_name}`, 'success');
+                        } else {
+                            this.showToast('Error', response.data.error || 'Connection failed', 'error');
+                        }
+                    } catch (error) {
+                        this.showToast('Error', 'Connection test failed', 'error');
+                    } finally {
+                        this.testingPeer = null;
+                    }
+                },
+                editPeer(peerId) {
+                    const peer = this.peers[peerId];
+                    this.editingPeer = { id: peerId, ...peer };
+                    this.showEditPeerModal = true;
+                },
+                async saveInstanceName() {
+                    try {
+                        await axios.post('/api/config', {
+                            ...this.settings,
+                            instance_name: this.instanceName
+                        });
+                        this.showToast('Success', 'Instance name saved', 'success');
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to save instance name', 'error');
+                    }
+                },
+                async regenerateApiToken() {
+                    if (!confirm('Regenerate API token? This will break existing peer connections.')) return;
+                    try {
+                        const response = await axios.post('/api/config/regenerate-token');
+                        this.fullApiToken = response.data.token;
+                        this.apiToken = response.data.token.substring(0, 16) + '...';
+                        this.showToast('Success', 'API token regenerated', 'success');
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to regenerate token', 'error');
+                    }
+                },
+                copyToken() {
+                    if (!this.fullApiToken) {
+                        this.showToast('Error', 'No token to copy', 'error');
+                        return;
+                    }
+                    navigator.clipboard.writeText(this.fullApiToken).then(() => {
+                        this.showToast('Success', 'Token copied to clipboard', 'success');
+                    }).catch(() => {
+                        this.showToast('Error', 'Failed to copy token', 'error');
+                    });
+                },
+                
+                async remoteStackOperation(stack, operation) {
+                    if (!stack.peer_id) {
+                        this.showToast('Error', 'No peer ID for remote stack', 'error');
+                        return;
+                    }
+                    
+                    try {
+                        const response = await axios.post(`/api/peer/${stack.peer_id}/stack/${stack.name}/operation`, {
+                            operation: operation
+                        });
+                        
+                        this.showToast('Success', `${operation} completed on ${stack.peer_name}`, 'success');
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', error.response?.data?.error || `Failed to ${operation} stack on ${stack.peer_name}`, 'error');
                     }
                 },
                 
