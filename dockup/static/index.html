@@ -710,6 +710,24 @@
             border-color: #00d9ff;
             transform: translateY(-1px);
         }
+
+        .server-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 10px;
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid rgba(59, 130, 246, 0.4);
+            border-radius: 6px;
+            font-size: 11px;
+            color: #60a5fa;
+            font-weight: 500;
+            margin-left: 10px;
+        }
+        
+        .server-badge i {
+            font-size: 9px;
+        }
     </style>
 </head>
 <body>
@@ -922,6 +940,10 @@
                                         {{ tag }}
                                     </span>
                                 </span>
+                                <!-- Server badge for remote stacks -->
+                                <span v-if="!stack.is_local" class="server-badge">
+                                    <i class="fas fa-server"></i> {{ stack.peer_name }}
+                                </span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px;">
                                 <!-- Status badge -->
@@ -1063,6 +1085,10 @@
                                           :title="'Filter by: ' + tag">
                                         {{ tag }}
                                     </span>
+                                </span>
+                                <!-- Server badge for remote stacks -->
+                                <span v-if="!stack.is_local" class="server-badge">
+                                    <i class="fas fa-server"></i> {{ stack.peer_name }}
                                 </span>
                             </div>
                             <span class="status-badge" style="background: rgba(100, 116, 139, 0.2); color: #64748b;">
