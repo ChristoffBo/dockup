@@ -1271,7 +1271,11 @@ def auto_update_stack(stack_name):
             
             if verification_passed:
                 print(f"  ✓✓✓ UPDATE SUCCESSFUL AND VERIFIED ✓✓✓")
-                
+                # CLEAR update available flag (AUTO UPDATE FIX)
+                update_status[stack_name] = {
+                 'last_check': datetime.now(pytz.UTC).isoformat(),
+                 'update_available': False
+
                 # Record update in history for "fresh" badge
                 update_history[stack_name] = {
                     'last_update': datetime.now(pytz.UTC).isoformat(),
