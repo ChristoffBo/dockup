@@ -847,6 +847,25 @@
                             Host System
                         </div>
                     </div>
+                    
+                    <!-- Docker Hub Rate Limit - Top Center -->
+                    <div v-if="dockerHubRateLimit" style="padding: 20px 20px 10px 20px; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
+                        <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                            <i class="fab fa-docker"></i> Docker Hub Rate Limit
+                        </div>
+                        <div v-if="dockerHubRateLimit.unlimited" style="font-size: 24px; font-weight: bold; color: #22c55e;">
+                            <i class="fas fa-infinity"></i> Unlimited
+                        </div>
+                        <div v-else>
+                            <div style="font-size: 32px; font-weight: bold;" :style="{color: dockerHubRateLimit.percentage < 10 ? '#ef4444' : dockerHubRateLimit.percentage < 25 ? '#f59e0b' : '#22c55e'}">
+                                {{ dockerHubRateLimit.percentage }}%
+                            </div>
+                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                                {{ dockerHubRateLimit.remaining }} / {{ dockerHubRateLimit.limit }} pulls remaining
+                            </div>
+                        </div>
+                    </div>
+                    
                     <div style="padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
                         <!-- CPU -->
                         <div style="text-align: center;">
@@ -898,24 +917,6 @@
                                 </div>
                                 <div>
                                     <i class="fas fa-arrow-up" style="font-size: 14px;"></i> {{ hostStats.net_tx_mbps || 0 }} Mbps
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Docker Hub Rate Limit -->
-                        <div v-if="dockerHubRateLimit" style="text-align: center;">
-                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
-                                <i class="fab fa-docker"></i> Docker Hub
-                            </div>
-                            <div v-if="dockerHubRateLimit.unlimited" style="font-size: 24px; font-weight: bold; color: #22c55e;">
-                                <i class="fas fa-infinity"></i> Unlimited
-                            </div>
-                            <div v-else>
-                                <div style="font-size: 32px; font-weight: bold;" :style="{color: dockerHubRateLimit.percentage < 10 ? '#ef4444' : dockerHubRateLimit.percentage < 25 ? '#f59e0b' : '#22c55e'}">
-                                    {{ dockerHubRateLimit.percentage }}%
-                                </div>
-                                <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
-                                    {{ dockerHubRateLimit.remaining }} / {{ dockerHubRateLimit.limit }} pulls
                                 </div>
                             </div>
                         </div>
