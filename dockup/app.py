@@ -1093,7 +1093,7 @@ def stack_operation(stack_name, operation):
     
     try:
         if operation == 'up':
-            cmd = ['docker', 'compose', '-f', compose_file, 'up', '-d']
+            cmd = ['docker', 'compose', '-f', compose_file, 'up', '-d', '--remove-orphans']
         elif operation == 'stop':
             # Stop containers without removing them
             cmd = ['docker', 'compose', '-f', compose_file, 'stop']
