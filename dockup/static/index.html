@@ -837,6 +837,18 @@
                             {{ updatesAvailableCount }}
                         </span>
                     </button>
+                    <button class="btn btn-success" @click="startAllStacks" :disabled="startingAll" style="font-size: 16px; padding: 12px 24px;">
+                        <i class="fas" :class="startingAll ? 'fa-spinner fa-spin' : 'fa-play'"></i>
+                        {{ startingAll ? 'Starting...' : 'Start All' }}
+                    </button>
+                    <button class="btn btn-danger" @click="stopAllStacks" :disabled="stoppingAll" style="font-size: 16px; padding: 12px 24px;">
+                        <i class="fas" :class="stoppingAll ? 'fa-spinner fa-spin' : 'fa-stop'"></i>
+                        {{ stoppingAll ? 'Stopping...' : 'Stop All' }}
+                    </button>
+                    <button class="btn btn-warning" @click="restartAllStacks" :disabled="restartingAll" style="font-size: 16px; padding: 12px 24px;">
+                        <i class="fas" :class="restartingAll ? 'fa-spinner fa-spin' : 'fa-redo'"></i>
+                        {{ restartingAll ? 'Restarting...' : 'Restart All' }}
+                    </button>
                 </div>
 
                 <!-- Host System Stats -->
@@ -2371,6 +2383,9 @@
                     pruning: false,
                     checkingAll: false,
                     updatingAll: false,
+                    startingAll: false,
+                    stoppingAll: false,
+                    restartingAll: false,
                     searchQuery: '',
                     filterMode: 'all',
                     darkTheme: true,
@@ -2853,6 +2868,138 @@
                         this.showToast('Error', 'Failed to update all stacks', 'error');
                     } finally {
                         this.updatingAll = false;
+                    }
+                },
+                async startAllStacks() {
+                    const stoppedStacks = this.stacks.filter(s => s.status === 'stopped' && s.is_local);
+                    
+                    if (stoppedStacks.length === 0) {
+                        this.showToast('Info', 'No stopped local stacks to start', 'info');
+                        return;
+                    }
+                    
+                    if (!confirm(`Start ${stoppedStacks.length} stopped stack(s)?\n\nStacks: ${stoppedStacks.map(s => s.name).join(', ')}`)) {
+                        return;
+                    }
+                    
+                    this.startingAll = true;
+                    let successCount = 0;
+                    let failCount = 0;
+                    
+                    try {
+                        this.showToast('Info', `Starting ${stoppedStacks.length} stacks...`, 'info');
+                        
+                        for (const stack of stoppedStacks) {
+                            try {
+                                await axios.post(`/api/stack/${stack.name}/operation`, { operation: 'up' });
+                                successCount++;
+                                this.showToast('Started', `${stack.name} started successfully`, 'success');
+                                await new Promise(resolve => setTimeout(resolve, 1000));
+                            } catch (error) {
+                                failCount++;
+                                this.showToast('Error', `Failed to start ${stack.name}: ${error.response?.data?.error || error.message}`, 'error');
+                            }
+                        }
+                        
+                        await this.loadStacks();
+                        
+                        if (failCount === 0) {
+                            this.showToast('Success', `All ${successCount} stacks started successfully!`, 'success');
+                        } else {
+                            this.showToast('Completed', `Started ${successCount} stacks, ${failCount} failed`, 'info');
+                        }
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to start all stacks', 'error');
+                    } finally {
+                        this.startingAll = false;
+                    }
+                },
+                async stopAllStacks() {
+                    const runningStacks = this.stacks.filter(s => (s.status === 'running' || s.status === 'partial') && s.is_local);
+                    
+                    if (runningStacks.length === 0) {
+                        this.showToast('Info', 'No running local stacks to stop', 'info');
+                        return;
+                    }
+                    
+                    if (!confirm(`Stop ${runningStacks.length} running stack(s)?\n\nStacks: ${runningStacks.map(s => s.name).join(', ')}`)) {
+                        return;
+                    }
+                    
+                    this.stoppingAll = true;
+                    let successCount = 0;
+                    let failCount = 0;
+                    
+                    try {
+                        this.showToast('Info', `Stopping ${runningStacks.length} stacks...`, 'info');
+                        
+                        for (const stack of runningStacks) {
+                            try {
+                                await axios.post(`/api/stack/${stack.name}/operation`, { operation: 'stop' });
+                                successCount++;
+                                this.showToast('Stopped', `${stack.name} stopped successfully`, 'success');
+                                await new Promise(resolve => setTimeout(resolve, 1000));
+                            } catch (error) {
+                                failCount++;
+                                this.showToast('Error', `Failed to stop ${stack.name}: ${error.response?.data?.error || error.message}`, 'error');
+                            }
+                        }
+                        
+                        await this.loadStacks();
+                        
+                        if (failCount === 0) {
+                            this.showToast('Success', `All ${successCount} stacks stopped successfully!`, 'success');
+                        } else {
+                            this.showToast('Completed', `Stopped ${successCount} stacks, ${failCount} failed`, 'info');
+                        }
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to stop all stacks', 'error');
+                    } finally {
+                        this.stoppingAll = false;
+                    }
+                },
+                async restartAllStacks() {
+                    const activeStacks = this.stacks.filter(s => s.status !== 'inactive' && s.is_local);
+                    
+                    if (activeStacks.length === 0) {
+                        this.showToast('Info', 'No local stacks to restart', 'info');
+                        return;
+                    }
+                    
+                    if (!confirm(`Restart ${activeStacks.length} stack(s)?\n\nStacks: ${activeStacks.map(s => s.name).join(', ')}`)) {
+                        return;
+                    }
+                    
+                    this.restartingAll = true;
+                    let successCount = 0;
+                    let failCount = 0;
+                    
+                    try {
+                        this.showToast('Info', `Restarting ${activeStacks.length} stacks...`, 'info');
+                        
+                        for (const stack of activeStacks) {
+                            try {
+                                await axios.post(`/api/stack/${stack.name}/operation`, { operation: 'restart' });
+                                successCount++;
+                                this.showToast('Restarted', `${stack.name} restarted successfully`, 'success');
+                                await new Promise(resolve => setTimeout(resolve, 1000));
+                            } catch (error) {
+                                failCount++;
+                                this.showToast('Error', `Failed to restart ${stack.name}: ${error.response?.data?.error || error.message}`, 'error');
+                            }
+                        }
+                        
+                        await this.loadStacks();
+                        
+                        if (failCount === 0) {
+                            this.showToast('Success', `All ${successCount} stacks restarted successfully!`, 'success');
+                        } else {
+                            this.showToast('Completed', `Restarted ${successCount} stacks, ${failCount} failed`, 'info');
+                        }
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to restart all stacks', 'error');
+                    } finally {
+                        this.restartingAll = false;
                     }
                 },
                 toggleTheme() {
