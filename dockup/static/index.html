@@ -901,6 +901,24 @@
                                 </div>
                             </div>
                         </div>
+                        
+                        <!-- Docker Hub Rate Limit -->
+                        <div v-if="dockerHubRateLimit" style="text-align: center;">
+                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                                <i class="fab fa-docker"></i> Docker Hub
+                            </div>
+                            <div v-if="dockerHubRateLimit.unlimited" style="font-size: 24px; font-weight: bold; color: #22c55e;">
+                                <i class="fas fa-infinity"></i> Unlimited
+                            </div>
+                            <div v-else>
+                                <div style="font-size: 32px; font-weight: bold;" :style="{color: dockerHubRateLimit.percentage < 10 ? '#ef4444' : dockerHubRateLimit.percentage < 25 ? '#f59e0b' : '#22c55e'}">
+                                    {{ dockerHubRateLimit.percentage }}%
+                                </div>
+                                <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                                    {{ dockerHubRateLimit.remaining }} / {{ dockerHubRateLimit.limit }} pulls
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -1950,7 +1968,7 @@
                                     <label class="form-label">
                                         <i class="fas fa-external-link-alt"></i> Web UI URL (optional)
                                     </label>
-                                    <input type="url" class="form-input" v-model="editStack.web_ui_url" placeholder="http://10.0.0.240:8080">
+                                    <input type="url" class="form-input" v-model="webUiUrl" placeholder="http://10.0.0.240:8080">
                                     <small style="color: #94a3b8; display: block; margin-top: 5px;">
                                         Leave empty to auto-detect from first exposed port
                                     </small>
@@ -2364,6 +2382,8 @@
                     cloneStackName: '',
                     cloneNewName: '',
                     stackTags: '',
+                    webUiUrl: '',
+                    dockerHubRateLimit: null,
                     // Networks
                     networks: [],
                     networkInterfaces: [],
@@ -2482,6 +2502,7 @@
                 this.loadNetworks();
                 this.loadSettings();
                 this.loadHostStats();
+                this.loadDockerHubRateLimit();
                 this.connectWebSocket();
                 
                 // Refresh stacks every 10 seconds
@@ -2493,6 +2514,11 @@
                 setInterval(() => {
                     this.loadHostStats();
                 }, 5000);
+                
+                // Refresh Docker Hub rate limit every 5 minutes
+                setInterval(() => {
+                    this.loadDockerHubRateLimit();
+                }, 300000);
             },
             methods: {
                 async loadStacks() {
@@ -2568,6 +2594,14 @@
                         this.hostStats = response.data;
                     } catch (error) {
                         console.error('Failed to load host stats:', error);
+                    }
+                },
+                async loadDockerHubRateLimit() {
+                    try {
+                        const response = await axios.get('/api/docker-hub/rate-limit');
+                        this.dockerHubRateLimit = response.data;
+                    } catch (error) {
+                        console.error('Failed to load Docker Hub rate limit:', error);
                     }
                 },
                 async saveSettings() {
@@ -2999,7 +3033,7 @@
                         
                         // Save metadata (Web UI URL and tags)
                         const metadataToSave = {
-                            web_ui_url: this.editStack.web_ui_url || ""
+                            web_ui_url: this.webUiUrl || ""
                         };
                         
                         // Add tags if editing
