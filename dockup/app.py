@@ -165,6 +165,36 @@ def save_update_history():
         json.dump(update_history, f, indent=2)
 
 
+def get_update_status_file():
+    """Get per-instance update status filename"""
+    instance_name = config.get('instance_name', 'DockUp').replace(' ', '_').replace('/', '_')
+    return os.path.join(DATA_DIR, f'update_status_{instance_name}.json')
+
+
+def load_update_status():
+    """Load update status from per-instance file"""
+    global update_status
+    status_file = get_update_status_file()
+    if os.path.exists(status_file):
+        try:
+            with open(status_file, 'r') as f:
+                update_status = json.load(f)
+        except:
+            update_status = {}
+    else:
+        update_status = {}
+
+
+def save_update_status():
+    """Save update status to per-instance file"""
+    try:
+        status_file = get_update_status_file()
+        with open(status_file, 'w') as f:
+            json.dump(update_status, f, indent=2)
+    except Exception as e:
+        print(f"Error saving update status: {e}")
+
+
 def get_stack_metadata(stack_name):
     """Load stack metadata from .dockup-meta.json"""
     stack_path = os.path.join(STACKS_DIR, stack_name)
@@ -201,6 +231,80 @@ def setup_notifications():
     for url in config.get('apprise_urls', []):
         if url.strip():
             apobj.add(url)
+
+
+def check_docker_hub_rate_limit():
+    """Check Docker Hub rate limit status"""
+    try:
+        # Get authentication token
+        auth_url = "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull"
+        
+        # Try to use Docker Hub credentials if available
+        docker_config_path = os.path.expanduser('~/.docker/config.json')
+        username = None
+        password = None
+        
+        if os.path.exists(docker_config_path):
+            try:
+                with open(docker_config_path, 'r') as f:
+                    docker_config = json.load(f)
+                    auths = docker_config.get('auths', {})
+                    if 'https://index.docker.io/v1/' in auths:
+                        # Credentials are stored, but typically base64 encoded
+                        # For simplicity, we'll make anonymous request
+                        pass
+            except:
+                pass
+        
+        # Get token (anonymous)
+        response = requests.get(auth_url, timeout=5)
+        if response.status_code != 200:
+            return None
+        
+        token = response.json().get('token')
+        if not token:
+            return None
+        
+        # Make HEAD request to check rate limit (doesn't count against quota)
+        headers = {'Authorization': f'Bearer {token}'}
+        response = requests.head(
+            'https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest',
+            headers=headers,
+            timeout=5
+        )
+        
+        # Parse rate limit headers
+        limit_header = response.headers.get('ratelimit-limit', '')
+        remaining_header = response.headers.get('ratelimit-remaining', '')
+        source_header = response.headers.get('docker-ratelimit-source', '')
+        
+        if not limit_header or not remaining_header:
+            # No headers means unlimited (paid account or whitelisted)
+            return {
+                'limit': None,
+                'remaining': None,
+                'percentage': 100,
+                'source': source_header or 'unknown',
+                'unlimited': True
+            }
+        
+        # Parse "100;w=21600" format
+        limit = int(limit_header.split(';')[0]) if ';' in limit_header else int(limit_header)
+        remaining = int(remaining_header.split(';')[0]) if ';' in remaining_header else int(remaining_header)
+        
+        percentage = (remaining / limit * 100) if limit > 0 else 0
+        
+        return {
+            'limit': limit,
+            'remaining': remaining,
+            'percentage': round(percentage, 1),
+            'source': source_header or 'unknown',
+            'unlimited': False
+        }
+        
+    except Exception as e:
+        print(f"Error checking Docker Hub rate limit: {e}")
+        return None
 
 
 def hash_password(password):
@@ -1157,6 +1261,7 @@ def auto_update_stack(stack_name):
         'last_check': datetime.now().isoformat(),
         'update_available': images_changed
     }
+    save_update_status()  # SAVE TO FILE
     
     # Handle based on mode
     if mode == 'check':
@@ -1276,6 +1381,7 @@ def auto_update_stack(stack_name):
                  'last_check': datetime.now(pytz.UTC).isoformat(),
                  'update_available': False
                 }
+                save_update_status()  # SAVE TO FILE
                 # Record update in history for "fresh" badge
                 update_history[stack_name] = {
                     'last_update': datetime.now(pytz.UTC).isoformat(),
@@ -1384,6 +1490,7 @@ def check_stack_updates(stack_name):
             'last_check': datetime.now().isoformat(),
             'update_available': update_available
         }
+        save_update_status()  # SAVE TO FILE
         
         return True, update_available
         
@@ -1661,6 +1768,15 @@ def api_host_stats():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/docker-hub/rate-limit')
+def api_docker_hub_rate_limit():
+    """Get Docker Hub rate limit status"""
+    rate_limit = check_docker_hub_rate_limit()
+    if rate_limit:
+        return jsonify(rate_limit)
+    return jsonify({'error': 'Could not check rate limit'}), 500
+
+
 @app.route('/api/stack/<stack_name>')
 def api_stack(stack_name):
     """Get specific stack details"""
@@ -1759,6 +1875,7 @@ def api_stack_operation(stack_name):
             if stack_name in update_status:
                 update_status[stack_name]['update_available'] = False
                 update_status[stack_name]['last_check'] = datetime.now(pytz.UTC).isoformat()
+                save_update_status()  # SAVE TO FILE
             
             # Record manual update in history ONLY if 'pull' was done (which actually updates images)
             # Don't record on 'up' as that's just starting containers
@@ -3239,6 +3356,7 @@ if __name__ == '__main__':
         load_schedules()
         load_health_status()
         load_update_history()
+        load_update_status()  # Load per-instance update status
         print("✓ Configuration loaded")
         
         # Setup scheduler
