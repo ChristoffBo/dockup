@@ -1,3 +1,5 @@
+## latest (2025-12-2)
+squashed more bugs. added dockerhub rate limit on dashboard.
 ## latest (2025-11-29)
 Added Peer mode, can now connect two dockups in peer mode.
 ## latest (2025-11-28)
