@@ -1,3 +1,5 @@
+## latest (2025-12-3)
+added cve scans.
 ## latest (2025-12-2)
 squashed more bugs. added dockerhub rate limit on dashboard.
 ## latest (2025-11-29)
