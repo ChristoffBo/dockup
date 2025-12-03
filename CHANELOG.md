@@ -1,5 +1,5 @@
 ## latest (2025-12-3)
-small UI revamp.
+small UI revamp, added docker and host polling into the settings.
 ## latest (2025-12-3)
 added cve scans.
 ## latest (2025-12-2)
