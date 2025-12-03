@@ -98,7 +98,9 @@ def load_config():
             'password_enabled': False,
             'instance_name': 'DockUp',
             'api_token': secrets.token_urlsafe(32),
-            'peers': {}
+            'peers': {},
+            'host_stats_interval': 5,  # seconds between host stats polling (0 = off)
+            'stack_refresh_interval': 10  # seconds between stack refresh (0 = off)
         }
         save_config()
     
@@ -110,6 +112,10 @@ def load_config():
         config['api_token'] = secrets.token_urlsafe(32)
     if 'peers' not in config:
         config['peers'] = {}
+    if 'host_stats_interval' not in config:
+        config['host_stats_interval'] = 5
+    if 'stack_refresh_interval' not in config:
+        config['stack_refresh_interval'] = 10
     # Setup notification services
     setup_notifications()
 
@@ -1895,21 +1901,6 @@ def api_host_stats():
         }
         api_host_stats.last_time = time.time()
         
-        # Track network history (60 data points = 1 hour at 1min intervals)
-        if not hasattr(api_host_stats, 'net_history'):
-            api_host_stats.net_history = []
-        
-        # Add current data point with timestamp
-        api_host_stats.net_history.append({
-            'timestamp': time.time(),
-            'rx': round(net_rx_mbps, 2),
-            'tx': round(net_tx_mbps, 2)
-        })
-        
-        # Keep only last 60 points (1 hour)
-        if len(api_host_stats.net_history) > 60:
-            api_host_stats.net_history.pop(0)
-        
         return jsonify({
             'cpu_percent': round(cpu_percent, 1),
             'cpu_count': psutil.cpu_count(),
@@ -1921,8 +1912,7 @@ def api_host_stats():
             'disk_percent': round(disk.percent, 1),
             'hostname': 'Host System',
             'net_rx_mbps': round(net_rx_mbps, 2),
-            'net_tx_mbps': round(net_tx_mbps, 2),
-            'net_history': api_host_stats.net_history if hasattr(api_host_stats, 'net_history') else []
+            'net_tx_mbps': round(net_tx_mbps, 2)
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
