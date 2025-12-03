@@ -1599,6 +1599,45 @@
                     </div>
 
                     <div class="settings-section">
+                        <h3><i class="fas fa-sync"></i> Polling Intervals</h3>
+                        <p style="color: #94a3b8; margin-bottom: 15px;">
+                            Control how often DockUp refreshes data. Lower values = more up-to-date but higher CPU usage.
+                        </p>
+                        
+                        <div class="form-group">
+                            <label class="form-label">Host Stats Polling (CPU/Memory/Disk/Network)</label>
+                            <select class="form-input" v-model.number="settings.host_stats_interval">
+                                <option :value="0">Off - Manual refresh only</option>
+                                <option :value="1">1 second (High CPU usage)</option>
+                                <option :value="5">5 seconds (Default)</option>
+                                <option :value="15">15 seconds</option>
+                                <option :value="30">30 seconds</option>
+                                <option :value="60">1 minute</option>
+                                <option :value="300">5 minutes</option>
+                            </select>
+                            <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                Updates the host stats gauges and network graphs
+                            </small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label">Stack Refresh Polling</label>
+                            <select class="form-input" v-model.number="settings.stack_refresh_interval">
+                                <option :value="0">Off - Manual refresh only</option>
+                                <option :value="1">1 second (High CPU usage)</option>
+                                <option :value="5">5 seconds</option>
+                                <option :value="15">15 seconds</option>
+                                <option :value="30">30 seconds</option>
+                                <option :value="60">1 minute (Default)</option>
+                                <option :value="300">5 minutes</option>
+                            </select>
+                            <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                Updates container status, health checks, and running state
+                            </small>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
                         <h3><i class="fas fa-lock"></i> Password Protection</h3>
                         <div class="form-group">
                             <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
@@ -2754,7 +2793,9 @@
                         notify_on_error: true,
                         notify_on_health_failure: true,
                         health_check_threshold: 3,
-                        password_enabled: false
+                        password_enabled: false,
+                        host_stats_interval: 5,
+                        stack_refresh_interval: 10
                     },
                     showChangePassword: false,
                     passwordChange: {
@@ -2844,7 +2885,10 @@
                     apiToken: '',
                     fullApiToken: '',
                     showFullToken: false,
-                    testingPeer: null
+                    testingPeer: null,
+                    // Polling intervals
+                    hostStatsInterval: null,
+                    stackRefreshInterval: null
                 };
             },
             computed: {
@@ -2934,22 +2978,58 @@
                 this.loadDockerHubRateLimit();
                 this.connectWebSocket();
                 
-                // Refresh stacks every 10 seconds
-                setInterval(() => {
-                    this.loadStacks();
-                }, 10000);
-                
-                // Refresh host stats every 5 seconds
-                setInterval(() => {
-                    this.loadHostStats();
-                }, 5000);
+                // Setup polling based on configured intervals
+                this.setupPolling();
                 
                 // Refresh Docker Hub rate limit every 5 minutes
                 setInterval(() => {
                     this.loadDockerHubRateLimit();
                 }, 300000);
             },
+            beforeUnmount() {
+                // Clean up intervals
+                if (this.hostStatsInterval) {
+                    clearInterval(this.hostStatsInterval);
+                }
+                if (this.stackRefreshInterval) {
+                    clearInterval(this.stackRefreshInterval);
+                }
+            },
             methods: {
+                setupPolling() {
+                    // Clear existing intervals if any
+                    if (this.hostStatsInterval) {
+                        clearInterval(this.hostStatsInterval);
+                        this.hostStatsInterval = null;
+                    }
+                    if (this.stackRefreshInterval) {
+                        clearInterval(this.stackRefreshInterval);
+                        this.stackRefreshInterval = null;
+                    }
+                    
+                    // Setup host stats polling if enabled
+                    const hostInterval = this.settings.host_stats_interval || 0;
+                    if (hostInterval > 0) {
+                        console.log(`Setting up host stats polling every ${hostInterval} seconds`);
+                        this.hostStatsInterval = setInterval(() => {
+                            this.loadHostStats();
+                        }, hostInterval * 1000);
+                    } else {
+                        console.log('Host stats polling disabled');
+                    }
+                    
+                    // Setup stack refresh polling if enabled
+                    const stackInterval = this.settings.stack_refresh_interval || 0;
+                    if (stackInterval > 0) {
+                        console.log(`Setting up stack refresh every ${stackInterval} seconds`);
+                        this.stackRefreshInterval = setInterval(() => {
+                            this.loadStacks();
+                        }, stackInterval * 1000);
+                    } else {
+                        console.log('Stack refresh polling disabled');
+                    }
+                },
+                
                 async loadStacks() {
                     try {
                         const response = await axios.get('/api/stacks/all');
@@ -3108,6 +3188,9 @@
                     try {
                         await axios.post('/api/config', this.settings);
                         this.showToast('Success', 'Settings saved successfully', 'success');
+                        
+                        // Reconfigure polling if intervals changed
+                        this.setupPolling();
                     } catch (error) {
                         this.showToast('Error', 'Failed to save settings', 'error');
                     }
