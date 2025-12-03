@@ -728,6 +728,127 @@
         .server-badge i {
             font-size: 9px;
         }
+    
+        .btn-scan {
+            background: #f59e0b;
+            color: white;
+        }
+        
+        
+        /* Scan Results Modal */
+        .scan-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+        
+        .scan-modal-content {
+            background: rgba(30, 41, 59, 0.95);
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            border-radius: 16px;
+            padding: 30px;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            width: 90%;
+        }
+        
+        .scan-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+        }
+        
+        .scan-modal-close {
+            background: none;
+            border: none;
+            color: #94a3b8;
+            font-size: 28px;
+            cursor: pointer;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+        }
+        
+        .scan-modal-close:hover {
+            color: #e2e8f0;
+        }
+        
+        .scan-loading {
+            text-align: center;
+            padding: 40px;
+        }
+        
+        .scan-spinner {
+            font-size: 48px;
+            color: #00d9ff;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .severity-badge {
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        
+        .severity-critical {
+            background: rgba(239, 68, 68, 0.2);
+            color: #fca5a5;
+            border: 1px solid #ef4444;
+        }
+        
+        .severity-high {
+            background: rgba(251, 146, 60, 0.2);
+            color: #fdba74;
+            border: 1px solid #fb923c;
+        }
+        
+        .severity-medium {
+            background: rgba(251, 191, 36, 0.2);
+            color: #fde047;
+            border: 1px solid #fbbf24;
+        }
+        
+        .severity-low {
+            background: rgba(34, 197, 94, 0.2);
+            color: #86efac;
+            border: 1px solid #22c55e;
+        }
+        
+        .vuln-item {
+            padding: 15px;
+            margin-bottom: 10px;
+            background: rgba(15, 23, 42, 0.6);
+            border-radius: 8px;
+            border-left: 4px solid;
+        }
+        
+        .vuln-critical { border-left-color: #ef4444; }
+        .vuln-high { border-left-color: #fb923c; }
+        .vuln-medium { border-left-color: #fbbf24; }
+        .vuln-low { border-left-color: #22c55e; }
+
+
+        .btn-scan:hover {
+            background: #d97706;
+        }
+
     </style>
 </head>
 <body>
@@ -1064,6 +1185,10 @@
                             <button class="btn btn-primary" @click="checkUpdates(stack.name)">
                                 <i class="fas fa-sync"></i> Check
                             </button>
+                            <button class="btn btn-scan" @click="scanContainer(stack)" v-if="stack.containers.length > 0 && stack.is_local" title="Scan for vulnerabilities">
+                                <i class="fas fa-shield-alt"></i> Scan
+                            </button>
+                            
                             <button class="btn btn-primary" @click="quickSetMode(stack.name, 'check')" :disabled="!stack.is_local" :title="!stack.is_local ? 'Configure on remote DockUp instance' : ''">
                                 <i class="fas fa-search"></i> Check Only
                             </button>
@@ -2320,7 +2445,105 @@
             </div>
         </div>
 
+        
+        <!-- Scan Results Modal -->
+        <div v-if="scanModal.show" class="scan-modal" @click.self="scanModal.show = false">
+            <div class="scan-modal-content">
+                <div class="scan-modal-header">
+                    <h2><i class="fas fa-shield-alt"></i> Security Scan Results</h2>
+                    <button class="scan-modal-close" @click="scanModal.show = false">&times;</button>
+                </div>
+                
+                <div v-if="scanModal.loading" class="scan-loading">
+                    <i class="fas fa-spinner scan-spinner"></i>
+                    <p style="margin-top: 20px; color: #94a3b8;">Scanning for vulnerabilities...</p>
+                    <p style="font-size: 12px; color: #64748b;">This may take 2-5 minutes</p>
+                </div>
+                
+                <div v-else-if="scanModal.error" style="text-align: center; padding: 40px;">
+                    <i class="fas fa-exclamation-triangle" style="font-size: 48px; color: #ef4444;"></i>
+                    <p style="margin-top: 20px; color: #fca5a5;">{{ scanModal.error }}</p>
+                </div>
+                
+                <div v-else-if="scanModal.data">
+                    <!-- Summary -->
+                    <div style="background: rgba(0, 217, 255, 0.1); padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                        <div style="margin-bottom: 15px;">
+                            <strong>Image:</strong> <span style="color: #00d9ff;">{{ scanModal.data.image }}</span>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; text-align: center;">
+                            <div>
+                                <div style="font-size: 32px; font-weight: bold; color: #ef4444;">
+                                    {{ scanModal.data.severity_counts.CRITICAL || 0 }}
+                                </div>
+                                <div style="font-size: 12px; color: #94a3b8;">Critical</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 32px; font-weight: bold; color: #fb923c;">
+                                    {{ scanModal.data.severity_counts.HIGH || 0 }}
+                                </div>
+                                <div style="font-size: 12px; color: #94a3b8;">High</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 32px; font-weight: bold; color: #fbbf24;">
+                                    {{ scanModal.data.severity_counts.MEDIUM || 0 }}
+                                </div>
+                                <div style="font-size: 12px; color: #94a3b8;">Medium</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 32px; font-weight: bold; color: #22c55e;">
+                                    {{ scanModal.data.severity_counts.LOW || 0 }}
+                                </div>
+                                <div style="font-size: 12px; color: #94a3b8;">Low</div>
+                            </div>
+                        </div>
+                        <div style="margin-top: 15px; text-align: center; font-size: 14px; color: #64748b;">
+                            Total: {{ scanModal.data.total_vulnerabilities }} vulnerabilities found
+                        </div>
+                    </div>
+                    
+                    <!-- No vulnerabilities -->
+                    <div v-if="scanModal.data.total_vulnerabilities === 0" style="text-align: center; padding: 40px;">
+                        <i class="fas fa-check-circle" style="font-size: 64px; color: #22c55e;"></i>
+                        <p style="margin-top: 20px; font-size: 18px; color: #86efac;">No vulnerabilities detected!</p>
+                        <p style="font-size: 14px; color: #64748b; margin-top: 10px;">This image is secure</p>
+                    </div>
+                    
+                    <!-- Vulnerability list -->
+                    <div v-else style="max-height: 400px; overflow-y: auto;">
+                        <div v-for="(vuln, index) in scanModal.data.vulnerabilities" :key="index" 
+                             class="vuln-item"
+                             :class="'vuln-' + vuln.severity.toLowerCase()">
+                            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+                                <div>
+                                    <strong style="color: #00d9ff;">{{ vuln.cve_id }}</strong>
+                                    <span style="margin-left: 10px; font-size: 11px; padding: 2px 8px; border-radius: 4px; background: rgba(0, 217, 255, 0.2);">
+                                        {{ vuln.package }}
+                                    </span>
+                                </div>
+                                <span class="severity-badge" :class="'severity-' + vuln.severity.toLowerCase()">
+                                    {{ vuln.severity }}
+                                </span>
+                            </div>
+                            <div style="font-size: 13px; color: #cbd5e1; margin-bottom: 8px;">
+                                {{ vuln.title }}
+                            </div>
+                            <div style="font-size: 11px; color: #94a3b8; margin-bottom: 8px;">
+                                {{ vuln.description }}
+                            </div>
+                            <div style="font-size: 11px; color: #64748b;">
+                                <span>Installed: <span style="color: #ef4444;">{{ vuln.installed_version }}</span></span>
+                                <span v-if="vuln.fixed_version !== 'Not available'" style="margin-left: 15px;">
+                                    Fixed: <span style="color: #22c55e;">{{ vuln.fixed_version }}</span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
+
+</div>
     </div>
 
     <script>
@@ -2329,6 +2552,12 @@
         createApp({
             data() {
                 return {
+                scanModal: {
+                    show: false,
+                    loading: false,
+                    error: null,
+                    data: null
+                },
                     currentView: 'dashboard',
                     stacks: [],
                     settings: {
@@ -2545,6 +2774,55 @@
                         this.showToast('Error', 'Failed to load stacks', 'error');
                     }
                 },
+
+
+            
+            async scanContainer(stack) {
+                if (!stack.containers || stack.containers.length === 0) {
+                    alert('No containers in stack');
+                    return;
+                }
+                
+                const containerId = stack.containers[0].id;
+                
+                // Show modal
+                this.scanModal.show = true;
+                this.scanModal.loading = true;
+                this.scanModal.error = null;
+                this.scanModal.data = null;
+                
+                try {
+                    // Start scan
+                    await axios.post(`/api/container/${containerId}/scan`);
+                    
+                    // Poll for results
+                    let attempts = 0;
+                    const maxAttempts = 60; // 5 minutes
+                    
+                    while (attempts < maxAttempts) {
+                        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5s
+                        
+                        const response = await axios.get(`/api/container/${containerId}/scan-status`);
+                        
+                        if (response.data.status !== 'not_scanned' && response.data.status !== 'scanning') {
+                            this.scanModal.data = response.data;
+                            this.scanModal.loading = false;
+                            break;
+                        }
+                        
+                        attempts++;
+                    }
+                    
+                    if (attempts >= maxAttempts) {
+                        this.scanModal.loading = false;
+                        this.scanModal.error = 'Scan timeout - please try again';
+                    }
+                } catch (error) {
+                    console.error('Scan error:', error);
+                    this.scanModal.loading = false;
+                    this.scanModal.error = error.response?.data?.error || error.message;
+                }
+            },
                 async loadNetworks() {
                     try {
                         const response = await axios.get('/api/networks');
