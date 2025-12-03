@@ -1041,6 +1041,10 @@
                         <i class="fas" :class="restartingAll ? 'fa-spinner fa-spin' : 'fa-redo'"></i>
                         {{ restartingAll ? 'Restarting...' : 'Restart All' }}
                     </button>
+                    <button class="btn btn-secondary" @click="toggleCollapseAll" style="font-size: 16px; padding: 12px 24px;">
+                        <i class="fas" :class="allCollapsed ? 'fa-chevron-down' : 'fa-chevron-up'"></i>
+                        {{ allCollapsed ? 'Expand All' : 'Collapse All' }}
+                    </button>
                 </div>
 
                 <!-- Host System Stats -->
@@ -1173,7 +1177,7 @@
                         <!-- Network Graph - Full Width Bottom -->
                         <div style="grid-column: 1 / -1; text-align: center; padding: 20px; border-top: 1px solid rgba(255, 255, 255, 0.1); margin-top: 10px;">
                             <div style="font-size: 13px; color: #94a3b8; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 1px;">
-                                <i class="fas fa-network-wired"></i> Network Traffic (Last Hour)
+                                <i class="fas fa-network-wired"></i> Recent Network Traffic
                             </div>
                             
                             <!-- Current Stats -->
@@ -1281,6 +1285,13 @@
                                 </span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px;">
+                                <!-- Collapse button -->
+                                <button class="btn btn-sm" 
+                                        @click="collapsedStacks[stack.name] = !collapsedStacks[stack.name]; saveCollapsedState()"
+                                        style="padding: 4px 8px; background: rgba(148, 163, 184, 0.2);">
+                                    <i class="fas" :class="collapsedStacks[stack.name] ? 'fa-chevron-down' : 'fa-chevron-up'"></i>
+                                </button>
+                                
                                 <!-- Status badge -->
                                 <span class="status-badge" :class="{
                                     'status-running': stack.status === 'running',
@@ -1320,6 +1331,9 @@
                                 <span class="stack-info-label">Services:</span>
                                 <span class="stack-info-value">{{ stack.services.length }}</span>
                             </div>
+                            
+                            <!-- Collapsible Stats: CPU, RAM, Network -->
+                            <div v-if="!collapsedStacks[stack.name]">
                             <div class="stack-info-row" v-if="stack.status === 'running'">
                                 <span class="stack-info-label">CPU:</span>
                                 <span class="stack-info-value">{{ stack.stats.cpu_percent }}%</span>
@@ -1335,6 +1349,9 @@
                                     <i class="fas fa-arrow-up" style="margin-left: 8px;"></i> {{ stack.stats.net_tx_mbps || 0 }} Mbps
                                 </span>
                             </div>
+                            </div>
+                            <!-- End Collapsible Stats -->
+                            
                             <div class="stack-info-row">
                                 <span class="stack-info-label">Update Mode:</span>
                                 <span class="stack-info-value">
@@ -1630,6 +1647,9 @@
                                 <option :value="30">30 seconds</option>
                                 <option :value="60">1 minute (Default)</option>
                                 <option :value="300">5 minutes</option>
+                                <option :value="600">10 minutes</option>
+                                <option :value="1800">30 minutes</option>
+                                <option :value="3600">1 hour</option>
                             </select>
                             <small style="color: #94a3b8; display: block; margin-top: 5px;">
                                 Updates container status, health checks, and running state
@@ -2854,6 +2874,7 @@
                     stackTags: '',
                     webUiUrl: '',
                     dockerHubRateLimit: null,
+                    collapsedStacks: {},  // Track which stacks are collapsed
                     // Networks
                     networks: [],
                     networkInterfaces: [],
@@ -2961,6 +2982,10 @@
                 },
                 filteredInactiveStacks() {
                     return this.filteredStacks.filter(s => s.containers.length === 0);
+                },
+                allCollapsed() {
+                    // Check if all stacks are collapsed
+                    return this.stacks.length > 0 && this.stacks.every(s => this.collapsedStacks[s.name]);
                 }
             },
             mounted() {
@@ -2969,6 +2994,16 @@
                 if (savedTheme === 'light') {
                     this.darkTheme = false;
                     document.body.classList.add('light-theme');
+                }
+                
+                // Load collapsed state from localStorage
+                const savedCollapsed = localStorage.getItem('dockup_collapsed_stacks');
+                if (savedCollapsed) {
+                    try {
+                        this.collapsedStacks = JSON.parse(savedCollapsed);
+                    } catch (e) {
+                        console.error('Failed to parse collapsed stacks:', e);
+                    }
                 }
                 
                 this.loadStacks();
@@ -3189,6 +3224,14 @@
                         await axios.post('/api/config', this.settings);
                         this.showToast('Success', 'Settings saved successfully', 'success');
                         
+                        // Auto-collapse all stacks if polling is turned off
+                        if (this.settings.stack_refresh_interval === 0) {
+                            this.stacks.forEach(stack => {
+                                this.collapsedStacks[stack.name] = true;
+                            });
+                            this.saveCollapsedState();
+                        }
+                        
                         // Reconfigure polling if intervals changed
                         this.setupPolling();
                     } catch (error) {
@@ -3344,6 +3387,18 @@
                     } catch (error) {
                         this.showToast('Error', `Failed to delete image: ${error.response?.data?.error || error.message}`, 'error');
                     }
+                },
+                saveCollapsedState() {
+                    // Save collapsed state to localStorage
+                    localStorage.setItem('dockup_collapsed_stacks', JSON.stringify(this.collapsedStacks));
+                },
+                toggleCollapseAll() {
+                    // Toggle collapse state for all stacks
+                    const shouldCollapse = !this.allCollapsed;
+                    this.stacks.forEach(stack => {
+                        this.collapsedStacks[stack.name] = shouldCollapse;
+                    });
+                    this.saveCollapsedState();
                 },
                 async checkAllStacks() {
                     if (!confirm('Check all stacks for updates? This may take a few moments.')) {
