@@ -23,46 +23,62 @@
 
         #app {
             display: flex;
+            flex-direction: column;
             min-height: 100vh;
         }
 
-        /* Sidebar */
-        .sidebar {
-            width: 250px;
-            background: rgba(15, 23, 42, 0.8);
+        /* Top Navbar */
+        .navbar {
+            background: rgba(15, 23, 42, 0.95);
             backdrop-filter: blur(10px);
-            border-right: 1px solid rgba(255, 255, 255, 0.1);
-            padding: 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 0 30px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 70px;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
         }
 
         .logo {
             font-size: 24px;
             font-weight: bold;
-            margin-bottom: 30px;
             color: #93c5fd;
             display: flex;
             align-items: center;
             gap: 10px;
         }
 
+        .nav-menu {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
         .nav-item {
-            padding: 12px 15px;
-            margin: 5px 0;
+            padding: 10px 20px;
             border-radius: 8px;
             cursor: pointer;
             transition: all 0.3s;
             display: flex;
             align-items: center;
             gap: 10px;
+            font-size: 14px;
+            color: #94a3b8;
+            font-weight: 500;
         }
 
         .nav-item:hover {
             background: rgba(147, 197, 253, 0.15);
+            color: #e2e8f0;
         }
 
         .nav-item.active {
             background: rgba(147, 197, 253, 0.25);
-            border-left: 3px solid #93c5fd;
+            color: #93c5fd;
+            border-bottom: 2px solid #93c5fd;
         }
 
         /* Main Content */
@@ -728,6 +744,59 @@
         .server-badge i {
             font-size: 9px;
         }
+        
+        /* Radial Gauge Styles */
+        .radial-gauge {
+            position: relative;
+            width: 140px;
+            height: 140px;
+            margin: 0 auto;
+        }
+        
+        .radial-gauge svg {
+            transform: rotate(-90deg);
+        }
+        
+        .radial-gauge-bg {
+            fill: none;
+            stroke: rgba(255, 255, 255, 0.1);
+            stroke-width: 12;
+        }
+        
+        .radial-gauge-fill {
+            fill: none;
+            stroke-width: 12;
+            stroke-linecap: round;
+            transition: stroke-dashoffset 0.5s ease, stroke 0.3s ease;
+        }
+        
+        .radial-gauge-center {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+        }
+        
+        .radial-gauge-value {
+            font-size: 28px;
+            font-weight: bold;
+            line-height: 1;
+        }
+        
+        .radial-gauge-label {
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .radial-gauge-subtitle {
+            font-size: 11px;
+            color: #94a3b8;
+            margin-top: 8px;
+        }
     
         .btn-scan {
             background: #f59e0b;
@@ -848,36 +917,38 @@
         .btn-scan:hover {
             background: #d97706;
         }
-
+    
     </style>
 </head>
 <body>
     <div id="app">
-        <!-- Sidebar -->
-        <div class="sidebar">
+        <!-- Top Navbar -->
+        <div class="navbar">
             <div class="logo">
                 <i class="fas fa-layer-group"></i>
                 Dockup
             </div>
-            <div class="nav-item" :class="{active: currentView === 'dashboard'}" @click="currentView = 'dashboard'">
-                <i class="fas fa-home"></i>
-                Dashboard
-            </div>
-            <div class="nav-item" :class="{active: currentView === 'images'}" @click="currentView = 'images'; loadImages()">
-                <i class="fas fa-hdd"></i>
-                Images
-            </div>
-            <div class="nav-item" :class="{active: currentView === 'networks'}" @click="currentView = 'networks'; loadNetworks()">
-                <i class="fas fa-network-wired"></i>
-                Networks
-            </div>
-            <div class="nav-item" :class="{active: currentView === 'settings'}" @click="currentView = 'settings'">
-                <i class="fas fa-cog"></i>
-                Settings
-            </div>
-            <div class="nav-item" @click="logout" style="margin-top: auto; color: #ef4444;" v-if="isPasswordEnabled">
-                <i class="fas fa-sign-out-alt"></i>
-                Logout
+            <div class="nav-menu">
+                <div class="nav-item" :class="{active: currentView === 'dashboard'}" @click="currentView = 'dashboard'">
+                    <i class="fas fa-home"></i>
+                    Dashboard
+                </div>
+                <div class="nav-item" :class="{active: currentView === 'images'}" @click="currentView = 'images'; loadImages()">
+                    <i class="fas fa-hdd"></i>
+                    Images
+                </div>
+                <div class="nav-item" :class="{active: currentView === 'networks'}" @click="currentView = 'networks'; loadNetworks()">
+                    <i class="fas fa-network-wired"></i>
+                    Networks
+                </div>
+                <div class="nav-item" :class="{active: currentView === 'settings'}" @click="currentView = 'settings'">
+                    <i class="fas fa-cog"></i>
+                    Settings
+                </div>
+                <div class="nav-item" @click="logout" style="color: #ef4444;" v-if="isPasswordEnabled">
+                    <i class="fas fa-sign-out-alt"></i>
+                    Logout
+                </div>
             </div>
         </div>
 
@@ -981,75 +1052,187 @@
                         </div>
                     </div>
                     
-                    <!-- Docker Hub Rate Limit - Top Center -->
-                    <div v-if="dockerHubRateLimit" style="padding: 20px 20px 10px 20px; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
-                        <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                    <!-- Docker Hub Rate Limit Gauge -->
+                    <div v-if="dockerHubRateLimit && !dockerHubRateLimit.unlimited" style="padding: 20px; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
+                        <div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">
                             <i class="fab fa-docker"></i> Docker Hub Rate Limit
                         </div>
-                        <div v-if="dockerHubRateLimit.unlimited" style="font-size: 24px; font-weight: bold; color: #22c55e;">
-                            <i class="fas fa-infinity"></i> Unlimited
+                        <div class="radial-gauge">
+                            <svg width="140" height="140">
+                                <circle class="radial-gauge-bg" cx="70" cy="70" r="60"></circle>
+                                <circle class="radial-gauge-fill" 
+                                        cx="70" cy="70" r="60"
+                                        :stroke="dockerHubRateLimit.percentage < 10 ? '#ef4444' : dockerHubRateLimit.percentage < 25 ? '#f59e0b' : '#22c55e'"
+                                        :stroke-dasharray="376.99"
+                                        :stroke-dashoffset="376.99 - (376.99 * dockerHubRateLimit.percentage / 100)">
+                                </circle>
+                            </svg>
+                            <div class="radial-gauge-center">
+                                <div class="radial-gauge-value" :style="{color: dockerHubRateLimit.percentage < 10 ? '#ef4444' : dockerHubRateLimit.percentage < 25 ? '#f59e0b' : '#22c55e'}">
+                                    {{ dockerHubRateLimit.percentage }}%
+                                </div>
+                                <div class="radial-gauge-label">Available</div>
+                            </div>
                         </div>
-                        <div v-else>
-                            <div style="font-size: 32px; font-weight: bold;" :style="{color: dockerHubRateLimit.percentage < 10 ? '#ef4444' : dockerHubRateLimit.percentage < 25 ? '#f59e0b' : '#22c55e'}">
-                                {{ dockerHubRateLimit.percentage }}%
-                            </div>
-                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
-                                {{ dockerHubRateLimit.remaining }} / {{ dockerHubRateLimit.limit }} pulls remaining
-                            </div>
+                        <div class="radial-gauge-subtitle">
+                            {{ dockerHubRateLimit.remaining }} / {{ dockerHubRateLimit.limit }} pulls
                         </div>
                     </div>
                     
-                    <div style="padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
-                        <!-- CPU -->
-                        <div style="text-align: center;">
-                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                    <div v-if="dockerHubRateLimit && dockerHubRateLimit.unlimited" style="padding: 20px; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
+                        <div style="font-size: 13px; color: #94a3b8; margin-bottom: 10px;">
+                            <i class="fab fa-docker"></i> Docker Hub Rate Limit
+                        </div>
+                        <div style="font-size: 32px; font-weight: bold; color: #22c55e;">
+                            <i class="fas fa-infinity"></i> Unlimited
+                        </div>
+                    </div>
+                    
+                    <div style="padding: 30px 20px; display: flex; justify-content: center; align-items: flex-start; gap: 40px; flex-wrap: wrap;">
+                        <!-- CPU Gauge -->
+                        <div style="text-align: center; min-width: 160px;">
+                            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">
                                 <i class="fas fa-microchip"></i> CPU
                             </div>
-                            <div style="font-size: 32px; font-weight: bold; color: #00d9ff;">
-                                {{ hostStats.cpu_percent }}%
+                            <div class="radial-gauge">
+                                <svg width="140" height="140">
+                                    <circle class="radial-gauge-bg" cx="70" cy="70" r="60"></circle>
+                                    <circle class="radial-gauge-fill" 
+                                            cx="70" cy="70" r="60"
+                                            :stroke="hostStats.cpu_percent > 90 ? '#ef4444' : hostStats.cpu_percent > 75 ? '#f59e0b' : '#00d9ff'"
+                                            :stroke-dasharray="376.99"
+                                            :stroke-dashoffset="376.99 - (376.99 * hostStats.cpu_percent / 100)">
+                                    </circle>
+                                </svg>
+                                <div class="radial-gauge-center">
+                                    <div class="radial-gauge-value" :style="{color: hostStats.cpu_percent > 90 ? '#ef4444' : hostStats.cpu_percent > 75 ? '#f59e0b' : '#00d9ff'}">
+                                        {{ hostStats.cpu_percent }}%
+                                    </div>
+                                    <div class="radial-gauge-label">Usage</div>
+                                </div>
                             </div>
-                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                            <div class="radial-gauge-subtitle">
                                 {{ hostStats.cpu_count }} cores
                             </div>
                         </div>
                         
-                        <!-- Memory -->
-                        <div style="text-align: center;">
-                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                        <!-- Memory Gauge -->
+                        <div style="text-align: center; min-width: 160px;">
+                            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">
                                 <i class="fas fa-memory"></i> Memory
                             </div>
-                            <div style="font-size: 32px; font-weight: bold;" :style="{color: hostStats.memory_percent > 90 ? '#ef4444' : hostStats.memory_percent > 75 ? '#f59e0b' : '#10b981'}">
-                                {{ hostStats.memory_percent }}%
+                            <div class="radial-gauge">
+                                <svg width="140" height="140">
+                                    <circle class="radial-gauge-bg" cx="70" cy="70" r="60"></circle>
+                                    <circle class="radial-gauge-fill" 
+                                            cx="70" cy="70" r="60"
+                                            :stroke="hostStats.memory_percent > 90 ? '#ef4444' : hostStats.memory_percent > 75 ? '#f59e0b' : '#10b981'"
+                                            :stroke-dasharray="376.99"
+                                            :stroke-dashoffset="376.99 - (376.99 * hostStats.memory_percent / 100)">
+                                    </circle>
+                                </svg>
+                                <div class="radial-gauge-center">
+                                    <div class="radial-gauge-value" :style="{color: hostStats.memory_percent > 90 ? '#ef4444' : hostStats.memory_percent > 75 ? '#f59e0b' : '#10b981'}">
+                                        {{ hostStats.memory_percent }}%
+                                    </div>
+                                    <div class="radial-gauge-label">Usage</div>
+                                </div>
                             </div>
-                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                            <div class="radial-gauge-subtitle">
                                 {{ hostStats.memory_used_gb }} / {{ hostStats.memory_total_gb }} GB
                             </div>
                         </div>
                         
-                        <!-- Disk -->
-                        <div style="text-align: center;">
-                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
+                        <!-- Disk Gauge -->
+                        <div style="text-align: center; min-width: 160px;">
+                            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">
                                 <i class="fas fa-hdd"></i> Disk
                             </div>
-                            <div style="font-size: 32px; font-weight: bold;" :style="{color: hostStats.disk_percent > 90 ? '#ef4444' : hostStats.disk_percent > 75 ? '#f59e0b' : '#10b981'}">
-                                {{ hostStats.disk_percent }}%
+                            <div class="radial-gauge">
+                                <svg width="140" height="140">
+                                    <circle class="radial-gauge-bg" cx="70" cy="70" r="60"></circle>
+                                    <circle class="radial-gauge-fill" 
+                                            cx="70" cy="70" r="60"
+                                            :stroke="hostStats.disk_percent > 90 ? '#ef4444' : hostStats.disk_percent > 75 ? '#f59e0b' : '#10b981'"
+                                            :stroke-dasharray="376.99"
+                                            :stroke-dashoffset="376.99 - (376.99 * hostStats.disk_percent / 100)">
+                                    </circle>
+                                </svg>
+                                <div class="radial-gauge-center">
+                                    <div class="radial-gauge-value" :style="{color: hostStats.disk_percent > 90 ? '#ef4444' : hostStats.disk_percent > 75 ? '#f59e0b' : '#10b981'}">
+                                        {{ hostStats.disk_percent }}%
+                                    </div>
+                                    <div class="radial-gauge-label">Usage</div>
+                                </div>
                             </div>
-                            <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                            <div class="radial-gauge-subtitle">
                                 {{ hostStats.disk_used_gb }} / {{ hostStats.disk_total_gb }} GB
                             </div>
                         </div>
                         
-                        <!-- Network -->
-                        <div style="text-align: center;">
-                            <div style="font-size: 14px; color: #94a3b8; margin-bottom: 8px;">
-                                <i class="fas fa-network-wired"></i> Network
+                        <!-- Network Graph - Full Width Bottom -->
+                        <div style="grid-column: 1 / -1; text-align: center; padding: 20px; border-top: 1px solid rgba(255, 255, 255, 0.1); margin-top: 10px;">
+                            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 1px;">
+                                <i class="fas fa-network-wired"></i> Network Traffic (Last Hour)
                             </div>
-                            <div style="font-size: 20px; font-weight: bold; color: #8b5cf6;">
-                                <div style="margin-bottom: 4px;">
-                                    <i class="fas fa-arrow-down" style="font-size: 14px;"></i> {{ hostStats.net_rx_mbps || 0 }} Mbps
+                            
+                            <!-- Current Stats -->
+                            <div style="display: flex; justify-content: center; gap: 40px; margin-bottom: 20px;">
+                                <div>
+                                    <div style="font-size: 24px; font-weight: bold; color: #8b5cf6;">
+                                        {{ hostStats.net_rx_mbps || 0 }}
+                                    </div>
+                                    <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-top: 4px;">
+                                        <i class="fas fa-arrow-down"></i> Mbps Down
+                                    </div>
                                 </div>
                                 <div>
-                                    <i class="fas fa-arrow-up" style="font-size: 14px;"></i> {{ hostStats.net_tx_mbps || 0 }} Mbps
+                                    <div style="font-size: 24px; font-weight: bold; color: #ec4899;">
+                                        {{ hostStats.net_tx_mbps || 0 }}
+                                    </div>
+                                    <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-top: 4px;">
+                                        <i class="fas fa-arrow-up"></i> Mbps Up
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Sparkline Graph -->
+                            <div v-if="hostStats.net_history && hostStats.net_history.length > 1" style="position: relative; height: 120px; max-width: 800px; margin: 0 auto;">
+                                <svg :viewBox="`0 0 ${hostStats.net_history.length * 10} 120`" style="width: 100%; height: 100%;">
+                                    <!-- Grid lines -->
+                                    <line x1="0" :x2="hostStats.net_history.length * 10" y1="30" y2="30" stroke="rgba(255,255,255,0.05)" stroke-width="1"></line>
+                                    <line x1="0" :x2="hostStats.net_history.length * 10" y1="60" y2="60" stroke="rgba(255,255,255,0.05)" stroke-width="1"></line>
+                                    <line x1="0" :x2="hostStats.net_history.length * 10" y1="90" y2="90" stroke="rgba(255,255,255,0.05)" stroke-width="1"></line>
+                                    
+                                    <!-- RX (Download) Area -->
+                                    <defs>
+                                        <linearGradient id="rxGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                                            <stop offset="0%" style="stop-color:#8b5cf6;stop-opacity:0.4" />
+                                            <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:0.05" />
+                                        </linearGradient>
+                                    </defs>
+                                    <path :d="getNetworkPath(hostStats.net_history, 'rx')" fill="url(#rxGradient)" stroke="#8b5cf6" stroke-width="2"></path>
+                                    
+                                    <!-- TX (Upload) Area -->
+                                    <defs>
+                                        <linearGradient id="txGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                                            <stop offset="0%" style="stop-color:#ec4899;stop-opacity:0.4" />
+                                            <stop offset="100%" style="stop-color:#ec4899;stop-opacity:0.05" />
+                                        </linearGradient>
+                                    </defs>
+                                    <path :d="getNetworkPath(hostStats.net_history, 'tx')" fill="url(#txGradient)" stroke="#ec4899" stroke-width="2"></path>
+                                </svg>
+                            </div>
+                            
+                            <!-- Legend -->
+                            <div style="display: flex; justify-content: center; gap: 30px; margin-top: 15px; font-size: 12px;">
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <div style="width: 20px; height: 3px; background: #8b5cf6; border-radius: 2px;"></div>
+                                    <span style="color: #8b5cf6;">Download</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <div style="width: 20px; height: 3px; background: #ec4899; border-radius: 2px;"></div>
+                                    <span style="color: #ec4899;">Upload</span>
                                 </div>
                             </div>
                         </div>
@@ -1168,6 +1351,7 @@
                             <i class="fas fa-exclamation-circle"></i>
                             Update Available
                         </div>
+
 
                         <div class="btn-group" style="margin-top: 15px;">
                             <button class="btn btn-success" v-if="stack.status !== 'running'" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'up') : remoteStackOperation(stack, 'up')">
@@ -2777,6 +2961,28 @@
 
 
             
+
+
+            async showScanResults(stack) {
+                if (!stack.containers || stack.containers.length === 0) return;
+                
+                const containerId = stack.containers[0].id;
+                
+                this.scanModal.show = true;
+                this.scanModal.loading = true;
+                this.scanModal.error = null;
+                this.scanModal.data = null;
+                
+                try {
+                    const response = await axios.get(`/api/container/${containerId}/scan-status`);
+                    this.scanModal.data = response.data;
+                    this.scanModal.loading = false;
+                } catch (error) {
+                    this.scanModal.loading = false;
+                    this.scanModal.error = error.response?.data?.error || error.message;
+                }
+            },
+            
             async scanContainer(stack) {
                 if (!stack.containers || stack.containers.length === 0) {
                     alert('No containers in stack');
@@ -4174,6 +4380,36 @@
                 
                 getTagCount(tag) {
                     return this.stacks.filter(s => s.tags && s.tags.includes(tag)).length;
+                },
+                
+                getNetworkPath(history, type) {
+                    if (!history || history.length === 0) return '';
+                    
+                    // Find max value for scaling
+                    const maxValue = Math.max(...history.map(h => Math.max(h.rx, h.tx)), 1);
+                    const width = 10;
+                    const height = 120;
+                    const padding = 10;
+                    
+                    // Generate path
+                    let path = `M 0 ${height}`;
+                    
+                    history.forEach((point, index) => {
+                        const x = index * width;
+                        const value = type === 'rx' ? point.rx : point.tx;
+                        const y = height - padding - ((value / maxValue) * (height - padding * 2));
+                        
+                        if (index === 0) {
+                            path += ` L ${x} ${y}`;
+                        } else {
+                            path += ` L ${x} ${y}`;
+                        }
+                    });
+                    
+                    // Close path to bottom
+                    path += ` L ${(history.length - 1) * width} ${height} Z`;
+                    
+                    return path;
                 }
             }
         }).mount('#app');
