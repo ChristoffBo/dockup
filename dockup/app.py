@@ -1895,6 +1895,21 @@ def api_host_stats():
         }
         api_host_stats.last_time = time.time()
         
+        # Track network history (60 data points = 1 hour at 1min intervals)
+        if not hasattr(api_host_stats, 'net_history'):
+            api_host_stats.net_history = []
+        
+        # Add current data point with timestamp
+        api_host_stats.net_history.append({
+            'timestamp': time.time(),
+            'rx': round(net_rx_mbps, 2),
+            'tx': round(net_tx_mbps, 2)
+        })
+        
+        # Keep only last 60 points (1 hour)
+        if len(api_host_stats.net_history) > 60:
+            api_host_stats.net_history.pop(0)
+        
         return jsonify({
             'cpu_percent': round(cpu_percent, 1),
             'cpu_count': psutil.cpu_count(),
@@ -1906,7 +1921,8 @@ def api_host_stats():
             'disk_percent': round(disk.percent, 1),
             'hostname': 'Host System',
             'net_rx_mbps': round(net_rx_mbps, 2),
-            'net_tx_mbps': round(net_tx_mbps, 2)
+            'net_tx_mbps': round(net_tx_mbps, 2),
+            'net_history': api_host_stats.net_history if hasattr(api_host_stats, 'net_history') else []
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1919,6 +1935,32 @@ def api_docker_hub_rate_limit():
     if rate_limit:
         return jsonify(rate_limit)
     return jsonify({'error': 'Could not check rate limit'}), 500
+
+
+@app.route('/api/container/<container_id>/badge')
+@require_auth
+def api_container_badge(container_id):
+    """Get security badge for a container"""
+    try:
+        container = docker_client.containers.get(container_id)
+        image_name = container.image.tags[0] if container.image.tags else container.image.id
+        
+        # Check if we have a scan for this image
+        cached = get_cached_scan(image_name, max_age=86400*7)  # 7 days
+        
+        if not cached:
+            return jsonify({'scanned': False})
+        
+        return jsonify({
+            'scanned': True,
+            'badge': cached.get('badge'),
+            'critical': cached.get('severity_counts', {}).get('CRITICAL', 0),
+            'high': cached.get('severity_counts', {}).get('HIGH', 0),
+            'medium': cached.get('severity_counts', {}).get('MEDIUM', 0),
+            'scanned_at': cached.get('scanned_at')
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
 
 
 @app.route('/api/container/<container_id>/scan', methods=['POST'])
