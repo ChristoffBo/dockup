@@ -43,16 +43,20 @@ sock = Sock(app)
 # Configuration
 STACKS_DIR = os.getenv('STACKS_DIR', '/stacks')
 DATA_DIR = os.getenv('DATA_DIR', '/app/data')
+TRIVY_CACHE_DIR = os.path.join(DATA_DIR, 'trivy-cache')
 CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')
 SCHEDULES_FILE = os.path.join(DATA_DIR, 'schedules.json')
 HEALTH_STATUS_FILE = os.path.join(DATA_DIR, 'health_status.json')
 UPDATE_HISTORY_FILE = os.path.join(DATA_DIR, 'update_history.json')
 PASSWORD_FILE = os.path.join(DATA_DIR, 'password.hash')
+SCAN_RESULTS_FILE = os.path.join(DATA_DIR, 'scan_results.json')
+
 
 # Ensure directories exist
 Path(STACKS_DIR).mkdir(parents=True, exist_ok=True)
 Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
-
+Path(TRIVY_CACHE_DIR).mkdir(parents=True, exist_ok=True)
+print(f"Trivy cache directory: {TRIVY_CACHE_DIR}")
 # Docker client
 docker_client = docker.from_env()
 
@@ -305,6 +309,146 @@ def check_docker_hub_rate_limit():
     except Exception as e:
         print(f"Error checking Docker Hub rate limit: {e}")
         return None
+
+
+# Vulnerability scanning with Trivy
+vulnerability_scan_cache = {}  # Cache scan results: {image_name: {scan_data, timestamp}}
+
+
+def scan_image_vulnerabilities(image_name):
+    """Scan Docker image for vulnerabilities using Trivy"""
+    try:
+        print(f"Scanning image: {image_name}")
+        
+        # Run Trivy scan with custom cache dir
+        env = os.environ.copy()
+        env['TRIVY_CACHE_DIR'] = TRIVY_CACHE_DIR
+        
+        result = subprocess.run(
+            ['trivy', 'image', '--format', 'json', '--quiet', image_name],
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout
+            env=env
+        )
+        
+        if result.returncode > 1:
+            # Exit code > 1 means execution error
+            print(f"Trivy execution error for {image_name}: {result.stderr}")
+            return None
+        
+        # Parse JSON output
+        scan_data = json.loads(result.stdout)
+        
+        # Count vulnerabilities by severity
+        severity_counts = {
+            'CRITICAL': 0,
+            'HIGH': 0,
+            'MEDIUM': 0,
+            'LOW': 0,
+            'UNKNOWN': 0
+        }
+        
+        vulnerabilities = []
+        
+        # Extract vulnerabilities from all results
+        for item in scan_data.get('Results', []):
+            for vuln in item.get('Vulnerabilities', []):
+                severity = vuln.get('Severity', 'UNKNOWN')
+                severity_counts[severity] = severity_counts.get(severity, 0) + 1
+                
+                vulnerabilities.append({
+                    'cve_id': vuln.get('VulnerabilityID', 'N/A'),
+                    'package': vuln.get('PkgName', 'N/A'),
+                    'installed_version': vuln.get('InstalledVersion', 'N/A'),
+                    'fixed_version': vuln.get('FixedVersion', 'Not available'),
+                    'severity': severity,
+                    'title': vuln.get('Title', 'No title'),
+                    'description': vuln.get('Description', 'No description')[:200]  # Truncate long descriptions
+                })
+        
+        # Determine badge color
+        if severity_counts['CRITICAL'] > 0 or severity_counts['HIGH'] > 0:
+            badge = 'red'
+        elif severity_counts['MEDIUM'] > 0:
+            badge = 'orange'
+        else:
+            badge = 'green'
+        
+        scan_result = {
+            'image': image_name,
+            'scanned_at': datetime.now().isoformat(),
+            'badge': badge,
+            'severity_counts': severity_counts,
+            'total_vulnerabilities': sum(severity_counts.values()),
+            'vulnerabilities': vulnerabilities[:100]  # Limit to first 100 for UI
+        }
+        
+        # Cache the result
+        vulnerability_scan_cache[image_name] = {
+            'data': scan_result,
+            'timestamp': time.time()
+        }
+        
+        save_scan_results()
+        
+        save_scan_results()
+        
+        return scan_result
+        
+    except subprocess.TimeoutExpired:
+        print(f"Trivy scan timeout for {image_name}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse Trivy output for {image_name}: {e}")
+        return None
+    except Exception as e:
+        print(f"Error scanning {image_name}: {e}")
+        return None
+
+
+def get_cached_scan(image_name, max_age=3600):
+    """Get cached scan result if available and not too old"""
+    if image_name in vulnerability_scan_cache:
+        cached = vulnerability_scan_cache[image_name]
+        age = time.time() - cached['timestamp']
+        if age < max_age:  # Cache valid for 1 hour by default
+            return cached['data']
+    return None
+
+
+
+def load_scan_results():
+    """Load persistent scan results"""
+    global vulnerability_scan_cache
+    if os.path.exists(SCAN_RESULTS_FILE):
+        try:
+            with open(SCAN_RESULTS_FILE, 'r') as f:
+                saved = json.load(f)
+                for image, data in saved.items():
+                    vulnerability_scan_cache[image] = {
+                        'data': data['data'],
+                        'timestamp': data['timestamp']
+                    }
+            print(f"Loaded {len(vulnerability_scan_cache)} cached scans")
+        except Exception as e:
+            print(f"Error loading scan results: {e}")
+
+
+def save_scan_results():
+    """Save scan results to disk"""
+    try:
+        saved = {}
+        for image, cache_data in vulnerability_scan_cache.items():
+            saved[image] = {
+                'data': cache_data['data'],
+                'timestamp': cache_data['timestamp']
+            }
+        with open(SCAN_RESULTS_FILE, 'w') as f:
+            json.dump(saved, f, indent=2)
+    except Exception as e:
+        print(f"Error saving scan results: {e}")
+
 
 
 def hash_password(password):
@@ -1777,6 +1921,166 @@ def api_docker_hub_rate_limit():
     return jsonify({'error': 'Could not check rate limit'}), 500
 
 
+@app.route('/api/container/<container_id>/scan', methods=['POST'])
+@require_auth
+def api_container_scan(container_id):
+    """Scan container image for vulnerabilities"""
+    try:
+        container = docker_client.containers.get(container_id)
+        image_name = container.image.tags[0] if container.image.tags else container.image.id
+        
+        # Check cache first
+        cached = get_cached_scan(image_name)
+        if cached:
+            return jsonify(cached)
+        
+        # Run scan in background thread
+        def scan_thread():
+            scan_image_vulnerabilities(image_name)
+        
+        threading.Thread(target=scan_thread, daemon=True).start()
+        
+        return jsonify({
+            'status': 'scanning',
+            'message': 'Vulnerability scan started',
+            'image': image_name
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/container/<container_id>/scan-status')
+@require_auth
+def api_container_scan_status(container_id):
+    """Get vulnerability scan status/results for container"""
+    try:
+        container = docker_client.containers.get(container_id)
+        image_name = container.image.tags[0] if container.image.tags else container.image.id
+        
+        # Check if scan is cached
+        cached = get_cached_scan(image_name, max_age=86400)  # 24 hour cache
+        if cached:
+            return jsonify(cached)
+        
+        return jsonify({
+            'status': 'not_scanned',
+            'image': image_name
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/security/stats')
+@require_auth
+def api_security_stats():
+    """Get overall security statistics across all containers"""
+    try:
+        stacks = get_stacks()
+        total_containers = 0
+        scanned_containers = 0
+        vulnerable_containers = 0
+        critical_vulns = 0
+        high_vulns = 0
+        
+        for stack in stacks:
+            for container in stack.get('containers', []):
+                total_containers += 1
+                container_id = container.get('id')
+                
+                if container_id:
+                    try:
+                        docker_container = docker_client.containers.get(container_id)
+                        image_name = docker_container.image.tags[0] if docker_container.image.tags else docker_container.image.id
+                        
+                        cached = get_cached_scan(image_name, max_age=86400)
+                        if cached:
+                            scanned_containers += 1
+                            severity = cached.get('severity_counts', {})
+                            
+                            if cached.get('badge') in ['red', 'orange']:
+                                vulnerable_containers += 1
+                            
+                            critical_vulns += severity.get('CRITICAL', 0)
+                            high_vulns += severity.get('HIGH', 0)
+                    except:
+                        pass
+        
+        return jsonify({
+            'total_containers': total_containers,
+            'scanned_containers': scanned_containers,
+            'vulnerable_containers': vulnerable_containers,
+            'critical_vulnerabilities': critical_vulns,
+            'high_vulnerabilities': high_vulns,
+            'scan_coverage': round((scanned_containers / total_containers * 100) if total_containers > 0 else 0, 1)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+
+
+
+@app.route('/api/stack/<stack_name>/scan-summary')
+@require_auth
+def api_stack_scan_summary(stack_name):
+    """Get scan summary for all containers in a stack"""
+    try:
+        stacks = get_stacks()
+        stack = next((s for s in stacks if s['name'] == stack_name), None)
+        
+        if not stack:
+            return jsonify({'error': 'Stack not found'}), 404
+        
+        worst_badge = 'gray'
+        total_critical = 0
+        total_high = 0
+        scanned_count = 0
+        last_scan = None
+        
+        for container in stack.get('containers', []):
+            container_id = container.get('id')
+            if container_id:
+                try:
+                    docker_container = docker_client.containers.get(container_id)
+                    image_name = docker_container.image.tags[0] if docker_container.image.tags else docker_container.image.id
+                    
+                    cached = get_cached_scan(image_name, max_age=86400*7)
+                    if cached:
+                        scanned_count += 1
+                        badge = cached.get('badge', 'gray')
+                        
+                        # Priority: red > orange > green > gray
+                        if badge == 'red':
+                            worst_badge = 'red'
+                        elif badge == 'orange' and worst_badge != 'red':
+                            worst_badge = 'orange'
+                        elif badge == 'green' and worst_badge not in ['red', 'orange']:
+                            worst_badge = 'green'
+                        elif worst_badge == 'gray':
+                            worst_badge = badge
+                        
+                        severity = cached.get('severity_counts', {})
+                        total_critical += severity.get('CRITICAL', 0)
+                        total_high += severity.get('HIGH', 0)
+                        
+                        scan_time = cached.get('scanned_at')
+                        if scan_time and (not last_scan or scan_time > last_scan):
+                            last_scan = scan_time
+                except:
+                    pass
+        
+        result = {
+            'badge': worst_badge,
+            'critical_count': total_critical,
+            'high_count': total_high,
+            'scanned_containers': scanned_count,
+            'total_containers': len(stack.get('containers', [])),
+            'last_scan': last_scan
+        }
+        print(f"[SCAN SUMMARY] Stack: {stack_name}, Badge: {worst_badge}, Critical: {total_critical}, High: {total_high}")
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
 @app.route('/api/stack/<stack_name>')
 def api_stack(stack_name):
     """Get specific stack details"""
@@ -3357,6 +3661,7 @@ if __name__ == '__main__':
         load_health_status()
         load_update_history()
         load_update_status()  # Load per-instance update status
+        load_scan_results()  # Load cached scans
         print("✓ Configuration loaded")
         
         # Setup scheduler
