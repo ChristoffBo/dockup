@@ -2,7 +2,7 @@
 
 **DockUp** is a self-hosted web interface for managing all your Docker containers and stacks. It combines visual stack management with automatic update detection, health monitoring, vulnerability scanning, and multi-server support—all from one clean dashboard.
 
-Think of it as your Docker control center: manage 30+ stacks across multiple servers, schedule automatic updates like Watchtower, get notified when containers go down, and keep track of security vulnerabilities. All without touching the command line.
+Think of it as your Docker control center: manage 30+ stacks across, multiple servers, schedule automatic updates like Watchtower, get notified when containers go down, and keep track of security vulnerabilities. All without touching the command line.
 
 <p align="center">
   <img src="dockup-demo.gif" alt="DockUp Interface Demo" />
