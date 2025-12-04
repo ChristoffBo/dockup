@@ -16,13 +16,16 @@ import psutil
 import bcrypt
 import requests
 import secrets
+import fcntl
 from datetime import datetime
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, render_template, request, jsonify, send_from_directory, send_file, session, redirect, url_for
 from functools import wraps
 from flask_sock import Sock
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.executors.pool import ThreadPoolExecutor as APThreadPoolExecutor
 from croniter import croniter
 import apprise
 import pytz
@@ -70,6 +73,7 @@ websocket_clients = []
 stack_stats_cache = {}  # Cache for stack stats
 network_stats_cache = {}  # Cache for network bytes tracking (for rate calculation)
 peer_sessions = {}  # Cache for peer authentication sessions
+scheduler = None  # Global APScheduler instance
 
 # Initialize Apprise
 apobj = apprise.Apprise()
@@ -138,9 +142,14 @@ def load_schedules():
 
 
 def save_schedules():
-    """Save schedules to file"""
-    with open(SCHEDULES_FILE, 'w') as f:
-        json.dump(schedules, f, indent=2)
+    """Save schedules to file with file locking"""
+    try:
+        with open(SCHEDULES_FILE, 'w') as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            json.dump(schedules, f, indent=2)
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    except Exception as e:
+        print(f"Error saving schedules: {e}")
 
 
 def load_health_status():
@@ -154,9 +163,14 @@ def load_health_status():
 
 
 def save_health_status():
-    """Save health status tracking to file"""
-    with open(HEALTH_STATUS_FILE, 'w') as f:
-        json.dump(health_status, f, indent=2)
+    """Save health status tracking to file with file locking"""
+    try:
+        with open(HEALTH_STATUS_FILE, 'w') as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            json.dump(health_status, f, indent=2)
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    except Exception as e:
+        print(f"Error saving health status: {e}")
 
 
 def load_update_history():
@@ -170,15 +184,37 @@ def load_update_history():
 
 
 def save_update_history():
-    """Save update history to file"""
-    with open(UPDATE_HISTORY_FILE, 'w') as f:
-        json.dump(update_history, f, indent=2)
+    """Save update history to file with file locking"""
+    try:
+        with open(UPDATE_HISTORY_FILE, 'w') as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            json.dump(update_history, f, indent=2)
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    except Exception as e:
+        print(f"Error saving update history: {e}")
 
 
 def get_update_status_file():
     """Get per-instance update status filename"""
     instance_name = config.get('instance_name', 'DockUp').replace(' ', '_').replace('/', '_')
     return os.path.join(DATA_DIR, f'update_status_{instance_name}.json')
+
+
+def cleanup_old_status_files():
+    """Remove orphaned update_status_*.json files when instance name changes"""
+    try:
+        current_file = get_update_status_file()
+        for filename in os.listdir(DATA_DIR):
+            if filename.startswith('update_status_') and filename.endswith('.json'):
+                filepath = os.path.join(DATA_DIR, filename)
+                if filepath != current_file:
+                    try:
+                        os.remove(filepath)
+                        print(f"Cleaned up orphaned status file: {filename}")
+                    except:
+                        pass
+    except Exception as e:
+        print(f"Error cleaning up status files: {e}")
 
 
 def load_update_status():
@@ -193,14 +229,19 @@ def load_update_status():
             update_status = {}
     else:
         update_status = {}
+    
+    # Clean up old files on load
+    cleanup_old_status_files()
 
 
 def save_update_status():
-    """Save update status to per-instance file"""
+    """Save update status to per-instance file with file locking"""
     try:
         status_file = get_update_status_file()
         with open(status_file, 'w') as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             json.dump(update_status, f, indent=2)
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     except Exception as e:
         print(f"Error saving update status: {e}")
 
@@ -383,7 +424,7 @@ def scan_image_vulnerabilities(image_name):
         
         scan_result = {
             'image': image_name,
-            'scanned_at': datetime.now().isoformat(),
+            'scanned_at': datetime.now(pytz.UTC).isoformat(),
             'badge': badge,
             'severity_counts': severity_counts,
             'total_vulnerabilities': sum(severity_counts.values()),
@@ -1324,7 +1365,17 @@ def auto_update_stack(stack_name):
     Watchtower-style update: Pull first, then compare image IDs
     This is the ONLY reliable method that actually works
     """
-    schedule_info = schedules.get(stack_name, {})
+    # Read schedule from FILE (not global dict) to avoid thread issues
+    schedule_info = {}
+    try:
+        if os.path.exists(SCHEDULES_FILE):
+            with open(SCHEDULES_FILE, 'r') as f:
+                all_schedules = json.load(f)
+                schedule_info = all_schedules.get(stack_name, {})
+    except Exception as e:
+        print(f"[{stack_name}] ERROR reading schedules file: {e}")
+        return
+    
     mode = schedule_info.get('mode', 'off')
     
     if mode == 'off':
@@ -1346,14 +1397,21 @@ def auto_update_stack(stack_name):
             print(f"✗ No containers found for {stack_name}")
             return
         
-        # Store current image IDs
+        # Store current image IDs - use the ACTUAL running image, not tag reference
         old_image_ids = {}
         for container in containers:
             try:
                 if container.image.tags:
                     image_name = container.image.tags[0]
-                    old_image_ids[image_name] = container.image.id
-                    print(f"  Current {container.name}: {container.image.id[:12]}")
+                    # Try to get the SHA256 of what's ACTUALLY running
+                    try:
+                        running_image_sha = container.attrs['Image']
+                        old_image_ids[image_name] = running_image_sha
+                        print(f"  Current {container.name}: running {running_image_sha[:19]}")
+                    except:
+                        # Fallback to tag reference if attrs fail
+                        old_image_ids[image_name] = container.image.id
+                        print(f"  Current {container.name}: {container.image.id[:12]} (fallback)")
             except:
                 pass
         
@@ -1408,7 +1466,7 @@ def auto_update_stack(stack_name):
     
     # Update status
     update_status[stack_name] = {
-        'last_check': datetime.now().isoformat(),
+        'last_check': datetime.now(pytz.UTC).isoformat(),
         'update_available': images_changed
     }
     save_update_status()  # SAVE TO FILE
@@ -1637,7 +1695,7 @@ def check_stack_updates(stack_name):
         
         # Update status
         update_status[stack_name] = {
-            'last_check': datetime.now().isoformat(),
+            'last_check': datetime.now(pytz.UTC).isoformat(),
             'update_available': update_available
         }
         save_update_status()  # SAVE TO FILE
@@ -1650,77 +1708,90 @@ def check_stack_updates(stack_name):
 
 
 def setup_scheduler():
-    """Setup APScheduler for update checks and auto-prune"""
+    """Setup or refresh APScheduler without recreating it"""
+    global scheduler
+    
     # Get user timezone
     user_tz = pytz.timezone(config.get('timezone', 'UTC'))
-    
-    scheduler = BackgroundScheduler(timezone=user_tz)
-    scheduler.start()
-    
-    def update_schedules():
-        """Update scheduled jobs based on current configuration"""
-        # Only remove user-configurable jobs — never touch system ones
-        for job in list(scheduler.get_jobs()):
-            if job.id.startswith('update_') or job.id in ('auto_prune', 'import_orphans'):
-                try:
-                    scheduler.remove_job(job.id)
-                except:
-                    pass
-        
-        # Stack update schedules
-        for stack_name, schedule_info in schedules.items():
-            if schedule_info.get('mode', 'off') != 'off':
-                cron_expr = schedule_info.get('cron', config.get('default_cron', '0 2 * * *'))
-                try:
-                    trigger = CronTrigger.from_crontab(cron_expr, timezone=user_tz)
-                    scheduler.add_job(
-                        auto_update_stack,
-                        trigger,
-                        args=[stack_name],
-                        id=f"update_{stack_name}",
-                        replace_existing=True
-                    )
-                    print(f"Scheduled update check for {stack_name}: {cron_expr} ({config.get('timezone', 'UTC')})")
-                except Exception as e:
-                    print(f"Error scheduling {stack_name}: {e}")
-        
-        # Auto-prune schedule
-        if config.get('auto_prune', False):
-            prune_cron = config.get('auto_prune_cron', '0 3 * * 0')
+
+    # Initialize scheduler ONLY once
+    if scheduler is None:
+        executors = {
+            'default': APThreadPoolExecutor(50)
+        }
+        job_defaults = {
+            'coalesce': False,
+            'max_instances': 1
+        }
+        scheduler = BackgroundScheduler(
+            executors=executors,
+            job_defaults=job_defaults,
+            timezone=user_tz
+        )
+        scheduler.start()
+        print("[Scheduler] Created and started with 50 worker threads")
+    else:
+        # Update scheduler timezone if needed
+        try:
+            scheduler.configure(timezone=user_tz)
+        except:
+            pass
+        print("[Scheduler] Refreshing jobs")
+
+    # Remove only update jobs safely
+    for job in list(scheduler.get_jobs()):
+        try:
+            if job.id.startswith("update_") or job.id in ("auto_prune", "import_orphans"):
+                scheduler.remove_job(job.id)
+        except:
+            pass
+
+    # Recreate update schedules
+    for stack_name, schedule_info in schedules.items():
+        mode = schedule_info.get("mode", "off")
+        if mode != "off":
+            cron_expr = schedule_info.get("cron", config.get("default_cron", "0 2 * * *"))
             try:
-                trigger = CronTrigger.from_crontab(prune_cron, timezone=user_tz)
+                trigger = CronTrigger.from_crontab(cron_expr, timezone=user_tz)
                 scheduler.add_job(
-                    auto_prune_images,
+                    auto_update_stack,
                     trigger,
-                    id='auto_prune',
+                    args=[stack_name],
+                    id=f"update_{stack_name}",
                     replace_existing=True
                 )
-                print(f"Scheduled auto-prune: {prune_cron} ({config.get('timezone', 'UTC')})")
+                print(f"[Scheduler] Added update job for {stack_name}: {cron_expr}")
             except Exception as e:
-                print(f"Error scheduling auto-prune: {e}")
+                print(f"[Scheduler] Error scheduling {stack_name}: {e}")
 
-        # Schedule orphan container importer (every 15 minutes)
+    # Auto-prune job
+    if config.get("auto_prune", False):
+        prune_cron = config.get("auto_prune_cron", "0 3 * * 0")
+        try:
+            trigger = CronTrigger.from_crontab(prune_cron, timezone=user_tz)
+            scheduler.add_job(
+                auto_prune_images,
+                trigger,
+                id="auto_prune",
+                replace_existing=True
+            )
+            print(f"[Scheduler] Added auto-prune job: {prune_cron}")
+        except Exception as e:
+            print(f"[Scheduler] Error scheduling auto-prune: {e}")
+
+    # Orphan importer
+    try:
         scheduler.add_job(
             import_orphan_containers_as_stacks,
-            'interval',
+            "interval",
             minutes=15,
-            id='import_orphans',
+            id="import_orphans",
             replace_existing=True
         )
-    
-    # Initial setup
-    update_schedules()
-    
-    # Re-setup schedules every hour — SAFE version that preserves itself
-    scheduler.add_job(
-        update_schedules,
-        'interval',
-        hours=1,
-        id='refresh_schedules',
-        replace_existing=True,
-        coalesce=True
-    )
-    
+        print("[Scheduler] Added orphan importer job (15m)")
+    except Exception as e:
+        print(f"[Scheduler] Error adding orphan importer: {e}")
+
     return scheduler
 
 
@@ -2555,24 +2626,45 @@ def api_stack_changelog(stack_name):
 
 
 def auto_prune_images():
-    """Automatically prune unused images"""
+    """Automatically prune unused images and Trivy cache"""
     if not config.get('auto_prune', False):
         return
     
     print("Running auto-prune...")
     try:
+        # Prune Docker images
         result = docker_client.images.prune(filters={'dangling': False})
         space_saved = result.get('SpaceReclaimed', 0)
         space_saved_mb = round(space_saved / (1024 * 1024), 2)
         deleted = len(result.get('ImagesDeleted', []))
         
-        if deleted > 0:
+        # Prune Trivy cache (keep last 30 days)
+        trivy_space_saved = 0
+        if os.path.exists(TRIVY_CACHE_DIR):
+            try:
+                import shutil
+                cutoff_time = time.time() - (30 * 24 * 60 * 60)  # 30 days
+                for root, dirs, files in os.walk(TRIVY_CACHE_DIR):
+                    for f in files:
+                        filepath = os.path.join(root, f)
+                        if os.path.getmtime(filepath) < cutoff_time:
+                            size = os.path.getsize(filepath)
+                            os.remove(filepath)
+                            trivy_space_saved += size
+                trivy_space_saved_mb = round(trivy_space_saved / (1024 * 1024), 2)
+                if trivy_space_saved_mb > 0:
+                    print(f"Pruned Trivy cache: {trivy_space_saved_mb} MB freed")
+            except Exception as e:
+                print(f"Trivy cache prune error: {e}")
+        
+        if deleted > 0 or trivy_space_saved > 0:
+            total_saved_mb = space_saved_mb + (trivy_space_saved / (1024 * 1024))
             send_notification(
                 'Dockup - Auto-Prune',
-                f'Automatically pruned {deleted} unused images, freed {space_saved_mb} MB',
+                f'Pruned {deleted} images ({space_saved_mb} MB) and Trivy cache ({trivy_space_saved_mb} MB)',
                 'success'
             )
-            print(f"Auto-prune: {deleted} images, {space_saved_mb} MB freed")
+            print(f"Auto-prune: {deleted} images, {total_saved_mb:.2f} MB total freed")
     except Exception as e:
         print(f"Auto-prune error: {e}")
 
@@ -3322,11 +3414,14 @@ def websocket(ws):
             data = ws.receive()
             if data is None:
                 break
-    except:
-        pass
+    except Exception as e:
+        print(f"WebSocket error: {e}")
     finally:
-        if ws in websocket_clients:
+        # Always remove, even if exception during removal
+        try:
             websocket_clients.remove(ws)
+        except:
+            pass
 
 
 @app.route('/api/stack/<stack_name>/webui', methods=['GET', 'POST'])
