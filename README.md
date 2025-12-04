@@ -4,6 +4,10 @@
 
 Think of it as your Docker control center: manage 30+ stacks across multiple servers, schedule automatic updates like Watchtower, get notified when containers go down, and keep track of security vulnerabilities. All without touching the command line.
 
+<p align="center">
+  <img src="dockup-demo.gif" alt="DockUp Interface Demo" />
+</p>
+
 ---
 
 ## ✨ What DockUp Does
