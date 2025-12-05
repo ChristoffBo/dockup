@@ -3069,8 +3069,30 @@
                     try {
                         const response = await axios.get('/api/stacks/all');
                         this.stacks = response.data;
+                        
+                        // Update "Apply to All" UI based on current schedules
+                        this.updateApplyAllUI();
                     } catch (error) {
                         this.showToast('Error', 'Failed to load stacks', 'error');
+                    }
+                },
+                updateApplyAllUI() {
+                    // Check if all stacks have the same schedule
+                    if (this.stacks.length === 0) return;
+                    
+                    // Backend returns update_mode and cron as separate fields, not as schedule object
+                    const firstMode = this.stacks[0].update_mode || 'off';
+                    const firstCron = this.stacks[0].cron || '0 2 * * *';
+                    
+                    const allSame = this.stacks.every(s => 
+                        (s.update_mode || 'off') === firstMode && 
+                        (s.cron || '0 2 * * *') === firstCron
+                    );
+                    
+                    if (allSame) {
+                        // All stacks have same schedule - update UI
+                        this.applyAllMode = firstMode;
+                        this.applyAllCron = firstCron;
                     }
                 },
 
