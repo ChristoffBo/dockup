@@ -919,8 +919,303 @@
         }
     
     </style>
+
+
+
+<style>
+/* Docker Run Import Modal */
+.docker-run-modal {
+    display: none !important;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.85);
+    z-index: 10000;
+    align-items: center;
+    justify-content: center;
+}
+
+.docker-run-modal.active {
+    display: flex !important;
+}
+
+.docker-run-modal .modal-content {
+    background: #1e293b;
+    border-radius: 12px;
+    padding: 30px;
+    max-width: 900px;
+    width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
+
+.docker-run-modal .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.docker-run-modal .modal-header h2 {
+    color: #60a5fa;
+    font-size: 20px;
+    margin: 0;
+    font-weight: 600;
+}
+
+.docker-run-modal .close {
+    color: #94a3b8;
+    font-size: 28px;
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+    line-height: 1;
+    transition: color 0.2s;
+}
+
+.docker-run-modal .close:hover {
+    color: #f87171;
+}
+
+.docker-run-modal .modal-body {
+    color: #e2e8f0;
+}
+
+.docker-run-modal .form-group {
+    margin-bottom: 20px;
+}
+
+.docker-run-modal .form-group label {
+    display: block;
+    margin-bottom: 8px;
+    color: #cbd5e1;
+    font-weight: 500;
+    font-size: 14px;
+}
+
+.docker-run-modal code {
+    background: rgba(96, 165, 250, 0.1);
+    padding: 2px 8px;
+    border-radius: 4px;
+    color: #60a5fa;
+    font-size: 13px;
+    font-family: 'Courier New', monospace;
+}
+
+.docker-run-modal textarea,
+.docker-run-modal input[type="text"] {
+    width: 100%;
+    padding: 12px;
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    color: #e2e8f0;
+    font-size: 14px;
+    transition: all 0.2s;
+    box-sizing: border-box;
+}
+
+.docker-run-modal textarea {
+    font-family: 'Courier New', Courier, monospace;
+    min-height: 150px;
+    resize: vertical;
+    line-height: 1.5;
+}
+
+.docker-run-modal textarea:focus,
+.docker-run-modal input[type="text"]:focus {
+    outline: none;
+    border-color: #60a5fa;
+    background: #0f172a;
+}
+
+.docker-run-modal textarea::placeholder,
+.docker-run-modal input[type="text"]::placeholder {
+    color: #64748b;
+}
+
+.docker-run-modal small {
+    display: block;
+    margin-top: 6px;
+    color: #94a3b8;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.docker-run-modal #dockerRunWarnings {
+    background: rgba(251, 191, 36, 0.1);
+    border: 1px solid #f59e0b;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 15px;
+}
+
+.docker-run-modal #dockerRunWarnings h4 {
+    color: #fbbf24;
+    margin: 0 0 10px 0;
+    font-size: 16px;
+}
+
+.docker-run-modal #dockerRunWarnings ul {
+    margin: 0;
+    padding-left: 20px;
+    color: #fde68a;
+}
+
+.docker-run-modal #dockerRunYaml {
+    background: #0f172a !important;
+    border: 1px solid #334155 !important;
+    border-radius: 8px;
+    padding: 15px;
+    color: #e2e8f0 !important;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 13px;
+    max-height: 400px;
+    overflow: auto;
+    white-space: pre;
+    line-height: 1.5;
+}
+
+.docker-run-modal #dockerRunYaml * {
+    color: #e2e8f0 !important;
+    background: transparent !important;
+}
+
+.docker-run-modal #dockerRunPreview {
+    margin-top: 30px;
+    padding-top: 30px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    background: transparent !important;
+}
+
+.docker-run-modal #dockerRunPreview * {
+    background: transparent !important;
+}
+
+.docker-run-modal #dockerRunPreview pre {
+    background: #0f172a !important;
+    color: #e2e8f0 !important;
+}
+
+.docker-run-modal #dockerRunPreview h3 {
+    color: #cbd5e1;
+    font-size: 18px;
+    margin-bottom: 15px;
+}
+
+.docker-run-modal .btn {
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s;
+    margin-right: 10px;
+}
+
+.docker-run-modal .btn-primary {
+    background: #3b82f6;
+    color: white;
+}
+
+.docker-run-modal .btn-primary:hover {
+    background: #2563eb;
+}
+
+.docker-run-modal .btn-success {
+    background: #10b981;
+    color: white;
+}
+
+.docker-run-modal .btn-success:hover {
+    background: #059669;
+}
+
+.docker-run-modal .btn-secondary {
+    background: #475569;
+    color: white;
+}
+
+.docker-run-modal .btn-secondary:hover {
+    background: #334155;
+}
+</style>
+
 </head>
 <body>
+
+<!-- Docker Run Import Modal -->
+<div id="dockerRunModal" class="docker-run-modal" style="display: none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>📦 Import from Docker Run Command</h2>
+            <span class="close" onclick="closeDockerRunModal()">&times;</span>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>Paste your <code>docker run</code> command:</label>
+                <textarea id="dockerRunCommand" 
+                          placeholder="docker run -d --name myapp -p 8080:80 -v /data:/app/data nginx:latest"
+                          style="width: 100%; height: 150px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;"></textarea>
+                <small style="color: #666;">
+                    Supports: -p, -v, -e, --name, --restart, --network, --label, --memory, --cpus, and more. Press Ctrl+Enter to convert.
+                </small>
+            </div>
+            
+            <div class="form-group">
+                <label>Stack Name:</label>
+                <input type="text" id="dockerRunStackName" 
+                       placeholder="myapp (auto-detected from command)" 
+                       style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                <small style="color: #666;">
+                    Letters, numbers, hyphens, and underscores only
+                </small>
+            </div>
+            
+            <div style="margin-top: 20px;">
+                <button onclick="convertDockerRun()" class="btn btn-primary">
+                    <i class="fas fa-magic"></i> Convert to Compose
+                </button>
+                <button onclick="closeDockerRunModal()" class="btn btn-secondary">
+                    Cancel
+                </button>
+            </div>
+            
+            <div id="dockerRunPreview" style="display: none; margin-top: 30px;">
+                <h3>Generated compose.yaml:</h3>
+                
+                <div id="dockerRunWarnings"></div>
+                
+                <div style="position: relative;">
+                    <button onclick="copyDockerRunYaml()" 
+                            style="position: absolute; top: 10px; right: 10px; padding: 5px 10px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                        <i class="fas fa-copy"></i> Copy
+                    </button>
+                    <pre id="dockerRunYaml" style="background: #0f172a !important; color: #e2e8f0 !important; padding: 15px; border-radius: 4px; overflow-x: auto; font-size: 13px; max-height: 400px; border: 1px solid #334155; font-family: 'Courier New', monospace;"></pre>
+                </div>
+                
+                <div style="margin-top: 20px;">
+                    <button onclick="createStackFromDockerRun()" class="btn btn-success">
+                        <i class="fas fa-check"></i> Create Stack
+                    </button>
+                    <button onclick="resetDockerRunConversion()" class="btn btn-secondary">
+                        <i class="fas fa-redo"></i> Start Over
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+
     <div id="app">
         <!-- Top Navbar -->
         <div class="navbar">
@@ -1017,6 +1312,9 @@
                 <div style="margin-bottom: 30px; display: flex; gap: 15px; flex-wrap: wrap;">
                     <button class="btn btn-primary" @click="showCreateStack" style="font-size: 16px; padding: 12px 24px;">
                         <i class="fas fa-plus-circle"></i> Create New Stack
+<button onclick="openDockerRunModal()" class="btn btn-primary" title="Import from docker run command">
+    <i class="fas fa-file-import"></i> Import Docker Run
+</button>
                     </button>
                     <button class="btn btn-warning" @click="checkAllStacks" :disabled="checkingAll" style="font-size: 16px; padding: 12px 24px;">
                         <i class="fas" :class="checkingAll ? 'fa-spinner fa-spin' : 'fa-sync'"></i> 
@@ -1094,7 +1392,7 @@
                     
                     <div style="padding: 30px 20px; display: flex; justify-content: center; align-items: flex-start; gap: 40px; flex-wrap: wrap;">
                         <!-- CPU Gauge -->
-                        <div style="text-align: center; min-width: 160px;">
+                        <div style="text-align: center; min-width: 160px; cursor: pointer;" @click="showResourceHogs('cpu')">
                             <div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">
                                 <i class="fas fa-microchip"></i> CPU
                             </div>
@@ -1121,7 +1419,7 @@
                         </div>
                         
                         <!-- Memory Gauge -->
-                        <div style="text-align: center; min-width: 160px;">
+                        <div style="text-align: center; min-width: 160px; cursor: pointer;" @click="showResourceHogs('memory')">
                             <div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">
                                 <i class="fas fa-memory"></i> Memory
                             </div>
@@ -1623,15 +1921,22 @@
                         
                         <div class="form-group">
                             <label class="form-label">Host Stats Polling (CPU/Memory/Disk/Network)</label>
-                            <select class="form-input" v-model.number="settings.host_stats_interval">
-                                <option :value="0">Off - Manual refresh only</option>
-                                <option :value="1">1 second (High CPU usage)</option>
-                                <option :value="5">5 seconds (Default)</option>
-                                <option :value="15">15 seconds</option>
-                                <option :value="30">30 seconds</option>
-                                <option :value="60">1 minute</option>
-                                <option :value="300">5 minutes</option>
+                            <select class="form-input" v-model="settings.host_stats_mode" @change="handleHostStatsModeChange">
+                                <option value="off">Off - Manual refresh only</option>
+                                <option value="auto">Auto - Real-time updates (5 seconds)</option>
+                                <option value="custom">Custom - Specify interval</option>
                             </select>
+                            <div v-if="settings.host_stats_mode === 'custom'" style="margin-top: 10px;">
+                                <input type="number" 
+                                       class="form-input" 
+                                       v-model.number="settings.host_stats_interval" 
+                                       min="1" 
+                                       placeholder="Enter seconds"
+                                       style="width: 200px;">
+                                <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                    Examples: 1 sec, 5 sec, 10 sec, 30 sec, 60 sec (1 min), 300 sec (5 min)
+                                </small>
+                            </div>
                             <small style="color: #94a3b8; display: block; margin-top: 5px;">
                                 Updates the host stats gauges and network graphs
                             </small>
@@ -1639,18 +1944,22 @@
                         
                         <div class="form-group">
                             <label class="form-label">Stack Refresh Polling</label>
-                            <select class="form-input" v-model.number="settings.stack_refresh_interval">
-                                <option :value="0">Off - Manual refresh only</option>
-                                <option :value="1">1 second (High CPU usage)</option>
-                                <option :value="5">5 seconds</option>
-                                <option :value="15">15 seconds</option>
-                                <option :value="30">30 seconds</option>
-                                <option :value="60">1 minute (Default)</option>
-                                <option :value="300">5 minutes</option>
-                                <option :value="600">10 minutes</option>
-                                <option :value="1800">30 minutes</option>
-                                <option :value="3600">1 hour</option>
+                            <select class="form-input" v-model="settings.stack_refresh_mode" @change="handleStackRefreshModeChange">
+                                <option value="off">Off - Manual refresh only</option>
+                                <option value="auto">Auto - Real-time WebSocket updates</option>
+                                <option value="custom">Custom - Specify interval</option>
                             </select>
+                            <div v-if="settings.stack_refresh_mode === 'custom'" style="margin-top: 10px;">
+                                <input type="number" 
+                                       class="form-input" 
+                                       v-model.number="settings.stack_refresh_interval" 
+                                       min="1" 
+                                       placeholder="Enter seconds"
+                                       style="width: 200px;">
+                                <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                    Examples: 10 sec, 30 sec, 60 sec (1 min), 300 sec (5 min), 600 sec (10 min), 3600 sec (1 hour)
+                                </small>
+                            </div>
                             <small style="color: #94a3b8; display: block; margin-top: 5px;">
                                 Updates container status, health checks, and running state
                             </small>
@@ -1919,6 +2228,28 @@
                     <small style="color: #94a3b8; display: block; margin-top: 5px;">
                         {{ editingStack ? 'Stack name cannot be changed' : 'This will create a folder: /stacks/' + (editStackName || 'stackname') + '/' }}
                     </small>
+                </div>
+
+                <!-- Docker Run Import Section -->
+                <div v-if="!editingStack" style="margin-bottom: 20px; padding: 15px; background: #1e293b; border: 1px solid #334155; border-radius: 8px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; cursor: pointer;" @click="showDockerRunImport = !showDockerRunImport">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <i class="fas fa-file-import" style="color: #60a5fa;"></i>
+                            <span style="color: #e2e8f0; font-weight: 500;">Import from docker run command</span>
+                        </div>
+                        <i class="fas" :class="showDockerRunImport ? 'fa-chevron-up' : 'fa-chevron-down'" style="color: #94a3b8;"></i>
+                    </div>
+                    
+                    <div v-if="showDockerRunImport" style="margin-top: 15px;">
+                        <textarea 
+                            v-model="dockerRunCommand" 
+                            placeholder="docker run -d --name myapp -p 8080:80 -v /data:/app/data nginx:latest"
+                            style="width: 100%; height: 100px; padding: 10px; background: #0f172a; border: 1px solid #334155; border-radius: 4px; color: #e2e8f0; font-family: monospace; font-size: 13px; resize: vertical;"
+                        ></textarea>
+                        <button @click="convertAndFillDockerRun" class="btn btn-primary" style="margin-top: 10px;">
+                            <i class="fas fa-magic"></i> Convert & Fill Editor
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Split Editor Mode -->
@@ -2786,13 +3117,67 @@
             </div>
         </div>
 
+        <!-- Resource Hogs Modal -->
+        <div v-if="showResourceHogsModal" class="modal-overlay" @click.self="showResourceHogsModal = false">
+            <div class="modal" style="max-width: 700px;">
+                <div class="modal-header">
+                    <h2>
+                        <i :class="resourceHogsType === 'cpu' ? 'fas fa-microchip' : 'fas fa-memory'"></i>
+                        {{ resourceHogsType === 'cpu' ? 'CPU' : 'Memory' }} Usage by Container
+                    </h2>
+                    <button class="modal-close" @click="showResourceHogsModal = false">&times;</button>
+                </div>
+                <div class="modal-body" style="padding: 20px;">
+                    <div v-if="resourceHogsList.length === 0" style="text-align: center; padding: 40px; color: #94a3b8;">
+                        <i class="fas fa-info-circle" style="font-size: 48px; margin-bottom: 20px; opacity: 0.5;"></i>
+                        <p>No container stats available</p>
+                    </div>
+                    <div v-else style="max-height: 500px; overflow-y: auto; padding-right: 10px;">
+                        <div v-for="(item, index) in resourceHogsList" :key="index" 
+                             style="background: rgba(255, 255, 255, 0.05); border-left: 3px solid; border-radius: 8px; padding: 18px 20px; margin-bottom: 12px; display: flex; align-items: center; gap: 15px;"
+                             :style="{'border-left-color': item.value > 80 ? '#ef4444' : item.value > 50 ? '#f59e0b' : '#10b981'}">
+                            <!-- Rank number -->
+                            <div style="font-size: 20px; font-weight: bold; color: rgba(255, 255, 255, 0.3); min-width: 30px;">
+                                #{{ index + 1 }}
+                            </div>
+                            <!-- Container info -->
+                            <div style="flex: 1; min-width: 0;">
+                                <div style="font-family: monospace; font-size: 15px; font-weight: 600; color: #00d9ff; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                    {{ item.container }}
+                                </div>
+                                <div style="font-size: 13px; color: #94a3b8; display: flex; align-items: center; gap: 6px;">
+                                    <i class="fas fa-layer-group" style="opacity: 0.6;"></i>
+                                    <span>{{ item.stack }}</span>
+                                </div>
+                            </div>
+                            <!-- Usage value -->
+                            <div style="text-align: right; min-width: 100px;">
+                                <div style="font-size: 32px; font-weight: bold; line-height: 1;" 
+                                     :style="{color: item.value > 80 ? '#ef4444' : item.value > 50 ? '#f59e0b' : '#10b981'}">
+                                    {{ item.value.toFixed(1) }}%
+                                </div>
+                                <div v-if="resourceHogsType === 'memory'" style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                                    {{ Math.round(item.memory) }} MB
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @click="showResourceHogsModal = false">
+                        <i class="fas fa-times"></i> Close
+                    </button>
+                </div>
+            </div>
+        </div>
+
 </div>
     </div>
 
     <script>
         const { createApp } = Vue;
 
-        createApp({
+        const app = createApp({
             data() {
                 return {
                 scanModal: {
@@ -2814,8 +3199,10 @@
                         notify_on_health_failure: true,
                         health_check_threshold: 3,
                         password_enabled: false,
+                        host_stats_mode: 'auto',
                         host_stats_interval: 5,
-                        stack_refresh_interval: 10
+                        stack_refresh_mode: 'custom',
+                        stack_refresh_interval: 3600
                     },
                     showChangePassword: false,
                     passwordChange: {
@@ -2828,6 +3215,8 @@
                     editingStack: null,
                     editStackName: '',
                     editStackContent: '',
+                    showDockerRunImport: false,
+                    dockerRunCommand: '',
                     showRawYaml: false,
                     showDnsSection: false,
                     showSecuritySection: false,
@@ -2902,6 +3291,10 @@
                     },
                     editingPeer: null,
                     showEditPeerModal: false,
+                    // Resource hogs modal
+                    showResourceHogsModal: false,
+                    resourceHogsType: 'cpu',
+                    resourceHogsList: [],
                     instanceName: 'DockUp',
                     apiToken: '',
                     fullApiToken: '',
@@ -2988,7 +3381,7 @@
                     return this.stacks.length > 0 && this.stacks.every(s => this.collapsedStacks[s.name]);
                 }
             },
-            mounted() {
+            async mounted() {
                 // Load theme
                 const savedTheme = localStorage.getItem('dockup_theme');
                 if (savedTheme === 'light') {
@@ -3008,12 +3401,12 @@
                 
                 this.loadStacks();
                 this.loadNetworks();
-                this.loadSettings();
+                await this.loadSettings(); // Wait for settings before polling setup
                 this.loadHostStats();
                 this.loadDockerHubRateLimit();
                 this.connectWebSocket();
                 
-                // Setup polling based on configured intervals
+                // Setup polling based on configured intervals (runs after settings loaded)
                 this.setupPolling();
                 
                 // Refresh Docker Hub rate limit every 5 minutes
@@ -3031,6 +3424,22 @@
                 }
             },
             methods: {
+                handleHostStatsModeChange() {
+                    if (this.settings.host_stats_mode === 'off') {
+                        this.settings.host_stats_interval = 0;
+                    } else if (this.settings.host_stats_mode === 'auto') {
+                        this.settings.host_stats_interval = 5; // Default 5 seconds
+                    }
+                    // For custom, user enters their own value
+                },
+                handleStackRefreshModeChange() {
+                    if (this.settings.stack_refresh_mode === 'off') {
+                        this.settings.stack_refresh_interval = 0;
+                    } else if (this.settings.stack_refresh_mode === 'auto') {
+                        this.settings.stack_refresh_interval = -1; // Special value for WebSocket mode
+                    }
+                    // For custom, user enters their own value
+                },
                 setupPolling() {
                     // Clear existing intervals if any
                     if (this.hostStatsInterval) {
@@ -3042,26 +3451,43 @@
                         this.stackRefreshInterval = null;
                     }
                     
-                    // Setup host stats polling if enabled
-                    const hostInterval = this.settings.host_stats_interval || 0;
-                    if (hostInterval > 0) {
-                        console.log(`Setting up host stats polling every ${hostInterval} seconds`);
+                    // Setup host stats polling based on mode
+                    const hostMode = this.settings.host_stats_mode || 'auto';
+                    if (hostMode === 'off') {
+                        console.log('Host stats polling disabled');
+                    } else if (hostMode === 'auto') {
+                        console.log('Host stats polling: Auto mode (5 seconds)');
                         this.hostStatsInterval = setInterval(() => {
                             this.loadHostStats();
-                        }, hostInterval * 1000);
-                    } else {
-                        console.log('Host stats polling disabled');
+                        }, 5000);
+                    } else if (hostMode === 'custom') {
+                        const hostInterval = this.settings.host_stats_interval || 0;
+                        if (hostInterval > 0) {
+                            console.log(`Host stats polling: Custom ${hostInterval} seconds`);
+                            this.hostStatsInterval = setInterval(() => {
+                                this.loadHostStats();
+                            }, hostInterval * 1000);
+                        }
                     }
                     
-                    // Setup stack refresh polling if enabled
-                    const stackInterval = this.settings.stack_refresh_interval || 0;
-                    if (stackInterval > 0) {
-                        console.log(`Setting up stack refresh every ${stackInterval} seconds`);
+                    // Setup stack refresh polling based on mode
+                    const stackMode = this.settings.stack_refresh_mode || 'custom';
+                    if (stackMode === 'off') {
+                        console.log('Stack refresh polling disabled');
+                    } else if (stackMode === 'auto') {
+                        console.log('Stack refresh: Auto mode (5 second polling + WebSocket real-time)');
+                        // Auto mode: 5 second polling + WebSocket updates
                         this.stackRefreshInterval = setInterval(() => {
                             this.loadStacks();
-                        }, stackInterval * 1000);
-                    } else {
-                        console.log('Stack refresh polling disabled');
+                        }, 5000);
+                    } else if (stackMode === 'custom') {
+                        const stackInterval = this.settings.stack_refresh_interval || 0;
+                        if (stackInterval > 0) {
+                            console.log(`Stack refresh: Custom ${stackInterval} seconds`);
+                            this.stackRefreshInterval = setInterval(() => {
+                                this.loadStacks();
+                            }, stackInterval * 1000);
+                        }
                     }
                 },
                 
@@ -3217,9 +3643,31 @@
                     try {
                         const response = await axios.get('/api/config');
                         this.settings = response.data;
-                this.instanceName = response.data.instance_name || 'DockUp';
-                this.apiToken = response.data.api_token ? response.data.api_token.substring(0, 16) + '...' : '';
-                this.fullApiToken = response.data.api_token || '';
+                        
+                        // Migrate old format to new format
+                        if (!this.settings.host_stats_mode) {
+                            // Old format - convert interval to mode
+                            if (this.settings.host_stats_interval === 0) {
+                                this.settings.host_stats_mode = 'off';
+                            } else if (this.settings.host_stats_interval === 5) {
+                                this.settings.host_stats_mode = 'auto';
+                            } else {
+                                this.settings.host_stats_mode = 'custom';
+                            }
+                        }
+                        
+                        if (!this.settings.stack_refresh_mode) {
+                            // Old format - convert interval to mode
+                            if (this.settings.stack_refresh_interval === 0) {
+                                this.settings.stack_refresh_mode = 'off';
+                            } else {
+                                this.settings.stack_refresh_mode = 'custom';
+                            }
+                        }
+                        
+                        this.instanceName = response.data.instance_name || 'DockUp';
+                        this.apiToken = response.data.api_token ? response.data.api_token.substring(0, 16) + '...' : '';
+                        this.fullApiToken = response.data.api_token || '';
                         this.isPasswordEnabled = response.data.password_enabled || false;
                     } catch (error) {
                         this.showToast('Error', 'Failed to load settings', 'error');
@@ -3232,6 +3680,48 @@
                     } catch (error) {
                         console.error('Failed to load host stats:', error);
                     }
+                },
+                showResourceHogs(type) {
+                    // Gather all containers from all stacks
+                    const containers = [];
+                    
+                    this.stacks.forEach(stack => {
+                        if (stack.containers && stack.stats) {
+                            stack.containers.forEach(container => {
+                                if (container.status === 'running') {
+                                    containers.push({
+                                        container: container.name,
+                                        stack: stack.name,
+                                        cpu: stack.stats.cpu_percent || 0,
+                                        memory: stack.stats.mem_usage_mb || 0,
+                                        memoryPercent: stack.stats.mem_percent || 0
+                                    });
+                                }
+                            });
+                        }
+                    });
+                    
+                    // Sort based on type
+                    if (type === 'cpu') {
+                        containers.sort((a, b) => b.cpu - a.cpu);
+                        this.resourceHogsList = containers.map(c => ({
+                            container: c.container,
+                            stack: c.stack,
+                            value: c.cpu,
+                            memory: c.memory
+                        }));
+                    } else {
+                        containers.sort((a, b) => b.memory - a.memory);
+                        this.resourceHogsList = containers.map(c => ({
+                            container: c.container,
+                            stack: c.stack,
+                            value: c.memoryPercent,
+                            memory: c.memory
+                        }));
+                    }
+                    
+                    this.resourceHogsType = type;
+                    this.showResourceHogsModal = true;
                 },
                 async loadDockerHubRateLimit() {
                     try {
@@ -3752,6 +4242,45 @@
                     this.showRawYaml = false;  // Start with split editor
                     this.showEditModal = true;
                 },
+                
+                async convertAndFillDockerRun() {
+                    if (!this.dockerRunCommand.trim()) {
+                        this.showToast('Error', 'Please enter a docker run command', 'error');
+                        return;
+                    }
+                    
+                    try {
+                        const response = await axios.post('/api/stacks/import-docker-run', {
+                            command: this.dockerRunCommand
+                        });
+                        
+                        // Fill the YAML editor with converted compose
+                        this.editStackContent = response.data.compose_yaml;
+                        
+                        // Extract stack name suggestion if none set
+                        if (!this.editStackName && response.data.suggested_name) {
+                            this.editStackName = response.data.suggested_name;
+                        }
+                        
+                        // Switch to raw YAML view to show result
+                        this.showRawYaml = true;
+                        
+                        // Show warnings if any
+                        if (response.data.warnings && response.data.warnings.length > 0) {
+                            const warningMsg = 'Converted successfully! Warnings: ' + response.data.warnings.join(', ');
+                            this.showToast('Success', warningMsg, 'warning');
+                        } else {
+                            this.showToast('Success', 'Docker run command converted to compose!', 'success');
+                        }
+                        
+                        // Clear the docker run command
+                        this.dockerRunCommand = '';
+                        this.showDockerRunImport = false;
+                        
+                    } catch (error) {
+                        this.showToast('Error', error.response?.data?.error || 'Failed to convert command', 'error');
+                    }
+                },
                 async editStack(stackName) {
                     try {
                         const response = await axios.get(`/api/stack/${stackName}/compose`);
@@ -3809,12 +4338,23 @@
                                 this.serviceSections
                             );
                         } else {
-                            // Save raw YAML
+                            // Save raw YAML - VALIDATE FIRST
                             if (!this.editStackContent) {
                                 this.showToast('Error', 'Compose content is required', 'error');
                                 return;
                             }
                             
+                            // Run validation before saving
+                            const validationResponse = await axios.post('/api/stacks/validate', {
+                                content: this.editStackContent
+                            });
+                            
+                            if (!validationResponse.data.success) {
+                                this.showToast('Validation Error', validationResponse.data.error, 'error');
+                                return;
+                            }
+                            
+                            // Validation passed, proceed with save
                             await axios.post(`/api/stack/${this.editStackName}/compose`, {
                                 content: this.editStackContent
                             });
@@ -4248,10 +4788,16 @@
                             }
                         } else if (data.type === 'update_available') {
                             this.showToast('Update Available', `Updates available for ${data.stack}`, 'info');
-                            this.loadStacks();
+                            // Auto refresh if stack refresh mode is 'auto'
+                            if (this.settings.stack_refresh_mode === 'auto') {
+                                this.loadStacks();
+                            }
                         } else if (data.type === 'stack_updated') {
                             this.showToast('Updated', `${data.stack} has been updated`, 'success');
-                            this.loadStacks();
+                            // Auto refresh if stack refresh mode is 'auto'
+                            if (this.settings.stack_refresh_mode === 'auto') {
+                                this.loadStacks();
+                            }
                         } else if (data.type === 'update_check_error') {
                             this.showToast('Error', `Failed to check updates for ${data.stack}`, 'error');
                         }
@@ -4572,10 +5118,194 @@
                     return path;
                 }
             }
-        }).mount('#app');
+        });
+        
+        // Store app instance globally for docker run import feature
+        window.vueApp = app.mount('#app');
     </script>
 
     <!-- JS-YAML for parsing YAML in split editor -->
     <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
 </body>
 </html>
+
+<script>
+// Docker Run Import Functions
+let currentConvertedYaml = '';
+let currentSuggestedName = '';
+
+function openDockerRunModal() {
+    const modal = document.getElementById('dockerRunModal');
+    modal.style.display = 'flex';
+    modal.classList.add('active');
+    setTimeout(() => {
+        const textarea = document.getElementById('dockerRunCommand');
+        if (textarea) textarea.focus();
+    }, 100);
+}
+
+function closeDockerRunModal() {
+    const modal = document.getElementById('dockerRunModal');
+    modal.classList.remove('active');
+    modal.style.display = 'none';
+    resetDockerRunConversion();
+}
+
+function resetDockerRunConversion() {
+    document.getElementById('dockerRunCommand').value = '';
+    document.getElementById('dockerRunStackName').value = '';
+    document.getElementById('dockerRunPreview').style.display = 'none';
+    document.getElementById('dockerRunWarnings').innerHTML = '';
+    currentConvertedYaml = '';
+    currentSuggestedName = '';
+}
+
+async function convertDockerRun() {
+    const command = document.getElementById('dockerRunCommand').value.trim();
+    
+    if (!command) {
+        showNotification('Please enter a docker run command', 'error');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/stacks/import-docker-run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: command })
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+            showNotification(data.error || 'Failed to convert command', 'error');
+            return;
+        }
+        
+        currentConvertedYaml = data.compose_yaml;
+        currentSuggestedName = data.suggested_name || '';
+        
+        if (!document.getElementById('dockerRunStackName').value && currentSuggestedName) {
+            document.getElementById('dockerRunStackName').value = currentSuggestedName;
+        }
+        
+        document.getElementById('dockerRunYaml').textContent = currentConvertedYaml;
+        
+        if (data.warnings && data.warnings.length > 0) {
+            const warningsHtml = `
+                <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; padding: 15px; margin-bottom: 15px;">
+                    <h4 style="margin-top: 0; color: #856404;">
+                        <i class="fas fa-exclamation-triangle"></i> Warnings:
+                    </h4>
+                    <ul style="margin: 0; padding-left: 20px;">
+                        ${data.warnings.map(w => `<li>${w}</li>`).join('')}
+                    </ul>
+                </div>
+            `;
+            document.getElementById('dockerRunWarnings').innerHTML = warningsHtml;
+        } else {
+            document.getElementById('dockerRunWarnings').innerHTML = '';
+        }
+        
+        document.getElementById('dockerRunPreview').style.display = 'block';
+        showNotification('Command converted successfully!', 'success');
+        
+    } catch (error) {
+        console.error('Error:', error);
+        showNotification('Failed to convert command', 'error');
+    }
+}
+
+function copyDockerRunYaml() {
+    navigator.clipboard.writeText(currentConvertedYaml).then(() => {
+        showNotification('Copied to clipboard!', 'success');
+    });
+}
+
+async function createStackFromDockerRun() {
+    const stackName = document.getElementById('dockerRunStackName').value.trim();
+    const command = document.getElementById('dockerRunCommand').value.trim();
+    
+    if (!stackName) {
+        showNotification('Please enter a stack name', 'error');
+        return;
+    }
+    
+    if (!/^[a-zA-Z0-9_-]+$/.test(stackName)) {
+        showNotification('Stack name can only contain letters, numbers, hyphens, and underscores', 'error');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/stacks/import-docker-run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: command, stack_name: stackName, create: true })
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+            showNotification(data.error || 'Failed to create stack', 'error');
+            return;
+        }
+        
+        showNotification(`Stack "${stackName}" created successfully!`, 'success');
+        closeDockerRunModal();
+        loadStacks();
+        
+    } catch (error) {
+        console.error('Error:', error);
+        showNotification('Failed to create stack', 'error');
+    }
+}
+
+
+    
+    if (!currentConvertedYaml) {
+        showNotification('No YAML to edit - please convert first', 'error');
+        return;
+    }
+    
+    // Close this modal first
+    closeDockerRunModal();
+    
+    // Wait for modal to close and Vue to be ready
+    setTimeout(() => {
+        if (window.vueApp) {
+            // Set values in correct order
+            window.vueApp.editingStack = null;
+            window.vueApp.editStackName = stackName;
+            window.vueApp.editStackContent = currentConvertedYaml;
+            
+            // Open modal last
+            setTimeout(() => {
+                window.vueApp.showEditModal = true;
+            }, 50);
+        } else {
+            showNotification('Editor not available - please refresh the page', 'error');
+        }
+    }, 150);
+}
+
+// Ctrl+Enter to convert
+document.addEventListener('DOMContentLoaded', function() {
+    const textarea = document.getElementById('dockerRunCommand');
+    if (textarea) {
+        textarea.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.key === 'Enter') {
+                e.preventDefault();
+                convertDockerRun();
+            }
+        });
+    }
+});
+
+// Close modal on outside click
+window.addEventListener('click', function(e) {
+    if (e.target.id === 'dockerRunModal') {
+        closeDockerRunModal();
+    }
+});
+</script>
+
