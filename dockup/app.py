@@ -30,6 +30,238 @@ from croniter import croniter
 import apprise
 import pytz
 
+import shlex
+import re
+from typing import Dict, List, Tuple, Any
+
+
+# ============================================================================
+# Docker Run Command Parser
+# ============================================================================
+
+def parse_docker_run_command(command: str) -> Tuple[Dict[str, Any], List[str]]:
+    """
+    Parse a docker run command and return compose-compatible dict + warnings
+    
+    Returns:
+        (compose_dict, warnings_list)
+    """
+    warnings = []
+    
+    # Remove 'docker run' prefix
+    command = command.strip()
+    if command.startswith('docker run'):
+        command = command[10:].strip()
+    
+    # Parse command with shlex (handles quotes properly)
+    try:
+        tokens = shlex.split(command)
+    except ValueError as e:
+        raise ValueError(f"Invalid command syntax: {e}")
+    
+    # Initialize compose structure
+    compose = {
+        'ports': [],
+        'volumes': [],
+        'environment': {},
+        'labels': {},
+        'networks': [],
+        'extra_hosts': [],
+        'cap_add': [],
+        'cap_drop': [],
+        'devices': [],
+    }
+    
+    named_volumes = set()
+    i = 0
+    container_name = None
+    image = None
+    command_args = []
+    
+    while i < len(tokens):
+        token = tokens[i]
+        
+        # Flags that take no arguments
+        if token in ['-d', '--detach', '-i', '--interactive', '-t', '--tty', '--rm']:
+            if token == '--rm':
+                warnings.append("'--rm' flag ignored (compose containers are persistent)")
+            i += 1
+            continue
+        
+        # Flags that take one argument
+        if token in ['-p', '--publish']:
+            i += 1
+            compose['ports'].append(tokens[i])
+        
+        elif token in ['-v', '--volume']:
+            i += 1
+            volume = tokens[i]
+            compose['volumes'].append(volume)
+            # Check if it's a named volume
+            if ':' in volume and not volume.startswith('/') and not volume.startswith('.'):
+                vol_name = volume.split(':')[0]
+                named_volumes.add(vol_name)
+        
+        elif token in ['-e', '--env']:
+            i += 1
+            env = tokens[i]
+            if '=' in env:
+                key, val = env.split('=', 1)
+                compose['environment'][key] = val
+            else:
+                compose['environment'][env] = ''
+        
+        elif token == '--env-file':
+            i += 1
+            compose['env_file'] = tokens[i]
+        
+        elif token in ['--name']:
+            i += 1
+            container_name = tokens[i]
+        
+        elif token in ['--network']:
+            i += 1
+            compose['networks'].append(tokens[i])
+        
+        elif token in ['--restart']:
+            i += 1
+            compose['restart'] = tokens[i]
+        
+        elif token in ['-l', '--label']:
+            i += 1
+            label = tokens[i]
+            if '=' in label:
+                key, val = label.split('=', 1)
+                compose['labels'][key] = val
+        
+        elif token in ['--hostname', '-h']:
+            i += 1
+            compose['hostname'] = tokens[i]
+        
+        elif token == '--add-host':
+            i += 1
+            compose['extra_hosts'].append(tokens[i])
+        
+        elif token == '--cap-add':
+            i += 1
+            compose['cap_add'].append(tokens[i])
+        
+        elif token == '--cap-drop':
+            i += 1
+            compose['cap_drop'].append(tokens[i])
+        
+        elif token == '--device':
+            i += 1
+            compose['devices'].append(tokens[i])
+        
+        elif token in ['--user', '-u']:
+            i += 1
+            compose['user'] = tokens[i]
+        
+        elif token in ['--workdir', '-w']:
+            i += 1
+            compose['working_dir'] = tokens[i]
+        
+        elif token == '--entrypoint':
+            i += 1
+            compose['entrypoint'] = tokens[i]
+        
+        elif token == '--privileged':
+            compose['privileged'] = True
+            warnings.append("'--privileged' detected - SECURITY RISK! Consider removing.")
+        
+        elif token == '--read-only':
+            compose['read_only'] = True
+        
+        elif token in ['--memory', '-m']:
+            i += 1
+            if 'deploy' not in compose:
+                compose['deploy'] = {'resources': {'limits': {}}}
+            compose['deploy']['resources']['limits']['memory'] = tokens[i]
+        
+        elif token == '--cpus':
+            i += 1
+            if 'deploy' not in compose:
+                compose['deploy'] = {'resources': {'limits': {}}}
+            compose['deploy']['resources']['limits']['cpus'] = tokens[i]
+        
+        elif token == '--health-cmd':
+            i += 1
+            if 'healthcheck' not in compose:
+                compose['healthcheck'] = {}
+            compose['healthcheck']['test'] = ['CMD-SHELL', tokens[i]]
+        
+        elif token == '--health-interval':
+            i += 1
+            if 'healthcheck' not in compose:
+                compose['healthcheck'] = {}
+            compose['healthcheck']['interval'] = tokens[i]
+        
+        elif token == '--health-timeout':
+            i += 1
+            if 'healthcheck' not in compose:
+                compose['healthcheck'] = {}
+            compose['healthcheck']['timeout'] = tokens[i]
+        
+        elif token == '--health-retries':
+            i += 1
+            if 'healthcheck' not in compose:
+                compose['healthcheck'] = {}
+            compose['healthcheck']['retries'] = int(tokens[i])
+        
+        elif token.startswith('-'):
+            # Unknown flag - skip it and next token if it doesn't start with -
+            warnings.append(f"Unsupported flag '{token}' ignored")
+            i += 1
+            if i < len(tokens) and not tokens[i].startswith('-'):
+                i += 1
+            continue
+        
+        else:
+            # This should be the image name
+            if not image:
+                image = token
+            else:
+                # Everything after image is the command
+                command_args.append(token)
+        
+        i += 1
+    
+    # Build final compose structure
+    if not image:
+        raise ValueError("No image specified in docker run command")
+    
+    # Use container name as service name, or derive from image
+    if container_name:
+        service_name = container_name
+        compose['container_name'] = container_name
+    else:
+        # Derive service name from image (e.g., 'nginx:latest' -> 'nginx')
+        service_name = image.split(':')[0].split('/')[-1]
+    
+    compose['image'] = image
+    
+    # Add command if present
+    if command_args:
+        compose['command'] = command_args
+    
+    # Clean up empty lists/dicts
+    compose = {k: v for k, v in compose.items() if v}
+    
+    # Build full compose yaml structure
+    compose_yaml = {
+        'services': {
+            service_name: compose
+        }
+    }
+    
+    # Add named volumes section if any
+    if named_volumes:
+        compose_yaml['volumes'] = {vol: {} for vol in named_volumes}
+    
+    return compose_yaml, warnings
+
+
 # Initialize Flask app
 app = Flask(__name__, static_folder='static', static_url_path='')
 # Persistent secret key (survives container restarts)
@@ -439,8 +671,6 @@ def scan_image_vulnerabilities(image_name):
         
         save_scan_results()
         
-        save_scan_results()
-        
         return scan_result
         
     except subprocess.TimeoutExpired:
@@ -787,12 +1017,15 @@ def import_orphan_containers_as_stacks():
             with open(compose_file, 'w') as f:
                 yaml.safe_dump(compose_data, f, sort_keys=False)
 
-            # Mark container as imported
+            # Mark container as imported (modern docker-py 6.0+ way)
             try:
-                docker_client.api.add_label(container.id, 'com.docker.compose.project', stack_name)
-                docker_client.api.add_label(container.id, 'dockup.imported', 'true')
-            except:
-                pass
+                container.update(labels={
+                    'com.docker.compose.project': stack_name,
+                    'dockup.imported': 'true'
+                })
+                container.reload()
+            except Exception as e:
+                print(f"[Dockup] Warning: Could not label container {container.name}: {e}")
 
             send_notification(
                 "Dockup – Orphan Imported",
@@ -2251,6 +2484,58 @@ def api_stack_compose_save(stack_name):
         return jsonify({'error': str(e)}), 400
 
 
+@app.route('/api/stacks/validate', methods=['POST'])
+def api_validate_compose():
+    """Validate Docker Compose YAML before saving"""
+    data = request.json
+    content = data.get('content', '')
+    
+    if not content:
+        return jsonify({'success': False, 'error': 'No content provided'}), 400
+    
+    try:
+        # Step 1: Validate YAML syntax
+        try:
+            compose_data = yaml.safe_load(content)
+        except yaml.YAMLError as e:
+            return jsonify({'success': False, 'error': f'YAML syntax error: {str(e)}'}), 200
+        
+        # Step 2: Write to temporary file
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        
+        try:
+            # Step 3: Run docker compose config validation
+            result = subprocess.run(
+                ['docker', 'compose', '-f', tmp_path, 'config'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            # Clean up temp file
+            os.unlink(tmp_path)
+            
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() or result.stdout.strip() or 'Unknown validation error'
+                return jsonify({'success': False, 'error': f'Docker Compose validation failed: {error_msg}'}), 200
+            
+            return jsonify({'success': True}), 200
+            
+        except subprocess.TimeoutExpired:
+            os.unlink(tmp_path)
+            return jsonify({'success': False, 'error': 'Validation timeout'}), 200
+        except Exception as e:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            return jsonify({'success': False, 'error': f'Validation error: {str(e)}'}), 200
+            
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Unexpected error: {str(e)}'}), 500
+
+
 @app.route('/api/stack/<stack_name>/port-conflicts', methods=['POST'])
 def api_check_port_conflicts(stack_name):
     """Check for port conflicts in compose content"""
@@ -3563,6 +3848,89 @@ def api_get_all_stacks():
     
     return jsonify(all_stacks)
 
+
+
+
+@app.route('/api/stacks/import-docker-run', methods=['POST'])
+@require_auth
+def api_import_docker_run():
+    """Convert docker run command to compose stack"""
+    try:
+        data = request.get_json()
+        docker_command = data.get('command', '').strip()
+        stack_name = data.get('stack_name', '').strip()
+        create_immediately = data.get('create', False)
+        
+        if not docker_command:
+            return jsonify({'error': 'No docker run command provided'}), 400
+        
+        # Parse the docker run command
+        try:
+            compose_dict, warnings = parse_docker_run_command(docker_command)
+        except Exception as e:
+            return jsonify({'error': f'Failed to parse command: {str(e)}'}), 400
+        
+        # Convert to YAML
+        compose_yaml = yaml.dump(compose_dict, default_flow_style=False, sort_keys=False)
+        
+        # If stack name provided and create=True, create the stack immediately
+        if stack_name and create_immediately:
+            # Validate stack name
+            if not re.match(r'^[a-zA-Z0-9_-]+$', stack_name):
+                return jsonify({'error': 'Invalid stack name. Use only letters, numbers, hyphens, and underscores.'}), 400
+            
+            stack_path = os.path.join(STACKS_DIR, stack_name)
+            
+            if os.path.exists(stack_path):
+                return jsonify({'error': f'Stack "{stack_name}" already exists'}), 400
+            
+            # Create stack directory and compose file
+            try:
+                Path(stack_path).mkdir(parents=True, exist_ok=True)
+                compose_file = os.path.join(stack_path, 'compose.yaml')
+                
+                with open(compose_file, 'w') as f:
+                    f.write(compose_yaml)
+                
+                # Save metadata
+                save_stack_metadata(stack_name, {
+                    'created': datetime.now(pytz.UTC).isoformat(),
+                    'imported_from': 'docker_run',
+                    'original_command': docker_command
+                })
+                
+                send_notification(
+                    f"Dockup - Stack Created",
+                    f"Stack '{stack_name}' created from docker run command",
+                    'success'
+                )
+                
+                broadcast_ws({
+                    'type': 'stack_created',
+                    'stack': stack_name
+                })
+                
+                return jsonify({
+                    'success': True,
+                    'stack_name': stack_name,
+                    'compose_yaml': compose_yaml,
+                    'warnings': warnings,
+                    'message': f'Stack "{stack_name}" created successfully'
+                })
+            
+            except Exception as e:
+                return jsonify({'error': f'Failed to create stack: {str(e)}'}), 500
+        
+        # Otherwise just return the converted YAML for preview
+        return jsonify({
+            'success': True,
+            'compose_yaml': compose_yaml,
+            'warnings': warnings,
+            'suggested_name': list(compose_dict['services'].keys())[0]
+        })
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/peers')
 @require_auth
