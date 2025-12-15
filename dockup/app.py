@@ -262,6 +262,258 @@ def parse_docker_run_command(command: str) -> Tuple[Dict[str, Any], List[str]]:
     return compose_yaml, warnings
 
 
+# ============================================================================
+# App Data Root - Opinionated, Safe by Design
+# ============================================================================
+
+def resolve_bind_mount_path(volume_spec: str, app_data_root: str, stack_name: str) -> Tuple[str, List[str]]:
+    """
+    Resolve volume spec using app_data_root/stack_name structure
+    
+    Args:
+        volume_spec: Volume specification (e.g., "./config:/config")
+        app_data_root: Root directory (e.g., "/DATA/AppData")
+        stack_name: Name of the stack (e.g., "plex")
+    
+    Returns:
+        (resolved_spec, warnings)
+    """
+    warnings = []
+    
+    if not app_data_root or not app_data_root.strip():
+        return volume_spec, warnings
+    
+    app_data_root = app_data_root.rstrip('/')
+    stack_base = f"{app_data_root}/{stack_name}"
+    
+    # Parse volume spec
+    parts = volume_spec.split(':')
+    if len(parts) == 1:
+        return volume_spec, warnings  # Named volume
+    
+    source = parts[0]
+    target = parts[1] if len(parts) > 1 else ''
+    mode = parts[2] if len(parts) > 2 else ''
+    
+    # Named volume check (no slash in source)
+    if '/' not in source:
+        return volume_spec, warnings
+    
+    # Check if already under correct stack path
+    if source.startswith(stack_base + '/'):
+        return volume_spec, warnings  # Already correct
+    
+    # Check if under app_data_root but different stack (intentional cross-stack sharing)
+    if source.startswith(app_data_root + '/'):
+        return volume_spec, warnings
+    
+    # Handle relative paths
+    if source.startswith('./') or source.startswith('../') or not source.startswith('/'):
+        # Remove leading ./
+        clean_path = source.lstrip('./')
+        # Build path: /DATA/AppData/{stack_name}/{path}
+        source = f"{stack_base}/{clean_path}"
+    
+    # Handle absolute paths
+    elif source.startswith('/'):
+        # Check system exemptions
+        exempt_paths = [
+            '/etc/localtime',
+            '/var/run/docker.sock',
+            '/dev/',
+            '/sys/',
+            '/proc/',
+            '/tmp'
+        ]
+        
+        is_exempt = any(source.startswith(prefix) for prefix in exempt_paths)
+        
+        if not is_exempt:
+            warnings.append(f"Bind mount '{source}' is outside App Data Root '{app_data_root}'")
+    
+    # Rebuild volume spec
+    result_parts = [source, target]
+    if mode:
+        result_parts.append(mode)
+    
+    return ':'.join(result_parts), warnings
+
+
+def apply_app_data_root_to_compose(compose_content: str, app_data_root: str, stack_name: str) -> Tuple[str, List[str]]:
+    """
+    Apply app_data_root ONLY to volumes section
+    
+    Everything else in the compose file is left completely untouched
+    """
+    warnings = []
+    
+    if not app_data_root or not app_data_root.strip():
+        return compose_content, warnings
+    
+    try:
+        # Parse YAML
+        compose_data = yaml.safe_load(compose_content)
+        
+        if not compose_data or 'services' not in compose_data:
+            return compose_content, warnings
+        
+        # Process ONLY the volumes section of each service
+        services = compose_data.get('services', {})
+        for service_name, service_config in services.items():
+            
+            # Skip services without volumes
+            if 'volumes' not in service_config:
+                continue
+            
+            # Get volumes list
+            volumes = service_config['volumes']
+            if not isinstance(volumes, list):
+                continue
+            
+            # Process each volume
+            resolved_volumes = []
+            for volume_spec in volumes:
+                if isinstance(volume_spec, str):
+                    # Short-form: "./config:/config"
+                    resolved_spec, vol_warnings = resolve_bind_mount_path(
+                        volume_spec, 
+                        app_data_root, 
+                        stack_name
+                    )
+                    resolved_volumes.append(resolved_spec)
+                    warnings.extend(vol_warnings)
+                    
+                elif isinstance(volume_spec, dict):
+                    # Long-form: {type: bind, source: "./config", target: "/config"}
+                    if volume_spec.get('type') == 'bind':
+                        source = volume_spec.get('source', '')
+                        target = volume_spec.get('target', '')
+                        
+                        # Create temp spec for resolution
+                        temp_spec = f"{source}:{target}"
+                        resolved_spec, vol_warnings = resolve_bind_mount_path(
+                            temp_spec, 
+                            app_data_root, 
+                            stack_name
+                        )
+                        
+                        # Update only the source
+                        volume_spec['source'] = resolved_spec.split(':')[0]
+                        warnings.extend(vol_warnings)
+                    
+                    resolved_volumes.append(volume_spec)
+                else:
+                    # Unknown format - keep as-is
+                    resolved_volumes.append(volume_spec)
+            
+            # Update ONLY the volumes section
+            service_config['volumes'] = resolved_volumes
+        
+        # Convert back to YAML
+        modified_content = yaml.dump(compose_data, default_flow_style=False, sort_keys=False)
+        return modified_content, warnings
+    
+    except Exception as e:
+        # If anything goes wrong, return original unchanged
+        warnings.append(f"Error processing volumes: {str(e)}")
+        return compose_content, warnings
+
+
+def analyze_app_data_root_changes(compose_content: str, app_data_root: str, stack_name: str) -> Dict[str, Any]:
+    """
+    Analyze what would change without actually modifying content
+    
+    Returns:
+    {
+        'modified': [{'from': '...', 'to': '...'}],
+        'unchanged': [{'path': '...', 'reason': '...'}],
+        'warnings': [{'path': '...', 'warning': '...'}]
+    }
+    """
+    result = {
+        'modified': [],
+        'unchanged': [],
+        'warnings': []
+    }
+    
+    if not app_data_root or not app_data_root.strip():
+        return result
+    
+    try:
+        compose_data = yaml.safe_load(compose_content)
+        if not compose_data or 'services' not in compose_data:
+            return result
+        
+        app_data_root = app_data_root.rstrip('/')
+        stack_base = f"{app_data_root}/{stack_name}"
+        
+        for service_name, service_config in compose_data.get('services', {}).items():
+            if 'volumes' not in service_config:
+                continue
+            
+            for volume_spec in service_config['volumes']:
+                if not isinstance(volume_spec, str):
+                    continue
+                
+                # Parse volume
+                parts = volume_spec.split(':')
+                if len(parts) < 2:
+                    result['unchanged'].append({
+                        'path': volume_spec,
+                        'reason': 'named_volume'
+                    })
+                    continue
+                
+                source = parts[0]
+                
+                # Named volume check
+                if '/' not in source:
+                    result['unchanged'].append({
+                        'path': volume_spec,
+                        'reason': 'named_volume'
+                    })
+                    continue
+                
+                # Already under app_data_root
+                if source.startswith(app_data_root + '/'):
+                    result['unchanged'].append({
+                        'path': volume_spec,
+                        'reason': 'already_under_root'
+                    })
+                    continue
+                
+                # System path exemption
+                exempt_paths = ['/etc/localtime', '/var/run/docker.sock', '/dev/', '/sys/', '/proc/', '/tmp']
+                if any(source.startswith(prefix) for prefix in exempt_paths):
+                    result['unchanged'].append({
+                        'path': volume_spec,
+                        'reason': 'system_path'
+                    })
+                    continue
+                
+                # Relative path - will be modified
+                if source.startswith('./') or source.startswith('../') or not source.startswith('/'):
+                    resolved_spec, _ = resolve_bind_mount_path(volume_spec, app_data_root, stack_name)
+                    result['modified'].append({
+                        'from': volume_spec,
+                        'to': resolved_spec
+                    })
+                    continue
+                
+                # Absolute path outside root - warning
+                if source.startswith('/'):
+                    result['warnings'].append({
+                        'path': volume_spec,
+                        'warning': f"Outside App Data Root '{app_data_root}'"
+                    })
+                    continue
+        
+        return result
+    
+    except Exception as e:
+        raise Exception(f"Failed to analyze changes: {str(e)}")
+
+
 # Initialize Flask app
 app = Flask(__name__, static_folder='static', static_url_path='')
 # Persistent secret key (survives container restarts)
@@ -336,7 +588,9 @@ def load_config():
             'api_token': secrets.token_urlsafe(32),
             'peers': {},
             'host_stats_interval': 5,  # seconds between host stats polling (0 = off)
-            'stack_refresh_interval': 10  # seconds between stack refresh (0 = off)
+            'stack_refresh_interval': 10,  # seconds between stack refresh (0 = off)
+            'app_data_root': '/DATA/AppData',  # Root directory for container bind mounts
+            'auto_apply_app_data_root': False,  # Require confirmation before applying
         }
         save_config()
     
@@ -352,6 +606,10 @@ def load_config():
         config['host_stats_interval'] = 5
     if 'stack_refresh_interval' not in config:
         config['stack_refresh_interval'] = 10
+    if 'app_data_root' not in config:
+        config['app_data_root'] = '/DATA/AppData'
+    if 'auto_apply_app_data_root' not in config:
+        config['auto_apply_app_data_root'] = False
     # Setup notification services
     setup_notifications()
 
@@ -1484,10 +1742,38 @@ def get_stack_compose(stack_name):
     return None
 
 
-def save_stack_compose(stack_name, content):
-    """Save compose file content for a stack"""
+def save_stack_compose(stack_name, content, apply_app_data_root=None):
+    """
+    Save compose file content for a stack with optional app_data_root resolution
+    
+    Args:
+        stack_name: Name of the stack
+        content: YAML content to save
+        apply_app_data_root: True/False to override auto setting, None to use config
+    
+    Returns:
+        warnings: List of warnings from app_data_root processing
+    """
     stack_path = os.path.join(STACKS_DIR, stack_name)
     Path(stack_path).mkdir(parents=True, exist_ok=True)
+    
+    warnings = []
+    
+    # Determine if we should apply app_data_root
+    should_apply = apply_app_data_root
+    if should_apply is None:
+        should_apply = config.get('auto_apply_app_data_root', False)
+    
+    # Apply app_data_root if configured and enabled
+    app_data_root = config.get('app_data_root', '').strip()
+    if app_data_root and should_apply:
+        content, warnings = apply_app_data_root_to_compose(content, app_data_root, stack_name)
+        
+        # Log warnings
+        if warnings:
+            print(f"App Data Root warnings for {stack_name}:")
+            for warning in warnings:
+                print(f"  - {warning}")
     
     # Always save as compose.yaml (modern standard)
     compose_file = os.path.join(stack_path, 'compose.yaml')
@@ -1505,6 +1791,8 @@ def save_stack_compose(stack_name, content):
                 print(f"Cleaned up old compose file: {old_file} from {stack_name}")
             except Exception as e:
                 print(f"Warning: Could not delete {old_file}: {e}")
+    
+    return warnings
 
 
 
@@ -2438,9 +2726,10 @@ def api_stack_compose(stack_name):
 
 @app.route('/api/stack/<stack_name>/compose', methods=['POST'])
 def api_stack_compose_save(stack_name):
-    """Save stack compose file content with validation"""
+    """Save stack compose file content with validation and app_data_root support"""
     data = request.json
     content = data.get('content', '')
+    apply_app_data_root = data.get('apply_app_data_root', None)  # True/False/None
     
     try:
         # Validate YAML syntax
@@ -2470,8 +2759,12 @@ def api_stack_compose_save(stack_name):
             if 'container_name' not in service:
                 suggestions.append(f"'{service_name}': Consider adding 'container_name for easier management")
         
-        # Save the file
-        save_stack_compose(stack_name, content)
+        # Save the file (with optional app_data_root processing)
+        app_data_root_warnings = save_stack_compose(stack_name, content, apply_app_data_root)
+        
+        # Add app_data_root warnings to response
+        if app_data_root_warnings:
+            warnings.extend(app_data_root_warnings)
         
         return jsonify({
             'success': True,
@@ -2480,6 +2773,40 @@ def api_stack_compose_save(stack_name):
         })
     except yaml.YAMLError as e:
         return jsonify({'error': f'Invalid YAML: {str(e)}'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/stacks/<stack_name>/compose/preview', methods=['POST'])
+def api_preview_app_data_root_changes(stack_name):
+    """
+    Preview what would change if App Data Root is applied
+    Returns before/after comparison without saving
+    """
+    data = request.json
+    content = data.get('content', '')
+    
+    app_data_root = config.get('app_data_root', '').strip()
+    
+    if not app_data_root:
+        return jsonify({
+            'has_changes': False,
+            'message': 'App Data Root not configured'
+        })
+    
+    try:
+        # Analyze what would change
+        changes = analyze_app_data_root_changes(content, app_data_root, stack_name)
+        
+        return jsonify({
+            'has_changes': len(changes['modified']) > 0,
+            'app_data_root': app_data_root,
+            'stack_name': stack_name,
+            'modified': changes['modified'],
+            'unchanged': changes['unchanged'],
+            'warnings': changes['warnings']
+        })
+    
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
