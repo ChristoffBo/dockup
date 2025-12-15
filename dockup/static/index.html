@@ -1846,6 +1846,48 @@
                             <input type="number" class="form-control" v-model.number="settings.health_check_threshold" min="1" max="10" placeholder="3">
                             <small style="color: #94a3b8;">Number of consecutive failures before notification (default: 3)</small>
                         </div>
+
+                        <div class="settings-section" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #334155;">
+                            <h3 style="margin-bottom: 15px;"><i class="fas fa-server"></i> Host System Monitoring</h3>
+                            <p style="color: #94a3b8; margin-bottom: 15px;">Monitor host CPU, memory, and disk usage with automatic alerts</p>
+                            
+                            <label class="checkbox-label">
+                                <input type="checkbox" v-model="settings.host_monitor_enabled">
+                                <span>Enable host system monitoring</span>
+                            </label>
+
+                            <div v-if="settings.host_monitor_enabled" style="margin-top: 15px;">
+                                <div class="form-group">
+                                    <label class="form-label">Check Interval (minutes)</label>
+                                    <input type="number" class="form-control" v-model.number="settings.host_monitor_interval" min="1" max="60" placeholder="5">
+                                    <small style="color: #94a3b8;">How often to check host resources (default: 5 minutes)</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">CPU Threshold (%)</label>
+                                    <input type="number" class="form-control" v-model.number="settings.host_cpu_threshold" min="50" max="100" placeholder="90">
+                                    <small style="color: #94a3b8;">Alert when CPU usage exceeds this percentage (default: 90%)</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">Memory Threshold (%)</label>
+                                    <input type="number" class="form-control" v-model.number="settings.host_memory_threshold" min="50" max="100" placeholder="90">
+                                    <small style="color: #94a3b8;">Alert when memory usage exceeds this percentage (default: 90%)</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">Disk Threshold (%)</label>
+                                    <input type="number" class="form-control" v-model.number="settings.host_disk_threshold" min="50" max="100" placeholder="85">
+                                    <small style="color: #94a3b8;">Alert when disk usage exceeds this percentage (default: 85%)</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">Alert Threshold</label>
+                                    <input type="number" class="form-control" v-model.number="settings.host_alert_threshold" min="1" max="10" placeholder="3">
+                                    <small style="color: #94a3b8;">Number of consecutive checks exceeding thresholds before alert (default: 3)</small>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <button class="btn btn-success" @click="saveSettings">
@@ -3082,7 +3124,13 @@
                         stack_refresh_mode: 'custom',
                         stack_refresh_interval: 3600,
                         app_data_root: '/DATA/AppData',
-                        auto_apply_app_data_root: false
+                        auto_apply_app_data_root: false,
+                        host_monitor_enabled: true,
+                        host_monitor_interval: 5,
+                        host_cpu_threshold: 90,
+                        host_memory_threshold: 90,
+                        host_disk_threshold: 85,
+                        host_alert_threshold: 3
                     },
                     showChangePassword: false,
                     passwordChange: {
