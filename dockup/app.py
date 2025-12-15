@@ -5,7 +5,7 @@ Combines Dockge functionality with Tugtainer/Watchtower update capabilities
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.1.5"
+DOCKUP_VERSION = "1.1.7"
 
 import os
 import json
@@ -556,6 +556,12 @@ schedules = {}
 update_status = {}
 health_status = {}  # Track health failures: {stack_name: {consecutive_failures: 0, last_notified: timestamp}}
 update_history = {}  # Track recent updates: {stack_name: {last_update: timestamp, updated_by: 'auto'|'manual'}}
+host_monitor_status = {  # Track host monitoring failures
+    'consecutive_failures': 0,
+    'last_notified': None,
+    'last_check': None,
+    'current_issues': []
+}
 websocket_clients = []
 stack_stats_cache = {}  # Cache for stack stats
 network_stats_cache = {}  # Cache for network bytes tracking (for rate calculation)
@@ -594,6 +600,13 @@ def load_config():
             'stack_refresh_interval': 10,  # seconds between stack refresh (0 = off)
             'app_data_root': '/DATA/AppData',  # Root directory for container bind mounts
             'auto_apply_app_data_root': False,  # Require confirmation before applying
+            # Host monitoring thresholds
+            'host_monitor_enabled': True,
+            'host_monitor_interval': 5,  # minutes between host checks
+            'host_cpu_threshold': 90,  # % CPU usage to alert on
+            'host_memory_threshold': 90,  # % RAM usage to alert on
+            'host_disk_threshold': 85,  # % Disk usage to alert on
+            'host_alert_threshold': 3,  # consecutive failures before alerting
         }
         save_config()
     
@@ -614,6 +627,19 @@ def load_config():
     if 'auto_apply_app_data_root' not in config:
         config['auto_apply_app_data_root'] = False
         save_config()  # Save to persist the new default
+    if 'host_monitor_enabled' not in config:
+        config['host_monitor_enabled'] = True
+    if 'host_monitor_interval' not in config:
+        config['host_monitor_interval'] = 5
+    if 'host_cpu_threshold' not in config:
+        config['host_cpu_threshold'] = 90
+    if 'host_memory_threshold' not in config:
+        config['host_memory_threshold'] = 90
+    if 'host_disk_threshold' not in config:
+        config['host_disk_threshold'] = 85
+    if 'host_alert_threshold' not in config:
+        config['host_alert_threshold'] = 3
+        save_config()
     # Setup notification services
     setup_notifications()
 
@@ -1185,6 +1211,96 @@ def check_stack_health(stack_name, containers):
                 'last_check': current_time
             }
             save_health_status()
+
+
+def check_host_health():
+    """Monitor host system resources and send notifications after N consecutive failures"""
+    global host_monitor_status
+    
+    if not config.get('host_monitor_enabled', True):
+        return
+    
+    try:
+        # Get current host stats
+        cpu_percent = psutil.cpu_percent(interval=1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        
+        # Get thresholds from config
+        cpu_threshold = config.get('host_cpu_threshold', 90)
+        memory_threshold = config.get('host_memory_threshold', 90)
+        disk_threshold = config.get('host_disk_threshold', 85)
+        alert_threshold = config.get('host_alert_threshold', 3)
+        
+        # Check for issues
+        issues = []
+        if cpu_percent >= cpu_threshold:
+            issues.append(f"CPU usage at {cpu_percent:.1f}% (threshold: {cpu_threshold}%)")
+        if memory.percent >= memory_threshold:
+            issues.append(f"Memory usage at {memory.percent:.1f}% (threshold: {memory_threshold}%)")
+        if disk.percent >= disk_threshold:
+            issues.append(f"Disk usage at {disk.percent:.1f}% (threshold: {disk_threshold}%)")
+        
+        current_time = datetime.now(pytz.UTC).isoformat()
+        
+        if issues:
+            # Increment failure counter
+            host_monitor_status['consecutive_failures'] += 1
+            host_monitor_status['last_check'] = current_time
+            host_monitor_status['current_issues'] = issues
+            
+            failures = host_monitor_status['consecutive_failures']
+            print(f"  ⚠ Host check {failures}/{alert_threshold}: {len(issues)} issue(s) detected")
+            
+            # Send notification after threshold reached
+            if failures >= alert_threshold:
+                last_notified = host_monitor_status.get('last_notified')
+                
+                # Only notify once until it recovers
+                if last_notified is None:
+                    issue_list = '\n'.join([f"  • {issue}" for issue in issues])
+                    instance_name = config.get('instance_name', 'DockUp')
+                    send_notification(
+                        f"{instance_name} - Host Alert",
+                        f"Host system has exceeded thresholds for {failures} consecutive checks.\n\nIssues detected:\n{issue_list}\n\nCurrent stats:\n  • CPU: {cpu_percent:.1f}%\n  • Memory: {memory.percent:.1f}%\n  • Disk: {disk.percent:.1f}%",
+                        'error'
+                    )
+                    host_monitor_status['last_notified'] = current_time
+                    
+                    broadcast_ws({
+                        'type': 'host_alert',
+                        'issues': issues,
+                        'cpu_percent': round(cpu_percent, 1),
+                        'memory_percent': round(memory.percent, 1),
+                        'disk_percent': round(disk.percent, 1)
+                    })
+        else:
+            # Host is healthy - reset counter
+            if host_monitor_status['consecutive_failures'] > 0:
+                # Was unhealthy, now recovered
+                if host_monitor_status.get('last_notified'):
+                    instance_name = config.get('instance_name', 'DockUp')
+                    send_notification(
+                        f"{instance_name} - Host Recovered",
+                        f"Host system resources are now back to normal.\n\nCurrent stats:\n  • CPU: {cpu_percent:.1f}%\n  • Memory: {memory.percent:.1f}%\n  • Disk: {disk.percent:.1f}%",
+                        'success'
+                    )
+                    broadcast_ws({
+                        'type': 'host_recovered',
+                        'cpu_percent': round(cpu_percent, 1),
+                        'memory_percent': round(memory.percent, 1),
+                        'disk_percent': round(disk.percent, 1)
+                    })
+                
+                host_monitor_status = {
+                    'consecutive_failures': 0,
+                    'last_notified': None,
+                    'last_check': current_time,
+                    'current_issues': []
+                }
+    
+    except Exception as e:
+        print(f"Error checking host health: {e}")
 
 
 def import_orphan_containers_as_stacks():
@@ -2316,6 +2432,21 @@ def setup_scheduler():
         print("[Scheduler] Added orphan importer job (15m)")
     except Exception as e:
         print(f"[Scheduler] Error adding orphan importer: {e}")
+
+    # Host monitoring job
+    if config.get("host_monitor_enabled", True):
+        host_interval = config.get("host_monitor_interval", 5)
+        try:
+            scheduler.add_job(
+                check_host_health,
+                "interval",
+                minutes=host_interval,
+                id="host_monitor",
+                replace_existing=True
+            )
+            print(f"[Scheduler] Added host monitoring job ({host_interval}m)")
+        except Exception as e:
+            print(f"[Scheduler] Error adding host monitoring: {e}")
 
     return scheduler
 
