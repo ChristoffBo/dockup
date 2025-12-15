@@ -923,297 +923,11 @@
 
 
 <style>
-/* Docker Run Import Modal */
-.docker-run-modal {
-    display: none !important;
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.85);
-    z-index: 10000;
-    align-items: center;
-    justify-content: center;
-}
-
-.docker-run-modal.active {
-    display: flex !important;
-}
-
-.docker-run-modal .modal-content {
-    background: #1e293b;
-    border-radius: 12px;
-    padding: 30px;
-    max-width: 900px;
-    width: 90%;
-    max-height: 90vh;
-    overflow-y: auto;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-}
-
-.docker-run-modal .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 20px;
-    padding-bottom: 15px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.docker-run-modal .modal-header h2 {
-    color: #60a5fa;
-    font-size: 20px;
-    margin: 0;
-    font-weight: 600;
-}
-
-.docker-run-modal .close {
-    color: #94a3b8;
-    font-size: 28px;
-    cursor: pointer;
-    background: none;
-    border: none;
-    padding: 0;
-    line-height: 1;
-    transition: color 0.2s;
-}
-
-.docker-run-modal .close:hover {
-    color: #f87171;
-}
-
-.docker-run-modal .modal-body {
-    color: #e2e8f0;
-}
-
-.docker-run-modal .form-group {
-    margin-bottom: 20px;
-}
-
-.docker-run-modal .form-group label {
-    display: block;
-    margin-bottom: 8px;
-    color: #cbd5e1;
-    font-weight: 500;
-    font-size: 14px;
-}
-
-.docker-run-modal code {
-    background: rgba(96, 165, 250, 0.1);
-    padding: 2px 8px;
-    border-radius: 4px;
-    color: #60a5fa;
-    font-size: 13px;
-    font-family: 'Courier New', monospace;
-}
-
-.docker-run-modal textarea,
-.docker-run-modal input[type="text"] {
-    width: 100%;
-    padding: 12px;
-    background: #0f172a;
-    border: 1px solid #334155;
-    border-radius: 8px;
-    color: #e2e8f0;
-    font-size: 14px;
-    transition: all 0.2s;
-    box-sizing: border-box;
-}
-
-.docker-run-modal textarea {
-    font-family: 'Courier New', Courier, monospace;
-    min-height: 150px;
-    resize: vertical;
-    line-height: 1.5;
-}
-
-.docker-run-modal textarea:focus,
-.docker-run-modal input[type="text"]:focus {
-    outline: none;
-    border-color: #60a5fa;
-    background: #0f172a;
-}
-
-.docker-run-modal textarea::placeholder,
-.docker-run-modal input[type="text"]::placeholder {
-    color: #64748b;
-}
-
-.docker-run-modal small {
-    display: block;
-    margin-top: 6px;
-    color: #94a3b8;
-    font-size: 12px;
-    line-height: 1.4;
-}
-
-.docker-run-modal #dockerRunWarnings {
-    background: rgba(251, 191, 36, 0.1);
-    border: 1px solid #f59e0b;
-    border-radius: 8px;
-    padding: 15px;
-    margin-bottom: 15px;
-}
-
-.docker-run-modal #dockerRunWarnings h4 {
-    color: #fbbf24;
-    margin: 0 0 10px 0;
-    font-size: 16px;
-}
-
-.docker-run-modal #dockerRunWarnings ul {
-    margin: 0;
-    padding-left: 20px;
-    color: #fde68a;
-}
-
-.docker-run-modal #dockerRunYaml {
-    background: #0f172a !important;
-    border: 1px solid #334155 !important;
-    border-radius: 8px;
-    padding: 15px;
-    color: #e2e8f0 !important;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 13px;
-    max-height: 400px;
-    overflow: auto;
-    white-space: pre;
-    line-height: 1.5;
-}
-
-.docker-run-modal #dockerRunYaml * {
-    color: #e2e8f0 !important;
-    background: transparent !important;
-}
-
-.docker-run-modal #dockerRunPreview {
-    margin-top: 30px;
-    padding-top: 30px;
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
-    background: transparent !important;
-}
-
-.docker-run-modal #dockerRunPreview * {
-    background: transparent !important;
-}
-
-.docker-run-modal #dockerRunPreview pre {
-    background: #0f172a !important;
-    color: #e2e8f0 !important;
-}
-
-.docker-run-modal #dockerRunPreview h3 {
-    color: #cbd5e1;
-    font-size: 18px;
-    margin-bottom: 15px;
-}
-
-.docker-run-modal .btn {
-    padding: 10px 20px;
-    border-radius: 6px;
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    border: none;
-    transition: all 0.2s;
-    margin-right: 10px;
-}
-
-.docker-run-modal .btn-primary {
-    background: #3b82f6;
-    color: white;
-}
-
-.docker-run-modal .btn-primary:hover {
-    background: #2563eb;
-}
-
-.docker-run-modal .btn-success {
-    background: #10b981;
-    color: white;
-}
-
-.docker-run-modal .btn-success:hover {
-    background: #059669;
-}
-
-.docker-run-modal .btn-secondary {
-    background: #475569;
-    color: white;
-}
-
-.docker-run-modal .btn-secondary:hover {
-    background: #334155;
-}
 </style>
 
 </head>
 <body>
 
-<!-- Docker Run Import Modal -->
-<div id="dockerRunModal" class="docker-run-modal" style="display: none;">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h2>📦 Import from Docker Run Command</h2>
-            <span class="close" onclick="closeDockerRunModal()">&times;</span>
-        </div>
-        <div class="modal-body">
-            <div class="form-group">
-                <label>Paste your <code>docker run</code> command:</label>
-                <textarea id="dockerRunCommand" 
-                          placeholder="docker run -d --name myapp -p 8080:80 -v /data:/app/data nginx:latest"
-                          style="width: 100%; height: 150px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;"></textarea>
-                <small style="color: #666;">
-                    Supports: -p, -v, -e, --name, --restart, --network, --label, --memory, --cpus, and more. Press Ctrl+Enter to convert.
-                </small>
-            </div>
-            
-            <div class="form-group">
-                <label>Stack Name:</label>
-                <input type="text" id="dockerRunStackName" 
-                       placeholder="myapp (auto-detected from command)" 
-                       style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                <small style="color: #666;">
-                    Letters, numbers, hyphens, and underscores only
-                </small>
-            </div>
-            
-            <div style="margin-top: 20px;">
-                <button onclick="convertDockerRun()" class="btn btn-primary">
-                    <i class="fas fa-magic"></i> Convert to Compose
-                </button>
-                <button onclick="closeDockerRunModal()" class="btn btn-secondary">
-                    Cancel
-                </button>
-            </div>
-            
-            <div id="dockerRunPreview" style="display: none; margin-top: 30px;">
-                <h3>Generated compose.yaml:</h3>
-                
-                <div id="dockerRunWarnings"></div>
-                
-                <div style="position: relative;">
-                    <button onclick="copyDockerRunYaml()" 
-                            style="position: absolute; top: 10px; right: 10px; padding: 5px 10px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">
-                        <i class="fas fa-copy"></i> Copy
-                    </button>
-                    <pre id="dockerRunYaml" style="background: #0f172a !important; color: #e2e8f0 !important; padding: 15px; border-radius: 4px; overflow-x: auto; font-size: 13px; max-height: 400px; border: 1px solid #334155; font-family: 'Courier New', monospace;"></pre>
-                </div>
-                
-                <div style="margin-top: 20px;">
-                    <button onclick="createStackFromDockerRun()" class="btn btn-success">
-                        <i class="fas fa-check"></i> Create Stack
-                    </button>
-                    <button onclick="resetDockerRunConversion()" class="btn btn-secondary">
-                        <i class="fas fa-redo"></i> Start Over
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
 
 
     <div id="app">
@@ -1222,6 +936,21 @@
             <div class="logo">
                 <i class="fas fa-layer-group"></i>
                 Dockup
+                <span v-if="version" style="font-size: 12px; opacity: 0.6; margin-left: 8px;">
+                    v{{ version }}
+                    <span v-if="updateAvailable" style="
+                        background: linear-gradient(135deg, #ef4444, #dc2626);
+                        color: white;
+                        padding: 2px 8px;
+                        border-radius: 10px;
+                        font-size: 10px;
+                        margin-left: 6px;
+                        font-weight: 600;
+                        cursor: pointer;
+                    " @click="showUpdateInfo" title="Click for update info">
+                        UPDATE
+                    </span>
+                </span>
             </div>
             <div class="nav-menu">
                 <div class="nav-item" :class="{active: currentView === 'dashboard'}" @click="currentView = 'dashboard'">
@@ -1312,9 +1041,6 @@
                 <div style="margin-bottom: 30px; display: flex; gap: 15px; flex-wrap: wrap;">
                     <button class="btn btn-primary" @click="showCreateStack" style="font-size: 16px; padding: 12px 24px;">
                         <i class="fas fa-plus-circle"></i> Create New Stack
-<button onclick="openDockerRunModal()" class="btn btn-primary" title="Import from docker run command">
-    <i class="fas fa-file-import"></i> Import Docker Run
-</button>
                     </button>
                     <button class="btn btn-warning" @click="checkAllStacks" :disabled="checkingAll" style="font-size: 16px; padding: 12px 24px;">
                         <i class="fas" :class="checkingAll ? 'fa-spinner fa-spin' : 'fa-sync'"></i> 
@@ -1879,6 +1605,92 @@
                     </div>
 
                     <div class="settings-section">
+                        <h3><i class="fas fa-folder-tree"></i> App Data Root</h3>
+                        <div class="form-group">
+                            <label class="form-label">Root Directory for Container Data</label>
+                            <input type="text" 
+                                   class="form-input" 
+                                   v-model="settings.app_data_root" 
+                                   placeholder="/DATA/AppData">
+                            <small style="color: #94a3b8; display: block; margin-top: 8px;">
+                                <i class="fas fa-info-circle"></i> 
+                                Leave empty to disable. Common values: 
+                                <code style="background: rgba(15, 23, 42, 0.5); padding: 2px 6px; border-radius: 3px;">/DATA/AppData</code>,
+                                <code style="background: rgba(15, 23, 42, 0.5); padding: 2px 6px; border-radius: 3px;">/srv/docker/appdata</code>,
+                                <code style="background: rgba(15, 23, 42, 0.5); padding: 2px 6px; border-radius: 3px;">/mnt/user/appdata</code>
+                            </small>
+                        </div>
+                        
+                        <div v-if="settings.app_data_root" style="margin-top: 16px; padding: 16px; 
+                                    background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; 
+                                    border-radius: 6px;">
+                            <div style="font-weight: 600; color: #93c5fd; margin-bottom: 8px;">
+                                <i class="fas fa-lightbulb"></i> How It Works
+                            </div>
+                            <div style="color: #cbd5e1; font-size: 13px; line-height: 1.8;">
+                                <strong>Stack-based organization:</strong> Each stack gets its own subdirectory<br>
+                                <div style="margin: 8px 0; font-family: monospace; font-size: 12px;">
+                                    <div style="margin: 4px 0;">
+                                        <span style="color: #94a3b8;">plex stack:</span> 
+                                        <span style="color: #34d399;">./config</span>
+                                        <span style="color: #64748b;">→</span>
+                                        <span style="color: #60a5fa;">{{ settings.app_data_root }}/plex/config</span>
+                                    </div>
+                                    <div style="margin: 4px 0;">
+                                        <span style="color: #94a3b8;">sonarr stack:</span> 
+                                        <span style="color: #34d399;">./data</span>
+                                        <span style="color: #64748b;">→</span>
+                                        <span style="color: #60a5fa;">{{ settings.app_data_root }}/sonarr/data</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div v-if="settings.app_data_root" style="margin-top: 16px; padding: 16px; 
+                                    background: rgba(15, 23, 42, 0.5); border-radius: 6px;">
+                            <div style="font-weight: 600; color: #cbd5e1; margin-bottom: 12px;">
+                                <i class="fas fa-cog"></i> Behavior Options
+                            </div>
+                            
+                            <div class="form-group" style="margin: 0;">
+                                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                    <input type="checkbox" v-model="settings.auto_apply_app_data_root">
+                                    <span>Automatically apply without confirmation</span>
+                                </label>
+                                <small style="color: #94a3b8; margin-top: 5px; display: block; margin-left: 30px;">
+                                    Skip the preview modal and apply App Data Root changes automatically when saving stacks
+                                </small>
+                            </div>
+                        </div>
+                        
+                        <div v-if="!settings.app_data_root" style="margin-top: 16px; padding: 16px; 
+                                    background: rgba(100, 116, 139, 0.1); border-left: 3px solid #64748b; 
+                                    border-radius: 6px;">
+                            <div style="color: #94a3b8; font-size: 13px;">
+                                <i class="fas fa-info-circle"></i> 
+                                App Data Root is currently <strong>disabled</strong>. 
+                                Set a root directory above to enable automatic path resolution for new stacks.
+                            </div>
+                        </div>
+                        
+                        <div v-if="settings.app_data_root" style="margin-top: 16px; padding: 16px; 
+                                    background: rgba(34, 197, 94, 0.1); border-left: 3px solid #22c55e; 
+                                    border-radius: 6px;">
+                            <div style="font-weight: 600; color: #86efac; margin-bottom: 8px;">
+                                <i class="fas fa-shield-alt"></i> Safety Guarantees
+                            </div>
+                            <ul style="color: #cbd5e1; font-size: 13px; margin: 0; padding-left: 20px; line-height: 1.6;">
+                                <li>Shows preview before applying changes (unless auto-apply enabled)</li>
+                                <li>Only affects new stacks, imports, or when you edit and save existing stacks</li>
+                                <li>Never automatically modifies running stacks</li>
+                                <li>Named volumes remain untouched</li>
+                                <li>System paths are exempt</li>
+                                <li>Paths already under this root are left unchanged</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
                         <h3><i class="fas fa-clock"></i> Default Schedule</h3>
                         <div class="form-group">
                             <label class="form-label">Default Cron Expression</label>
@@ -2208,6 +2020,69 @@
                           style="display: inline-block; padding: 4px 10px; background: rgba(34, 197, 94, 0.15); color: #22c55e; border-radius: 12px; font-size: 12px; margin-right: 8px; margin-bottom: 8px;">
                         {{ container }}
                     </span>
+                </div>
+            </div>
+        </div>
+
+        <!-- App Data Root Preview Modal -->
+        <div class="modal" v-if="showAppDataRootModal" @click.self="cancelAppDataRootPreview">
+            <div class="modal-content" style="max-width: 700px;">
+                <div class="modal-header">
+                    <h2>App Data Root Preview - Stack: {{ appDataRootPreview?.stack_name }}</h2>
+                    <button class="close-btn" @click="cancelAppDataRootPreview">&times;</button>
+                </div>
+                
+                <div style="padding: 20px; background: rgba(59, 130, 246, 0.1); border-radius: 8px; margin-bottom: 20px;">
+                    <div style="font-weight: 600; color: #93c5fd; margin-bottom: 8px;">
+                        <i class="fas fa-folder"></i> Stack Directory: {{ appDataRootPreview?.app_data_root }}/{{ appDataRootPreview?.stack_name }}/
+                    </div>
+                </div>
+                
+                <div v-if="appDataRootPreview?.modified && appDataRootPreview.modified.length > 0" style="margin-bottom: 20px;">
+                    <div style="font-weight: 600; color: #cbd5e1; margin-bottom: 10px;">
+                        <i class="fas fa-edit"></i> The following paths will be resolved:
+                    </div>
+                    <div style="background: rgba(15, 23, 42, 0.5); border-radius: 6px; padding: 15px; max-height: 300px; overflow-y: auto;">
+                        <div v-for="change in appDataRootPreview.modified" :key="change.from" style="margin-bottom: 12px; font-family: monospace; font-size: 13px;">
+                            <div style="color: #f87171;">{{ change.from }}</div>
+                            <div style="color: #64748b; margin: 4px 0;">→</div>
+                            <div style="color: #34d399;">{{ change.to }}</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div v-if="appDataRootPreview?.unchanged && appDataRootPreview.unchanged.length > 0" style="margin-bottom: 20px;">
+                    <div style="font-weight: 600; color: #cbd5e1; margin-bottom: 10px;">
+                        <i class="fas fa-check-circle"></i> No changes needed:
+                    </div>
+                    <div style="background: rgba(15, 23, 42, 0.5); border-radius: 6px; padding: 15px; max-height: 200px; overflow-y: auto;">
+                        <div v-for="item in appDataRootPreview.unchanged" :key="item.path" style="margin-bottom: 8px; font-family: monospace; font-size: 13px; color: #94a3b8;">
+                            • {{ item.path }} <span style="color: #64748b;">({{ item.reason.replace('_', ' ') }})</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div v-if="appDataRootPreview?.warnings && appDataRootPreview.warnings.length > 0" style="margin-bottom: 20px;">
+                    <div style="font-weight: 600; color: #fbbf24; margin-bottom: 10px;">
+                        <i class="fas fa-exclamation-triangle"></i> Paths outside App Data Root:
+                    </div>
+                    <div style="background: rgba(245, 158, 11, 0.1); border-radius: 6px; padding: 15px;">
+                        <div v-for="warning in appDataRootPreview.warnings" :key="warning.path" style="margin-bottom: 8px; font-family: monospace; font-size: 13px; color: #fbbf24;">
+                            • {{ warning.path }}
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="btn-group">
+                    <button class="btn btn-secondary" @click="cancelAppDataRootPreview">
+                        Cancel
+                    </button>
+                    <button class="btn btn-secondary" @click="saveStackWithoutAppDataRoot">
+                        <i class="fas fa-save"></i> Save As-Is
+                    </button>
+                    <button class="btn btn-primary" @click="saveStackWithAppDataRoot">
+                        <i class="fas fa-check"></i> Accept Changes & Save
+                    </button>
                 </div>
             </div>
         </div>
@@ -3180,6 +3055,9 @@
         const app = createApp({
             data() {
                 return {
+                version: null,
+                updateAvailable: false,
+                latestVersion: null,
                 scanModal: {
                     show: false,
                     loading: false,
@@ -3202,7 +3080,9 @@
                         host_stats_mode: 'auto',
                         host_stats_interval: 5,
                         stack_refresh_mode: 'custom',
-                        stack_refresh_interval: 3600
+                        stack_refresh_interval: 3600,
+                        app_data_root: '/DATA/AppData',
+                        auto_apply_app_data_root: false
                     },
                     showChangePassword: false,
                     passwordChange: {
@@ -3253,6 +3133,8 @@
                     filterMode: 'all',
                     darkTheme: true,
                     showBackupModal: false,
+                    showAppDataRootModal: false,
+                    appDataRootPreview: null,
                     restoreFile: null,
                     toasts: [],
                     ws: null,
@@ -3402,6 +3284,7 @@
                 this.loadStacks();
                 this.loadNetworks();
                 await this.loadSettings(); // Wait for settings before polling setup
+                this.checkVersion(); // Check for updates
                 this.loadHostStats();
                 this.loadDockerHubRateLimit();
                 this.connectWebSocket();
@@ -3424,6 +3307,26 @@
                 }
             },
             methods: {
+                async checkVersion() {
+                    try {
+                        const response = await axios.get('/api/version');
+                        this.version = response.data.current;
+                        this.latestVersion = response.data.latest;
+                        this.updateAvailable = response.data.update_available;
+                    } catch (error) {
+                        console.error('Failed to check version:', error);
+                        this.version = 'unknown';
+                    }
+                },
+                showUpdateInfo() {
+                    if (this.updateAvailable) {
+                        this.showToast(
+                            'Update Available', 
+                            `DockUp ${this.latestVersion} is available! You are running ${this.version}. Pull the latest image from Docker Hub: cbothma/dockup:${this.latestVersion}`, 
+                            'info'
+                        );
+                    }
+                },
                 handleHostStatsModeChange() {
                     if (this.settings.host_stats_mode === 'off') {
                         this.settings.host_stats_interval = 0;
@@ -3642,7 +3545,8 @@
                 async loadSettings() {
                     try {
                         const response = await axios.get('/api/config');
-                        this.settings = response.data;
+                        // Merge with defaults to preserve new settings
+                        this.settings = { ...this.settings, ...response.data };
                         
                         // Migrate old format to new format
                         if (!this.settings.host_stats_mode) {
@@ -4354,9 +4258,37 @@
                                 return;
                             }
                             
+                            // Check if App Data Root would make changes (for both new and existing stacks)
+                            if (this.settings.app_data_root && !this.settings.auto_apply_app_data_root) {
+                                try {
+                                    const preview = await axios.post(`/api/stacks/${this.editStackName}/compose/preview`, {
+                                        content: this.editStackContent
+                                    });
+                                    
+                                    if (preview.data.has_changes) {
+                                        // Close the edit modal first
+                                        this.showEditModal = false;
+                                        
+                                        // Show confirmation modal after a brief delay
+                                        setTimeout(() => {
+                                            this.appDataRootPreview = preview.data;
+                                            this.showAppDataRootModal = true;
+                                        }, 100);
+                                        
+                                        return; // Wait for user decision
+                                    }
+                                } catch (error) {
+                                    console.error('Failed to preview App Data Root changes:', error);
+                                    // Continue with save if preview fails
+                                }
+                            }
+                            
                             // Validation passed, proceed with save
+                            // Only apply App Data Root if auto-apply checkbox is enabled
+                            const shouldApply = this.settings.auto_apply_app_data_root;
                             await axios.post(`/api/stack/${this.editStackName}/compose`, {
-                                content: this.editStackContent
+                                content: this.editStackContent,
+                                apply_app_data_root: shouldApply
                             });
                         }
                         
@@ -5116,6 +5048,99 @@
                     path += ` L ${(history.length - 1) * width} ${height} Z`;
                     
                     return path;
+                },
+                
+                // App Data Root Modal Methods
+                cancelAppDataRootPreview() {
+                    // Close preview modal and re-open edit modal
+                    this.showAppDataRootModal = false;
+                    this.showEditModal = true;
+                },
+                
+                async saveStackWithAppDataRoot() {
+                    try {
+                        await axios.post(`/api/stack/${this.editStackName}/compose`, {
+                            content: this.editStackContent,
+                            apply_app_data_root: true
+                        });
+                        
+                        this.showAppDataRootModal = false;
+                        
+                        // Continue with the rest of the save flow
+                        const action = this.editingStack ? 'updated' : 'created';
+                        
+                        // Save metadata
+                        const metadataToSave = {
+                            web_ui_url: this.webUiUrl || ""
+                        };
+                        
+                        if (this.editingStack) {
+                            try {
+                                const tags = this.stackTags
+                                    .split(',')
+                                    .map(t => t.trim())
+                                    .filter(t => t.length > 0);
+                                metadataToSave.tags = tags;
+                            } catch (error) {
+                                console.error('Failed to parse tags:', error);
+                            }
+                        }
+                        
+                        await axios.post(`/api/stack/${this.editStackName}/metadata`, metadataToSave);
+                        
+                        this.showToast('Success', `Stack ${action} successfully`, 'success');
+                        this.showEditModal = false;
+                        this.showRawYaml = false;
+                        this.selectedService = '';
+                        this.serviceSections = null;
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to save stack', 'error');
+                        console.error(error);
+                    }
+                },
+                
+                async saveStackWithoutAppDataRoot() {
+                    try {
+                        await axios.post(`/api/stack/${this.editStackName}/compose`, {
+                            content: this.editStackContent,
+                            apply_app_data_root: false
+                        });
+                        
+                        this.showAppDataRootModal = false;
+                        
+                        // Continue with the rest of the save flow
+                        const action = this.editingStack ? 'updated' : 'created';
+                        
+                        // Save metadata
+                        const metadataToSave = {
+                            web_ui_url: this.webUiUrl || ""
+                        };
+                        
+                        if (this.editingStack) {
+                            try {
+                                const tags = this.stackTags
+                                    .split(',')
+                                    .map(t => t.trim())
+                                    .filter(t => t.length > 0);
+                                metadataToSave.tags = tags;
+                            } catch (error) {
+                                console.error('Failed to parse tags:', error);
+                            }
+                        }
+                        
+                        await axios.post(`/api/stack/${this.editStackName}/metadata`, metadataToSave);
+                        
+                        this.showToast('Success', `Stack ${action} without App Data Root`, 'success');
+                        this.showEditModal = false;
+                        this.showRawYaml = false;
+                        this.selectedService = '';
+                        this.serviceSections = null;
+                        await this.loadStacks();
+                    } catch (error) {
+                        this.showToast('Error', 'Failed to save stack', 'error');
+                        console.error(error);
+                    }
                 }
             }
         });
@@ -5128,184 +5153,3 @@
     <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
 </body>
 </html>
-
-<script>
-// Docker Run Import Functions
-let currentConvertedYaml = '';
-let currentSuggestedName = '';
-
-function openDockerRunModal() {
-    const modal = document.getElementById('dockerRunModal');
-    modal.style.display = 'flex';
-    modal.classList.add('active');
-    setTimeout(() => {
-        const textarea = document.getElementById('dockerRunCommand');
-        if (textarea) textarea.focus();
-    }, 100);
-}
-
-function closeDockerRunModal() {
-    const modal = document.getElementById('dockerRunModal');
-    modal.classList.remove('active');
-    modal.style.display = 'none';
-    resetDockerRunConversion();
-}
-
-function resetDockerRunConversion() {
-    document.getElementById('dockerRunCommand').value = '';
-    document.getElementById('dockerRunStackName').value = '';
-    document.getElementById('dockerRunPreview').style.display = 'none';
-    document.getElementById('dockerRunWarnings').innerHTML = '';
-    currentConvertedYaml = '';
-    currentSuggestedName = '';
-}
-
-async function convertDockerRun() {
-    const command = document.getElementById('dockerRunCommand').value.trim();
-    
-    if (!command) {
-        showNotification('Please enter a docker run command', 'error');
-        return;
-    }
-    
-    try {
-        const response = await fetch('/api/stacks/import-docker-run', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: command })
-        });
-        
-        const data = await response.json();
-        
-        if (!response.ok) {
-            showNotification(data.error || 'Failed to convert command', 'error');
-            return;
-        }
-        
-        currentConvertedYaml = data.compose_yaml;
-        currentSuggestedName = data.suggested_name || '';
-        
-        if (!document.getElementById('dockerRunStackName').value && currentSuggestedName) {
-            document.getElementById('dockerRunStackName').value = currentSuggestedName;
-        }
-        
-        document.getElementById('dockerRunYaml').textContent = currentConvertedYaml;
-        
-        if (data.warnings && data.warnings.length > 0) {
-            const warningsHtml = `
-                <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; padding: 15px; margin-bottom: 15px;">
-                    <h4 style="margin-top: 0; color: #856404;">
-                        <i class="fas fa-exclamation-triangle"></i> Warnings:
-                    </h4>
-                    <ul style="margin: 0; padding-left: 20px;">
-                        ${data.warnings.map(w => `<li>${w}</li>`).join('')}
-                    </ul>
-                </div>
-            `;
-            document.getElementById('dockerRunWarnings').innerHTML = warningsHtml;
-        } else {
-            document.getElementById('dockerRunWarnings').innerHTML = '';
-        }
-        
-        document.getElementById('dockerRunPreview').style.display = 'block';
-        showNotification('Command converted successfully!', 'success');
-        
-    } catch (error) {
-        console.error('Error:', error);
-        showNotification('Failed to convert command', 'error');
-    }
-}
-
-function copyDockerRunYaml() {
-    navigator.clipboard.writeText(currentConvertedYaml).then(() => {
-        showNotification('Copied to clipboard!', 'success');
-    });
-}
-
-async function createStackFromDockerRun() {
-    const stackName = document.getElementById('dockerRunStackName').value.trim();
-    const command = document.getElementById('dockerRunCommand').value.trim();
-    
-    if (!stackName) {
-        showNotification('Please enter a stack name', 'error');
-        return;
-    }
-    
-    if (!/^[a-zA-Z0-9_-]+$/.test(stackName)) {
-        showNotification('Stack name can only contain letters, numbers, hyphens, and underscores', 'error');
-        return;
-    }
-    
-    try {
-        const response = await fetch('/api/stacks/import-docker-run', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: command, stack_name: stackName, create: true })
-        });
-        
-        const data = await response.json();
-        
-        if (!response.ok) {
-            showNotification(data.error || 'Failed to create stack', 'error');
-            return;
-        }
-        
-        showNotification(`Stack "${stackName}" created successfully!`, 'success');
-        closeDockerRunModal();
-        loadStacks();
-        
-    } catch (error) {
-        console.error('Error:', error);
-        showNotification('Failed to create stack', 'error');
-    }
-}
-
-
-    
-    if (!currentConvertedYaml) {
-        showNotification('No YAML to edit - please convert first', 'error');
-        return;
-    }
-    
-    // Close this modal first
-    closeDockerRunModal();
-    
-    // Wait for modal to close and Vue to be ready
-    setTimeout(() => {
-        if (window.vueApp) {
-            // Set values in correct order
-            window.vueApp.editingStack = null;
-            window.vueApp.editStackName = stackName;
-            window.vueApp.editStackContent = currentConvertedYaml;
-            
-            // Open modal last
-            setTimeout(() => {
-                window.vueApp.showEditModal = true;
-            }, 50);
-        } else {
-            showNotification('Editor not available - please refresh the page', 'error');
-        }
-    }, 150);
-}
-
-// Ctrl+Enter to convert
-document.addEventListener('DOMContentLoaded', function() {
-    const textarea = document.getElementById('dockerRunCommand');
-    if (textarea) {
-        textarea.addEventListener('keydown', function(e) {
-            if (e.ctrlKey && e.key === 'Enter') {
-                e.preventDefault();
-                convertDockerRun();
-            }
-        });
-    }
-});
-
-// Close modal on outside click
-window.addEventListener('click', function(e) {
-    if (e.target.id === 'dockerRunModal') {
-        closeDockerRunModal();
-    }
-});
-</script>
-
