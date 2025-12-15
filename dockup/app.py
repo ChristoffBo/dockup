@@ -4,6 +4,9 @@ Dockup - Docker Compose Stack Manager with Auto-Update
 Combines Dockge functionality with Tugtainer/Watchtower update capabilities
 """
 
+# VERSION - Update this when releasing new version
+DOCKUP_VERSION = "1.1.5"
+
 import os
 import json
 import yaml
@@ -610,6 +613,7 @@ def load_config():
         config['app_data_root'] = '/DATA/AppData'
     if 'auto_apply_app_data_root' not in config:
         config['auto_apply_app_data_root'] = False
+        save_config()  # Save to persist the new default
     # Setup notification services
     setup_notifications()
 
@@ -3380,6 +3384,46 @@ def api_stack_check_updates(stack_name):
             'last_check': update_status.get(stack_name, {}).get('last_check')
         })
     return jsonify({'error': 'Failed to check updates'}), 400
+
+
+@app.route('/api/version')
+def api_version():
+    """Get current version and check for updates on Docker Hub"""
+    current_version = DOCKUP_VERSION
+    
+    try:
+        # Check Docker Hub for cbothma/dockup tags
+        response = requests.get(
+            'https://registry.hub.docker.com/v2/repositories/cbothma/dockup/tags?page_size=25',
+            timeout=5
+        )
+        data = response.json()
+        
+        # Find the highest version number (exclude 'latest')
+        latest_version = current_version
+        for tag in data.get('results', []):
+            tag_name = tag['name']
+            # Skip 'latest' and non-version tags
+            if tag_name == 'latest':
+                continue
+            # Compare version strings (assumes semantic versioning like 1.1.4)
+            if tag_name > latest_version:
+                latest_version = tag_name
+        
+        update_available = latest_version != current_version
+        
+        return jsonify({
+            'current': current_version,
+            'latest': latest_version,
+            'update_available': update_available
+        })
+    except Exception as e:
+        print(f"Failed to check Docker Hub for updates: {e}")
+        return jsonify({
+            'current': current_version,
+            'latest': current_version,
+            'update_available': False
+        })
 
 
 @app.route('/api/config', methods=['GET'])
