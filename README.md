@@ -354,6 +354,7 @@ docker run -d \
   -p 5000:5000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /path/to/your/stacks:/stacks \
+  -v /DATA/AppData:/DATA/AppData:ro # Path to containers app data for UI Size Calculations
   -v dockup_data:/app/data \
   --restart unless-stopped \
   cbothma/dockup:latest
