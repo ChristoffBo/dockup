@@ -1,3 +1,5 @@
+## latest (2025-12-16)
+Added Appdata size per Stack in UI, had a size issue, this will help to faultfind, see updated compose in readme.
 ## latest (2025-12-14)
 Dockup completed will only get dependency updates for now..
 ## latest (2025-12-14)
