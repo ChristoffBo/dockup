@@ -1,3 +1,5 @@
+## latest (2025-12-17)
+performance update, should see around 80 percent less API calls to docker.
 ## latest (2025-12-16)
 Added Appdata size per Stack in UI, had a size issue, this will help to faultfind, see updated compose in readme.
 ## latest (2025-12-14)
