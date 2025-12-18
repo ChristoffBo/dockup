@@ -119,9 +119,31 @@
 
         .card-header {
             display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .card-title-row-top {
+            display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 15px;
+            width: 100%;
+        }
+
+        .card-badges-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .card-title-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
         }
 
         .card-title {
@@ -130,6 +152,30 @@
             display: flex;
             align-items: center;
             gap: 10px;
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .card-meta-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .btn-collapse {
+            padding: 6px 12px !important;
+            background: rgba(148, 163, 184, 0.2) !important;
+            border: 1px solid rgba(148, 163, 184, 0.3) !important;
+            transition: all 0.2s !important;
+        }
+
+        .btn-collapse:hover {
+            background: rgba(148, 163, 184, 0.3) !important;
+            border-color: rgba(148, 163, 184, 0.5) !important;
         }
 
         .status-badge {
@@ -197,6 +243,10 @@
             background: rgba(59, 130, 246, 0.15);
             color: #3b82f6;
             animation: glow 2s ease-in-out infinite;
+            max-width: 95px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         @keyframes glow {
@@ -238,28 +288,58 @@
             box-shadow: none;
         }
         .btn-primary {
-            background: #93c5fd;
+            background: #60a5fa;  /* Darker blue */
             color: #1e293b;
         }
 
         .btn-success {
-            background: #86efac;
+            background: #4ade80;  /* Darker green */
             color: #1e293b;
         }
 
         .btn-danger {
-            background: #ef4444;  /* Keep danger bright (delete, stop) */
-            color: white;
+            background: #f87171;  /* Darker soft red */
+            color: #1e293b;
         }
 
         .btn-warning {
-            background: #fde047;
+            background: #facc15;  /* Darker yellow */
             color: #1e293b;
         }
 
         .btn-secondary {
-            background: rgba(148, 163, 184, 0.3);
+            background: rgba(148, 163, 184, 0.4);  /* Slightly darker */
             color: #e2e8f0;
+        }
+
+        .btn-info {
+            background: #67e8f9;  /* Darker cyan */
+            color: #1e293b;
+        }
+
+        .btn-scan {
+            background: #c4b5fd;  /* Darker purple */
+            color: #1e293b;
+        }
+
+        .btn-logs {
+            background: #fbbf24;  /* Darker amber */
+            color: #1e293b;
+        }
+
+        .btn-restart {
+            background: #fb923c;  /* Darker orange */
+            color: #1e293b;
+        }
+
+        .btn-edit {
+            background: #93c5fd;  /* Darker blue */
+            color: #1e293b;
+        }
+
+        .btn-delete-images {
+            background: #f87171;  /* Darker soft red */
+            color: #1e293b;
         }
 
         .btn-group {
@@ -1286,33 +1366,28 @@
                     <!-- Active Stacks -->
                     <div class="card" v-for="stack in filteredActiveStacks" :key="stack.name">
                         <div class="card-header">
-                            <div class="card-title">
-                                <i class="fas fa-layer-group"></i>
-                                <span @click="openStackWebUI(stack)" 
-                                      :style="{cursor: stack.web_ui_url ? 'pointer' : 'default', color: stack.web_ui_url ? '#00d9ff' : 'inherit'}"
-                                      :title="stack.web_ui_url || 'No Web UI configured'">
-                                    {{ stack.name }}
-                                    <i v-if="stack.web_ui_url" class="fas fa-external-link-alt" style="font-size: 12px; margin-left: 5px;"></i>
-                                </span>
-                                <!-- Tag badges -->
-                                <span v-if="stack.tags && stack.tags.length > 0" style="display: inline-flex; gap: 5px; margin-left: 10px;">
-                                    <span v-for="tag in stack.tags" :key="tag" 
-                                          @click="filterMode = 'tag:' + tag"
-                                          class="tag-badge"
-                                          :title="'Filter by: ' + tag">
-                                        {{ tag }}
+                            <!-- First row: stack name only -->
+                            <div class="card-title-row-top">
+                                <div class="card-title">
+                                    <span @click="openStackWebUI(stack)" 
+                                          :style="{cursor: stack.web_ui_url ? 'pointer' : 'default', color: stack.web_ui_url ? '#00d9ff' : 'inherit'}"
+                                          :title="stack.web_ui_url || 'No Web UI configured'">
+                                        {{ stack.name }}
+                                        <i v-if="stack.web_ui_url" class="fas fa-external-link-alt" style="font-size: 12px; margin-left: 5px;"></i>
                                     </span>
-                                </span>
-                                <!-- Server badge for remote stacks -->
-                                <span v-if="!stack.is_local" class="server-badge">
-                                    <i class="fas fa-server"></i> {{ stack.peer_name }}
-                                </span>
+                                    <!-- Server badge for remote stacks -->
+                                    <span v-if="!stack.is_local" class="server-badge">
+                                        <i class="fas fa-server"></i> {{ stack.peer_name }}
+                                    </span>
+                                </div>
                             </div>
-                            <div style="display: flex; align-items: center; gap: 10px;">
+                            
+                            <!-- Second row: collapse button and status badges -->
+                            <div class="card-badges-row">
                                 <!-- Collapse button -->
-                                <button class="btn btn-sm" 
+                                <button class="btn btn-sm btn-collapse" 
                                         @click="collapsedStacks[stack.name] = !collapsedStacks[stack.name]; saveCollapsedState()"
-                                        style="padding: 4px 8px; background: rgba(148, 163, 184, 0.2);">
+                                        :title="collapsedStacks[stack.name] ? 'Expand' : 'Collapse'">
                                     <i class="fas" :class="collapsedStacks[stack.name] ? 'fa-chevron-down' : 'fa-chevron-up'"></i>
                                 </button>
                                 
@@ -1337,16 +1412,31 @@
                                     <span v-else-if="getStackHealth(stack) === 'unhealthy'">Unhealthy</span>
                                     <span v-else-if="getStackHealth(stack) === 'starting'">Starting</span>
                                 </span>
+                            </div>
+                            
+                            <!-- Third row: Tags, update badge, uptime -->
+                            <div class="card-meta-row">
+                                <!-- Tag badges -->
+                                <div v-if="stack.tags && stack.tags.length > 0" style="display: flex; gap: 5px; flex-wrap: wrap;">
+                                    <span v-for="tag in stack.tags" :key="tag" 
+                                          @click="filterMode = 'tag:' + tag"
+                                          class="tag-badge"
+                                          :title="'Filter by: ' + tag">
+                                        {{ tag }}
+                                    </span>
+                                </div>
                                 
-                                <!-- Fresh update badge (updated within 24h) -->
-                                <span v-if="stack.updated_recently" class="fresh-badge" :title="'Last updated ' + formatUpdateTime(stack)">
-                                    <i class="fas fa-sparkles"></i> Updated {{ formatUpdateAge(stack.update_age_hours) }}
-                                </span>
-                                
-                                <!-- Uptime -->
-                                <span v-if="stack.status === 'running' && getStackUptime(stack)" style="font-size: 12px; color: #94a3b8;">
-                                    <i class="fas fa-clock"></i> {{ getStackUptime(stack) }}
-                                </span>
+                                <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-left: auto;">
+                                    <!-- Fresh update badge (updated within 24h) -->
+                                    <span v-if="stack.updated_recently" class="fresh-badge" :title="'Last updated ' + formatUpdateTime(stack)">
+                                        <i class="fas fa-sparkles"></i> Updated {{ formatUpdateAge(stack.update_age_hours) }}
+                                    </span>
+                                    
+                                    <!-- Uptime -->
+                                    <span v-if="stack.status === 'running' && getStackUptime(stack)" style="font-size: 12px; color: #94a3b8; white-space: nowrap;">
+                                        <i class="fas fa-clock"></i> {{ getStackUptime(stack) }}
+                                    </span>
+                                </div>
                             </div>
                         </div>
 
@@ -1365,6 +1455,10 @@
                             <div class="stack-info-row" v-if="stack.status === 'running'">
                                 <span class="stack-info-label">RAM:</span>
                                 <span class="stack-info-value">{{ stack.stats.mem_usage_mb }} MB ({{ stack.stats.mem_percent }}%)</span>
+                            </div>
+                            <div class="stack-info-row">
+                                <span class="stack-info-label">AppData:</span>
+                                <span class="stack-info-value">{{ getAppdataSize(stack.name) }}</span>
                             </div>
                             <div class="stack-info-row" v-if="stack.status === 'running'">
                                 <span class="stack-info-label">Network:</span>
@@ -1401,35 +1495,35 @@
                             <button class="btn btn-danger" v-if="stack.status === 'running'" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'stop') : remoteStackOperation(stack, 'stop')">
                                 <i class="fas fa-stop"></i> Stop
                             </button>
-                            <button class="btn btn-warning" v-if="stack.status === 'running'" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'restart') : remoteStackOperation(stack, 'restart')">
+                            <button class="btn btn-restart" v-if="stack.status === 'running'" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'restart') : remoteStackOperation(stack, 'restart')">
                                 <i class="fas fa-redo"></i> Restart
                             </button>
                             <button class="btn btn-warning" v-if="stack.update_available" @click="updateStack(stack.name)">
                                 <i class="fas fa-arrow-up"></i> Update Now
                             </button>
-                            <button class="btn btn-primary" @click="checkUpdates(stack.name)">
+                            <button class="btn btn-info" @click="checkUpdates(stack.name)">
                                 <i class="fas fa-sync"></i> Check
                             </button>
                             <button class="btn btn-scan" @click="scanContainer(stack)" v-if="stack.containers.length > 0 && stack.is_local" title="Scan for vulnerabilities">
                                 <i class="fas fa-shield-alt"></i> Scan
                             </button>
                             
-                            <button class="btn btn-primary" @click="quickSetMode(stack.name, 'check')" :disabled="!stack.is_local" :title="!stack.is_local ? 'Configure on remote DockUp instance' : ''">
+                            <button class="btn btn-info" @click="quickSetMode(stack.name, 'check')" :disabled="!stack.is_local" :title="!stack.is_local ? 'Configure on remote DockUp instance' : ''">
                                 <i class="fas fa-search"></i> Check Only
                             </button>
                             <button class="btn btn-success" @click="quickSetMode(stack.name, 'auto')" :disabled="!stack.is_local" :title="!stack.is_local ? 'Configure on remote DockUp instance' : ''">
                                 <i class="fas fa-magic"></i> Auto Update
                             </button>
-                            <button class="btn btn-primary" @click="editStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Cannot edit remote stacks' : ''">
+                            <button class="btn btn-edit" @click="editStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Cannot edit remote stacks' : ''">
                                 <i class="fas fa-edit"></i> Edit
                             </button>
-                            <button class="btn btn-secondary" @click="viewLogs(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'View logs on remote DockUp instance' : ''">
+                            <button class="btn btn-logs" @click="viewLogs(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'View logs on remote DockUp instance' : ''">
                                 <i class="fas fa-file-alt"></i> Logs
                             </button>
                             <button class="btn btn-secondary" @click="configureSchedule(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Configure schedule on remote DockUp instance' : ''">
                                 <i class="fas fa-clock"></i> Schedule
                             </button>
-                            <button class="btn btn-warning" @click="deleteImagesOnly(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Manage images on remote DockUp instance' : ''">
+                            <button class="btn btn-delete-images" @click="deleteImagesOnly(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Manage images on remote DockUp instance' : ''">
                                 <i class="fas fa-images"></i> Delete Images
                             </button>
                             <button class="btn btn-secondary" @click="cloneStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Cannot clone remote stacks' : ''">
@@ -1450,31 +1544,40 @@
                     
                     <div class="card inactive-stack" v-for="stack in filteredInactiveStacks" :key="stack.name">
                         <div class="card-header">
-                            <div class="card-title" style="color: #64748b;">
-                                <i class="fas fa-layer-group"></i>
-                                <span @click="openStackWebUI(stack)" 
-                                      :style="{cursor: stack.web_ui_url ? 'pointer' : 'default', color: stack.web_ui_url ? '#00d9ff' : '#64748b'}"
-                                      :title="stack.web_ui_url || 'No Web UI configured'">
-                                    {{ stack.name }}
-                                    <i v-if="stack.web_ui_url" class="fas fa-external-link-alt" style="font-size: 12px; margin-left: 5px;"></i>
+                            <!-- First row: stack name only -->
+                            <div class="card-title-row-top">
+                                <div class="card-title" style="color: #64748b;">
+                                    <span @click="openStackWebUI(stack)" 
+                                          :style="{cursor: stack.web_ui_url ? 'pointer' : 'default', color: stack.web_ui_url ? '#00d9ff' : '#64748b'}"
+                                          :title="stack.web_ui_url || 'No Web UI configured'">
+                                        {{ stack.name }}
+                                        <i v-if="stack.web_ui_url" class="fas fa-external-link-alt" style="font-size: 12px; margin-left: 5px;"></i>
+                                    </span>
+                                    <!-- Server badge for remote stacks -->
+                                    <span v-if="!stack.is_local" class="server-badge">
+                                        <i class="fas fa-server"></i> {{ stack.peer_name }}
+                                    </span>
+                                </div>
+                            </div>
+                            
+                            <!-- Second row: status badge -->
+                            <div class="card-badges-row">
+                                <span class="status-badge" style="background: rgba(100, 116, 139, 0.2); color: #64748b;">
+                                    Never Started
                                 </span>
-                                <!-- Tag badges -->
-                                <span v-if="stack.tags && stack.tags.length > 0" style="display: inline-flex; gap: 5px; margin-left: 10px;">
+                            </div>
+                            
+                            <!-- Third row: Tags -->
+                            <div class="card-meta-row" v-if="stack.tags && stack.tags.length > 0">
+                                <div style="display: flex; gap: 5px; flex-wrap: wrap;">
                                     <span v-for="tag in stack.tags" :key="tag" 
                                           @click="filterMode = 'tag:' + tag"
                                           class="tag-badge"
                                           :title="'Filter by: ' + tag">
                                         {{ tag }}
                                     </span>
-                                </span>
-                                <!-- Server badge for remote stacks -->
-                                <span v-if="!stack.is_local" class="server-badge">
-                                    <i class="fas fa-server"></i> {{ stack.peer_name }}
-                                </span>
+                                </div>
                             </div>
-                            <span class="status-badge" style="background: rgba(100, 116, 139, 0.2); color: #64748b;">
-                                Never Started
-                            </span>
                         </div>
 
                         <div class="stack-info">
@@ -1488,7 +1591,7 @@
                             <button class="btn btn-success" @click="stackOperationWithTerminal(stack.name, 'up')">
                                 <i class="fas fa-play"></i> Start
                             </button>
-                            <button class="btn btn-primary" @click="editStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Cannot edit remote stacks' : ''">
+                            <button class="btn btn-edit" @click="editStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Cannot edit remote stacks' : ''">
                                 <i class="fas fa-edit"></i> Edit
                             </button>
                             <button class="btn btn-danger" @click="confirmDeleteStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Delete on remote DockUp instance' : ''">
@@ -1562,7 +1665,7 @@
                                         </div>
                                     </td>
                                     <td style="padding: 12px;">
-                                        <button class="btn btn-danger btn-sm" @click="deleteImage(image.id, image.tag)" v-if="!image.in_use">
+                                        <button class="btn btn-delete-images btn-sm" @click="deleteImage(image.id, image.tag)" v-if="!image.in_use">
                                             <i class="fas fa-trash"></i>
                                         </button>
                                     </td>
@@ -3194,6 +3297,7 @@
                     webUiUrl: '',
                     dockerHubRateLimit: null,
                     collapsedStacks: {},  // Track which stacks are collapsed
+                    appdataSizes: {},  // Cache appdata sizes: {stack_name: {size_gb, last_updated}}
                     // Networks
                     networks: [],
                     networkInterfaces: [],
@@ -3335,6 +3439,7 @@
                 this.checkVersion(); // Check for updates
                 this.loadHostStats();
                 this.loadDockerHubRateLimit();
+                this.loadAppdataSizes(); // Load appdata sizes
                 this.connectWebSocket();
                 
                 // Setup polling based on configured intervals (runs after settings loaded)
@@ -3344,6 +3449,11 @@
                 setInterval(() => {
                     this.loadDockerHubRateLimit();
                 }, 300000);
+                
+                // Refresh appdata sizes every 3 hours (matches backend calculation interval)
+                setInterval(() => {
+                    this.loadAppdataSizes();
+                }, 10800000); // 3 hours in milliseconds
             },
             beforeUnmount() {
                 // Clean up intervals
@@ -3365,6 +3475,24 @@
                         console.error('Failed to check version:', error);
                         this.version = 'unknown';
                     }
+                },
+                async loadAppdataSizes() {
+                    try {
+                        const response = await axios.get('/api/appdata/sizes');
+                        this.appdataSizes = response.data;
+                    } catch (error) {
+                        console.error('Failed to load appdata sizes:', error);
+                    }
+                },
+                getAppdataSize(stackName) {
+                    const data = this.appdataSizes[stackName];
+                    if (!data || data.size_gb === 0) {
+                        return 'N/A';
+                    }
+                    if (data.size_gb < 0.01) {
+                        return '< 0.01 GB';
+                    }
+                    return `${data.size_gb.toFixed(2)} GB`;
                 },
                 showUpdateInfo() {
                     if (this.updateAvailable) {
