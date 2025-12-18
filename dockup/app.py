@@ -5,7 +5,7 @@ Combines Dockge functionality with Tugtainer/Watchtower update capabilities
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.1.7"
+DOCKUP_VERSION = "1.1.8"
 
 import os
 import json
@@ -20,6 +20,7 @@ import bcrypt
 import requests
 import secrets
 import fcntl
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -565,8 +566,22 @@ host_monitor_status = {  # Track host monitoring failures
 websocket_clients = []
 stack_stats_cache = {}  # Cache for stack stats
 network_stats_cache = {}  # Cache for network bytes tracking (for rate calculation)
+appdata_size_cache = {}  # Cache for appdata sizes (stack_name: {size_gb, last_updated})
 peer_sessions = {}  # Cache for peer authentication sessions
 scheduler = None  # Global APScheduler instance
+
+# Performance optimization caches
+stacks_list_cache = {
+    'data': None,
+    'timestamp': 0,
+    'ttl': 2  # Cache stack list for 2 seconds
+}
+all_containers_cache = {
+    'data': None,
+    'timestamp': 0,
+    'ttl': 5  # Cache all containers for 5 seconds
+}
+stats_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix='stats-')  # For parallel stats collection
 
 # Initialize Apprise
 apobj = apprise.Apprise()
@@ -1303,6 +1318,92 @@ def check_host_health():
         print(f"Error checking host health: {e}")
 
 
+def calculate_appdata_sizes():
+    """Calculate actual volume bind mount sizes for all stacks (runs every 3 hours)"""
+    global appdata_size_cache
+    
+    try:
+        print("Starting appdata size calculation...")
+        
+        # Get all stacks
+        stacks_dir = Path(STACKS_DIR)
+        if not stacks_dir.exists():
+            print("Stacks directory not found")
+            return
+        
+        stack_names = [d.name for d in stacks_dir.iterdir() if d.is_dir()]
+        
+        for stack_name in stack_names:
+            try:
+                # Get containers for this stack
+                containers = docker_client.containers.list(
+                    all=True,
+                    filters={'label': f'com.docker.compose.project={stack_name}'}
+                )
+                
+                if not containers:
+                    appdata_size_cache[stack_name] = {
+                        'size_gb': 0,
+                        'last_updated': datetime.now(pytz.UTC).isoformat()
+                    }
+                    continue
+                
+                total_size_bytes = 0
+                bind_mounts_found = False
+                
+                # Get all bind mounts from all containers in this stack
+                for container in containers:
+                    mounts = container.attrs.get('Mounts', [])
+                    
+                    for mount in mounts:
+                        # Only process bind mounts (not named volumes)
+                        if mount['Type'] == 'bind':
+                            bind_mounts_found = True
+                            source_path = mount['Source']
+                            
+                            # Check if path exists and calculate size
+                            if os.path.exists(source_path):
+                                try:
+                                    # Use du command for accurate size
+                                    result = subprocess.run(
+                                        ['du', '-sb', source_path],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=60
+                                    )
+                                    
+                                    if result.returncode == 0:
+                                        size_bytes = int(result.stdout.split()[0])
+                                        total_size_bytes += size_bytes
+                                        print(f"  {stack_name} - {source_path}: {size_bytes / (1024**3):.2f} GB")
+                                    
+                                except subprocess.TimeoutExpired:
+                                    print(f"  Timeout calculating size for {source_path}")
+                                except Exception as e:
+                                    print(f"  Error calculating size for {source_path}: {e}")
+                
+                # Convert to GB and cache
+                size_gb = total_size_bytes / (1024**3)
+                
+                appdata_size_cache[stack_name] = {
+                    'size_gb': round(size_gb, 2),
+                    'last_updated': datetime.now(pytz.UTC).isoformat(),
+                    'has_binds': bind_mounts_found
+                }
+                
+                print(f"AppData size for {stack_name}: {size_gb:.2f} GB")
+                
+            except Exception as e:
+                print(f"Error processing {stack_name}: {e}")
+        
+        print(f"AppData size calculation complete. Cached {len(appdata_size_cache)} stacks")
+        
+    except Exception as e:
+        print(f"Error in calculate_appdata_sizes: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 def import_orphan_containers_as_stacks():
     """Automatically detect and import containers without com.docker.compose.project label"""
     try:
@@ -1497,14 +1598,37 @@ def check_port_conflicts(stack_name, compose_content):
     return conflicts
 
 
-def get_stack_stats(stack_name):
-    """Get CPU and RAM usage for a stack"""
+def get_all_containers_cached():
+    """Get all Docker containers with caching to reduce API calls"""
+    global all_containers_cache
+    
+    current_time = time.time()
+    if (all_containers_cache['data'] is not None and 
+        current_time - all_containers_cache['timestamp'] < all_containers_cache['ttl']):
+        return all_containers_cache['data']
+    
+    try:
+        all_containers = docker_client.containers.list(all=True)
+        all_containers_cache['data'] = all_containers
+        all_containers_cache['timestamp'] = current_time
+        return all_containers
+    except Exception as e:
+        print(f"Error fetching containers: {e}")
+        return all_containers_cache.get('data', [])
+
+
+def get_stack_stats(stack_name, containers_list=None):
+    """Get CPU and RAM usage for a stack - optimized with optional pre-fetched containers"""
     global network_stats_cache
     
     try:
-        containers = docker_client.containers.list(
-            filters={'label': f'com.docker.compose.project={stack_name}'}
-        )
+        # Use pre-fetched containers if provided, otherwise fetch
+        if containers_list is None:
+            all_containers = get_all_containers_cached()
+            containers = [c for c in all_containers 
+                         if c.labels.get('com.docker.compose.project') == stack_name and c.status == 'running']
+        else:
+            containers = containers_list
         
         total_cpu = 0.0
         total_mem = 0
@@ -1591,6 +1715,118 @@ def get_stack_stats(stack_name):
         }
 
 
+def get_container_stats_parallel(container):
+    """Fetch stats for a single container (for parallel execution)"""
+    try:
+        return container, container.stats(stream=False)
+    except Exception as e:
+        print(f"Error getting stats for {container.name}: {e}")
+        return container, None
+
+
+def get_stack_stats_batch(stack_containers_map):
+    """
+    Get stats for multiple stacks in parallel
+    Args:
+        stack_containers_map: dict of {stack_name: [containers]}
+    Returns:
+        dict of {stack_name: stats_dict}
+    """
+    global network_stats_cache
+    
+    results = {}
+    current_time = time.time()
+    
+    # Flatten all containers into a list for parallel fetching
+    all_containers = []
+    container_to_stack = {}
+    
+    for stack_name, containers in stack_containers_map.items():
+        for container in containers:
+            all_containers.append(container)
+            container_to_stack[container.id] = stack_name
+    
+    # Fetch all stats in parallel
+    stats_futures = list(stats_executor.map(get_container_stats_parallel, all_containers))
+    
+    # Organize results by stack
+    stack_data = {}
+    for container, stats_result in stats_futures:
+        if stats_result is None:
+            continue
+            
+        stack_name = container_to_stack[container.id]
+        if stack_name not in stack_data:
+            stack_data[stack_name] = {
+                'cpu': 0.0,
+                'mem': 0,
+                'mem_limit': 0,
+                'rx_bytes': 0,
+                'tx_bytes': 0
+            }
+        
+        try:
+            # Calculate CPU percentage
+            cpu_delta = stats_result['cpu_stats']['cpu_usage']['total_usage'] - stats_result['precpu_stats']['cpu_usage']['total_usage']
+            system_delta = stats_result['cpu_stats']['system_cpu_usage'] - stats_result['precpu_stats']['system_cpu_usage']
+            cpu_count = stats_result['cpu_stats'].get('online_cpus', 1)
+            
+            if system_delta > 0 and cpu_delta > 0:
+                cpu_percent = (cpu_delta / system_delta) * cpu_count * 100.0
+                stack_data[stack_name]['cpu'] += cpu_percent
+            
+            # Memory
+            stack_data[stack_name]['mem'] += stats_result['memory_stats'].get('usage', 0)
+            stack_data[stack_name]['mem_limit'] += stats_result['memory_stats'].get('limit', 0)
+            
+            # Network
+            networks = stats_result.get('networks', {})
+            for net_name, net_stats in networks.items():
+                stack_data[stack_name]['rx_bytes'] += net_stats.get('rx_bytes', 0)
+                stack_data[stack_name]['tx_bytes'] += net_stats.get('tx_bytes', 0)
+        except Exception as e:
+            print(f"Error processing stats for {container.name}: {e}")
+    
+    # Calculate final stats for each stack
+    for stack_name, data in stack_data.items():
+        # Calculate network rate
+        net_rx_mbps = 0.0
+        net_tx_mbps = 0.0
+        
+        cache_key = stack_name
+        if cache_key in network_stats_cache:
+            prev_data = network_stats_cache[cache_key]
+            time_delta = current_time - prev_data['time']
+            
+            if time_delta > 0:
+                rx_bytes_per_sec = (data['rx_bytes'] - prev_data['rx_bytes']) / time_delta
+                tx_bytes_per_sec = (data['tx_bytes'] - prev_data['tx_bytes']) / time_delta
+                
+                net_rx_mbps = round((rx_bytes_per_sec * 8) / 1_000_000, 2)
+                net_tx_mbps = round((tx_bytes_per_sec * 8) / 1_000_000, 2)
+                
+                net_rx_mbps = max(0, net_rx_mbps)
+                net_tx_mbps = max(0, net_tx_mbps)
+        
+        # Store current values
+        network_stats_cache[cache_key] = {
+            'time': current_time,
+            'rx_bytes': data['rx_bytes'],
+            'tx_bytes': data['tx_bytes']
+        }
+        
+        results[stack_name] = {
+            'cpu_percent': round(data['cpu'], 2),
+            'mem_usage_mb': round(data['mem'] / (1024 * 1024), 2),
+            'mem_limit_mb': round(data['mem_limit'] / (1024 * 1024), 2),
+            'mem_percent': round((data['mem'] / data['mem_limit'] * 100) if data['mem_limit'] > 0 else 0, 2),
+            'net_rx_mbps': net_rx_mbps,
+            'net_tx_mbps': net_tx_mbps
+        }
+    
+    return results
+
+
 def format_timestamp(timestamp_str):
     """Convert UTC timestamp to user's timezone"""
     if not timestamp_str:
@@ -1654,12 +1890,24 @@ def get_peer_session(peer_id):
     return session
 
 def get_stacks():
-    """Get all Docker Compose stacks by scanning the stacks directory (like Dockge)"""
+    """Get all Docker Compose stacks - optimized with container caching"""
     stacks = []
     stacks_dict = {}  # Use dict to avoid duplicates
     
     if not os.path.exists(STACKS_DIR):
         return stacks
+    
+    # Get all containers once (cached)
+    all_containers = get_all_containers_cached()
+    
+    # Group containers by stack name
+    containers_by_stack = {}
+    for container in all_containers:
+        stack_name = container.labels.get('com.docker.compose.project')
+        if stack_name:
+            if stack_name not in containers_by_stack:
+                containers_by_stack[stack_name] = []
+            containers_by_stack[stack_name].append(container)
     
     # First, check direct subdirectories (most common)
     try:
@@ -1706,51 +1954,46 @@ def get_stacks():
             with open(compose_file, 'r') as f:
                 compose_data = yaml.safe_load(f)
             
-            # Get containers for this stack (if any exist)
+            # Get containers for this stack from pre-fetched list
+            stack_containers = containers_by_stack.get(stack_name, [])
             containers = []
-            try:
-                stack_containers = docker_client.containers.list(
-                    all=True,
-                    filters={'label': f'com.docker.compose.project={stack_name}'}
-                )
-                for container in stack_containers:
-                    # Calculate uptime
-                    started_at = container.attrs.get('State', {}).get('StartedAt', '')
-                    uptime_str = ''
-                    if started_at and container.status == 'running':
-                        try:
-                            started = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
-                            uptime_delta = datetime.now(pytz.UTC) - started
-                            
-                            days = uptime_delta.days
-                            hours = uptime_delta.seconds // 3600
-                            minutes = (uptime_delta.seconds % 3600) // 60
-                            
-                            if days > 0:
-                                uptime_str = f"{days}d {hours}h"
-                            elif hours > 0:
-                                uptime_str = f"{hours}h {minutes}m"
-                            else:
-                                uptime_str = f"{minutes}m"
-                        except:
-                            uptime_str = ''
-                    
-                    # Get health status if available
-                    health_status = None
-                    state = container.attrs.get('State', {})
-                    if 'Health' in state:
-                        health_status = state['Health'].get('Status', 'none')
-                    
-                    containers.append({
-                        'id': container.id[:12],
-                        'name': container.name,
-                        'status': container.status,
-                        'health': health_status,  # Can be: healthy, unhealthy, starting, none (no healthcheck)
-                        'image': container.image.tags[0] if container.image.tags else container.image.id[:12],
-                        'uptime': uptime_str
-                    })
-            except Exception as e:
-                print(f"Error getting containers for {stack_name}: {e}")
+            
+            for container in stack_containers:
+                # Calculate uptime
+                started_at = container.attrs.get('State', {}).get('StartedAt', '')
+                uptime_str = ''
+                if started_at and container.status == 'running':
+                    try:
+                        started = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
+                        uptime_delta = datetime.now(pytz.UTC) - started
+                        
+                        days = uptime_delta.days
+                        hours = uptime_delta.seconds // 3600
+                        minutes = (uptime_delta.seconds % 3600) // 60
+                        
+                        if days > 0:
+                            uptime_str = f"{days}d {hours}h"
+                        elif hours > 0:
+                            uptime_str = f"{hours}h {minutes}m"
+                        else:
+                            uptime_str = f"{minutes}m"
+                    except:
+                        uptime_str = ''
+                
+                # Get health status if available
+                health_status = None
+                state = container.attrs.get('State', {})
+                if 'Health' in state:
+                    health_status = state['Health'].get('Status', 'none')
+                
+                containers.append({
+                    'id': container.id[:12],
+                    'name': container.name,
+                    'status': container.status,
+                    'health': health_status,
+                    'image': container.image.tags[0] if container.image.tags else container.image.id[:12],
+                    'uptime': uptime_str
+                })
             
             # Get schedule info
             schedule_info = schedules.get(stack_name, {
@@ -2448,6 +2691,22 @@ def setup_scheduler():
         except Exception as e:
             print(f"[Scheduler] Error adding host monitoring: {e}")
 
+    # AppData size calculation job (every 3 hours)
+    try:
+        scheduler.add_job(
+            calculate_appdata_sizes,
+            "interval",
+            hours=3,
+            id="appdata_sizes",
+            replace_existing=True
+        )
+        print("[Scheduler] Added appdata size calculation job (3h)")
+        
+        # Run once immediately on startup
+        calculate_appdata_sizes()
+    except Exception as e:
+        print(f"[Scheduler] Error adding appdata size job: {e}")
+
     return scheduler
 
 
@@ -2595,8 +2854,35 @@ def api_auth_change_password():
 
 @app.route('/api/stacks')
 def api_stacks():
-    """Get all stacks"""
-    return jsonify(get_stacks())
+    """Get all stacks with ETag caching"""
+    global stacks_list_cache
+    
+    # Check if cached data is still fresh
+    current_time = time.time()
+    if (stacks_list_cache['data'] is not None and 
+        current_time - stacks_list_cache['timestamp'] < stacks_list_cache['ttl']):
+        # Use cached data
+        stacks_data = stacks_list_cache['data']
+    else:
+        # Fetch fresh data
+        stacks_data = get_stacks()
+        stacks_list_cache['data'] = stacks_data
+        stacks_list_cache['timestamp'] = current_time
+    
+    # Generate ETag from data
+    etag = hashlib.md5(json.dumps(stacks_data, sort_keys=True).encode()).hexdigest()
+    
+    # Check if client has cached version
+    client_etag = request.headers.get('If-None-Match')
+    if client_etag == etag:
+        # Client has current version, return 304 Not Modified
+        return '', 304
+    
+    # Return fresh data with ETag
+    response = jsonify(stacks_data)
+    response.headers['ETag'] = etag
+    response.headers['Cache-Control'] = 'private, must-revalidate'
+    return response
 
 
 @app.route('/api/host/stats')
@@ -2652,6 +2938,13 @@ def api_docker_hub_rate_limit():
     if rate_limit:
         return jsonify(rate_limit)
     return jsonify({'error': 'Could not check rate limit'}), 500
+
+
+@app.route('/api/appdata/sizes')
+def api_appdata_sizes():
+    """Get appdata sizes for all stacks"""
+    global appdata_size_cache
+    return jsonify(appdata_size_cache)
 
 
 @app.route('/api/container/<container_id>/badge')
@@ -3417,30 +3710,43 @@ def auto_prune_images():
 
 
 def update_stats_background():
-    """Background thread to update stack stats every 5 seconds"""
+    """Background thread to update stack stats every 5 seconds - optimized with batch processing"""
     while True:
         try:
-            # Get list of running stacks
-            stacks = get_stacks()
+            # Get all containers once (uses cache)
+            all_containers = get_all_containers_cached()
             
-            for stack in stacks:
-                if stack['running']:
-                    # Update stats for running stacks only
-                    stats = get_stack_stats(stack['name'])
-                    stack_stats_cache[stack['name']] = stats
-                else:
-                    # Clear stats for stopped stacks
-                    if stack['name'] in stack_stats_cache:
-                        stack_stats_cache[stack['name']] = {
-                            'cpu_percent': 0,
-                            'mem_usage_mb': 0,
-                            'mem_limit_mb': 0,
-                            'mem_percent': 0,
-                            'net_rx_mbps': 0,
-                            'net_tx_mbps': 0
-                        }
+            # Group running containers by stack
+            stack_containers = {}
+            for container in all_containers:
+                if container.status == 'running':
+                    stack_name = container.labels.get('com.docker.compose.project')
+                    if stack_name:
+                        if stack_name not in stack_containers:
+                            stack_containers[stack_name] = []
+                        stack_containers[stack_name].append(container)
             
-            # Wait 5 seconds before next update (faster updates)
+            # Batch fetch stats for all running stacks in parallel
+            if stack_containers:
+                batch_stats = get_stack_stats_batch(stack_containers)
+                
+                # Update cache with batch results
+                for stack_name, stats in batch_stats.items():
+                    stack_stats_cache[stack_name] = stats
+            
+            # Clear stats for stopped stacks (stacks that had containers but are now stopped)
+            stopped_stacks = set(stack_stats_cache.keys()) - set(stack_containers.keys())
+            for stack_name in stopped_stacks:
+                stack_stats_cache[stack_name] = {
+                    'cpu_percent': 0,
+                    'mem_usage_mb': 0,
+                    'mem_limit_mb': 0,
+                    'mem_percent': 0,
+                    'net_rx_mbps': 0,
+                    'net_tx_mbps': 0
+                }
+            
+            # Wait 5 seconds before next update
             time.sleep(5)
         except Exception as e:
             print(f"Stats update error: {e}")
