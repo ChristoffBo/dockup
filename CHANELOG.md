@@ -1,3 +1,5 @@
+## latest (2025-12-18)
+fixed an issue with the docker run parser
 ## latest (2025-12-17)
 performance update, should see around 80 percent less API calls to docker.
 ## latest (2025-12-16)
