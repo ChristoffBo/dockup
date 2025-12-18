@@ -5,7 +5,7 @@ Combines Dockge functionality with Tugtainer/Watchtower update capabilities
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.1.8"
+DOCKUP_VERSION = "1.2.0"
 
 import os
 import json
@@ -52,6 +52,13 @@ def parse_docker_run_command(command: str) -> Tuple[Dict[str, Any], List[str]]:
     """
     warnings = []
     
+    # Clean up multi-line commands (bash line continuations)
+    # Replace backslash-newline with space
+    command = command.replace('\\\n', ' ').replace('\\\r\n', ' ')
+    
+    # Remove extra whitespace and normalize
+    command = ' '.join(command.split())
+    
     # Remove 'docker run' prefix
     command = command.strip()
     if command.startswith('docker run'):
@@ -74,9 +81,14 @@ def parse_docker_run_command(command: str) -> Tuple[Dict[str, Any], List[str]]:
         'cap_add': [],
         'cap_drop': [],
         'devices': [],
+        'dns': [],  # Added
+        'tmpfs': [],  # Added
+        'ulimits': {},  # Added
     }
     
     named_volumes = set()
+    log_driver = None  # Added
+    log_opts = {}  # Added
     i = 0
     container_name = None
     image = None
@@ -213,6 +225,56 @@ def parse_docker_run_command(command: str) -> Tuple[Dict[str, Any], List[str]]:
                 compose['healthcheck'] = {}
             compose['healthcheck']['retries'] = int(tokens[i])
         
+        elif token == '--dns':
+            i += 1
+            compose['dns'].append(tokens[i])
+        
+        elif token == '--link':
+            i += 1
+            # links deprecated but still convert
+            link_value = tokens[i]
+            warnings.append(f"'--link' is deprecated, consider using networks instead")
+            if 'links' not in compose:
+                compose['links'] = []
+            compose['links'].append(link_value)
+        
+        elif token == '--tmpfs':
+            i += 1
+            compose['tmpfs'].append(tokens[i])
+        
+        elif token == '--log-driver':
+            i += 1
+            log_driver = tokens[i]
+        
+        elif token == '--log-opt':
+            i += 1
+            log_opt = tokens[i]
+            if '=' in log_opt:
+                key, val = log_opt.split('=', 1)
+                log_opts[key] = val
+        
+        elif token == '--ip':
+            i += 1
+            if 'networks' not in compose or not compose['networks']:
+                warnings.append("'--ip' requires a network to be specified, may not work correctly")
+            compose['ip'] = tokens[i]
+        
+        elif token == '--mac-address':
+            i += 1
+            compose['mac_address'] = tokens[i]
+        
+        elif token == '--ulimit':
+            i += 1
+            ulimit_str = tokens[i]
+            # Format: nofile=1024:1024 or nofile=1024
+            if '=' in ulimit_str:
+                ulimit_name, ulimit_val = ulimit_str.split('=', 1)
+                if ':' in ulimit_val:
+                    soft, hard = ulimit_val.split(':', 1)
+                    compose['ulimits'][ulimit_name] = {'soft': int(soft), 'hard': int(hard)}
+                else:
+                    compose['ulimits'][ulimit_name] = int(ulimit_val)
+        
         elif token.startswith('-'):
             # Unknown flag - skip it and next token if it doesn't start with -
             warnings.append(f"Unsupported flag '{token}' ignored")
@@ -248,6 +310,12 @@ def parse_docker_run_command(command: str) -> Tuple[Dict[str, Any], List[str]]:
     # Add command if present
     if command_args:
         compose['command'] = command_args
+    
+    # Add logging configuration if present
+    if log_driver:
+        compose['logging'] = {'driver': log_driver}
+        if log_opts:
+            compose['logging']['options'] = log_opts
     
     # Clean up empty lists/dicts
     compose = {k: v for k, v in compose.items() if v}
