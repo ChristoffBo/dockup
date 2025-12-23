@@ -26,14 +26,14 @@ RUN pip install --no-cache-dir \
     flask==3.1.2 \
     flask-sock==0.7.0 \
     docker==7.1.0 \
-    pyyaml==6.0.2 \
-    apscheduler==3.10.4 \
-    apprise==1.9.0 \
-    croniter==5.0.1 \
-    requests==2.32.3 \
-    pytz==2024.2 \
-    psutil==6.1.0 \
-    bcrypt==4.2.1
+    pyyaml==6.0.3 \
+    apscheduler==3.11.1 \
+    apprise==1.9.6 \
+    croniter==6.0.0 \
+    requests==2.32.5 \
+    pytz==2025.2 \
+    psutil==7.1.3 \
+    bcrypt==5.0.0
 
 # Create directories
 RUN mkdir -p /app/static /app/data /stacks
