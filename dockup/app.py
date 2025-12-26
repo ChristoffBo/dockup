@@ -12,7 +12,7 @@ PERFORMANCE OPTIMIZATIONS:
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.2.3"
+DOCKUP_VERSION = "1.2.5"
 
 import os
 import json
@@ -40,10 +40,55 @@ from apscheduler.executors.pool import ThreadPoolExecutor as APThreadPoolExecuto
 from croniter import croniter
 import apprise
 import pytz
+import logging
+from logging.handlers import TimedRotatingFileHandler
 
 import shlex
 import re
 from typing import Dict, List, Tuple, Any
+
+# ============================================================================
+# LOGGING SETUP - 24-hour rotation with 7 days retention
+# ============================================================================
+
+# Create logs directory if it doesn't exist
+LOG_DIR = '/app/logs'
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# Setup rotating file handler - rotates daily at midnight, keeps 7 days
+log_file = os.path.join(LOG_DIR, 'dockup.log')
+file_handler = TimedRotatingFileHandler(
+    filename=log_file,
+    when='midnight',      # Rotate at midnight
+    interval=1,           # Every 1 day
+    backupCount=7,        # Keep 7 days of logs
+    encoding='utf-8'
+)
+file_handler.suffix = '%Y-%m-%d'  # Add date suffix to rotated logs
+
+# Console handler for stdout
+console_handler = logging.StreamHandler()
+
+# Setup logging format
+log_format = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+file_handler.setFormatter(log_format)
+console_handler.setFormatter(log_format)
+
+# Configure root logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+# Also configure Flask's logger
+flask_logger = logging.getLogger('werkzeug')
+flask_logger.setLevel(logging.INFO)
+flask_logger.addHandler(file_handler)
+
+logger.info(f"DockUp {DOCKUP_VERSION} starting - Logs rotate daily, keeping 7 days")
 
 # ============================================================================
 # PERFORMANCE OPTIMIZATION: In-memory caches
@@ -88,6 +133,11 @@ update_status_lock = threading.Lock()
 
 # Health status dict lock - protects health_status from concurrent reads/writes
 health_status_lock = threading.Lock()
+
+# Security scan tracking - track active scans and timeouts
+active_scans = {}  # container_id -> {'start_time': time, 'process': subprocess.Popen}
+active_scans_lock = threading.Lock()
+SCAN_TIMEOUT = 600  # 10 minutes maximum scan time
 
 
 def get_metadata_cached(stack_name):
@@ -161,7 +211,7 @@ def get_compose_services_cached(stack_name, compose_file_path):
             
             return services
         except Exception as e:
-            print(f"Error reading compose file {compose_file_path}: {e}")
+            logger.error(f"Error reading compose file {compose_file_path}: {e}")
             return []
 
 
@@ -253,6 +303,35 @@ def get_host_stats_cached():
             }
             get_host_stats_cached.last_time = current_time
             
+            # Try to get temperature sensors (may not be available on all systems)
+            temp_celsius = None
+            try:
+                if hasattr(psutil, 'sensors_temperatures'):
+                    temps = psutil.sensors_temperatures()
+                    if temps:
+                        # Try common sensor names, prioritize CPU/core temps
+                        for name in ['coretemp', 'k10temp', 'cpu_thermal', 'soc_thermal']:
+                            if name in temps:
+                                sensor_list = temps[name]
+                                if sensor_list:
+                                    # Get the first sensor reading or average if multiple
+                                    temp_readings = [s.current for s in sensor_list if s.current]
+                                    if temp_readings:
+                                        temp_celsius = round(sum(temp_readings) / len(temp_readings), 1)
+                                        break
+                        
+                        # If no known sensors found, try first available sensor
+                        if temp_celsius is None:
+                            for sensor_name, sensor_list in temps.items():
+                                if sensor_list:
+                                    temp_readings = [s.current for s in sensor_list if s.current]
+                                    if temp_readings:
+                                        temp_celsius = round(sum(temp_readings) / len(temp_readings), 1)
+                                        break
+            except Exception as e:
+                # Temperature reading failed - not critical, continue without it
+                logger.debug(f"Temperature sensor reading unavailable: {e}")
+            
             stats_data = {
                 'cpu_percent': round(cpu_percent, 1),
                 'cpu_count': psutil.cpu_count(),
@@ -264,7 +343,8 @@ def get_host_stats_cached():
                 'disk_percent': round(disk.percent, 1),
                 'hostname': 'Host System',
                 'net_rx_mbps': round(net_rx_mbps, 2),
-                'net_tx_mbps': round(net_tx_mbps, 2)
+                'net_tx_mbps': round(net_tx_mbps, 2),
+                'temp_celsius': temp_celsius  # May be None if sensors unavailable
             }
             
             # Update cache
@@ -274,7 +354,7 @@ def get_host_stats_cached():
             return stats_data
             
         except Exception as e:
-            print(f"Error getting host stats: {e}")
+            logger.error(f"Error getting host stats: {e}")
             return host_stats_cache.get('data')  # Return last good data if available
 
 
@@ -324,10 +404,10 @@ def health_check_background_worker():
             for stack_name, containers in stacks_to_check.items():
                 check_stack_health(stack_name, containers)
             
-            print(f"Health check completed for {len(stacks_to_check)} stacks")
+            logger.info(f"Health check completed for {len(stacks_to_check)} stacks")
             
         except Exception as e:
-            print(f"Error in health check background worker: {e}")
+            logger.error(f"Error in health check background worker: {e}")
             time.sleep(60)
 
 
@@ -909,7 +989,7 @@ SCAN_RESULTS_FILE = os.path.join(DATA_DIR, 'scan_results.json')
 Path(STACKS_DIR).mkdir(parents=True, exist_ok=True)
 Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
 Path(TRIVY_CACHE_DIR).mkdir(parents=True, exist_ok=True)
-print(f"Trivy cache directory: {TRIVY_CACHE_DIR}")
+logger.info(f"Trivy cache directory: {TRIVY_CACHE_DIR}")
 # Docker client
 docker_client = docker.from_env()
 
@@ -1036,7 +1116,15 @@ def load_schedules():
                 schedules = json.load(f)
         else:
             schedules = {}
-            save_schedules()
+            # Don't call save_schedules() here - we already have the lock
+            # Just write directly to avoid deadlock
+            try:
+                with open(SCHEDULES_FILE, 'w') as f:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    json.dump(schedules, f, indent=2)
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except Exception as e:
+                logger.error(f"Error creating schedules file: {e}")
 
 
 def save_schedules():
@@ -1049,7 +1137,7 @@ def save_schedules():
             json.dump(schedules_snapshot, f, indent=2)
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     except Exception as e:
-        print(f"Error saving schedules: {e}")
+        logger.error(f"Error saving schedules: {e}")
 
 
 def load_health_status():
@@ -1073,7 +1161,7 @@ def save_health_status():
             json.dump(health_status_snapshot, f, indent=2)
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     except Exception as e:
-        print(f"Error saving health status: {e}")
+        logger.error(f"Error saving health status: {e}")
 
 
 def load_update_history():
@@ -1094,7 +1182,7 @@ def save_update_history():
             json.dump(update_history, f, indent=2)
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     except Exception as e:
-        print(f"Error saving update history: {e}")
+        logger.error(f"Error saving update history: {e}")
 
 
 def get_update_status_file():
@@ -1113,11 +1201,11 @@ def cleanup_old_status_files():
                 if filepath != current_file:
                     try:
                         os.remove(filepath)
-                        print(f"Cleaned up orphaned status file: {filename}")
+                        logger.info(f"Cleaned up orphaned status file: {filename}")
                     except OSError as e:
-                        print(f"⚠ Could not remove orphaned status file {filename}: {e}")
+                        logger.info(f"⚠ Could not remove orphaned status file {filename}: {e}")
     except Exception as e:
-        print(f"Error cleaning up status files: {e}")
+        logger.error(f"Error cleaning up status files: {e}")
 
 
 def load_update_status():
@@ -1130,10 +1218,10 @@ def load_update_status():
                 with open(status_file, 'r') as f:
                     update_status = json.load(f)
             except json.JSONDecodeError as e:
-                print(f"⚠ Update status file corrupted, resetting: {e}")
+                logger.info(f"⚠ Update status file corrupted, resetting: {e}")
                 update_status = {}
             except Exception as e:
-                print(f"⚠ Could not load update status: {e}")
+                logger.info(f"⚠ Could not load update status: {e}")
                 update_status = {}
         else:
             update_status = {}
@@ -1153,7 +1241,7 @@ def save_update_status():
             json.dump(update_status_snapshot, f, indent=2)
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     except Exception as e:
-        print(f"Error saving update status: {e}")
+        logger.error(f"Error saving update status: {e}")
 
 
 def get_stack_metadata(stack_name):
@@ -1165,10 +1253,10 @@ def get_stack_metadata(stack_name):
             with open(meta_file, 'r') as f:
                 return json.load(f)
         except json.JSONDecodeError as e:
-            print(f"⚠ Metadata corrupted for {stack_name}, resetting: {e}")
+            logger.info(f"⚠ Metadata corrupted for {stack_name}, resetting: {e}")
             return {}
         except Exception as e:
-            print(f"⚠ Could not load metadata for {stack_name}: {e}")
+            logger.info(f"⚠ Could not load metadata for {stack_name}: {e}")
             return {}
     return {}
 
@@ -1268,7 +1356,7 @@ def check_docker_hub_rate_limit():
         }
         
     except Exception as e:
-        print(f"Error checking Docker Hub rate limit: {e}")
+        logger.error(f"Error checking Docker Hub rate limit: {e}")
         return None
 
 
@@ -1276,26 +1364,67 @@ def check_docker_hub_rate_limit():
 vulnerability_scan_cache = {}  # Cache scan results: {image_name: {scan_data, timestamp}}
 
 
+def update_trivy_database():
+    """
+    Update Trivy vulnerability database
+    Should be run daily to keep vulnerability data fresh
+    """
+    try:
+        logger.info("Updating Trivy vulnerability database...")
+        
+        env = os.environ.copy()
+        env['TRIVY_CACHE_DIR'] = TRIVY_CACHE_DIR
+        
+        result = subprocess.run(
+            ['trivy', 'image', '--download-db-only'],
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 minute timeout for DB download
+            env=env
+        )
+        
+        if result.returncode == 0:
+            logger.info("✓ Trivy database updated successfully")
+            
+            # Send notification if configured
+            send_notification(
+                "Trivy Database Updated",
+                "Vulnerability database updated successfully",
+                notify_type='info'
+            )
+            return True
+        else:
+            logger.error(f"Failed to update Trivy database: {result.stderr}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        logger.error("Trivy database update timed out after 10 minutes")
+        return False
+    except Exception as e:
+        logger.error(f"Error updating Trivy database: {e}")
+        return False
+
+
 def scan_image_vulnerabilities(image_name):
     """Scan Docker image for vulnerabilities using Trivy"""
     try:
-        print(f"Scanning image: {image_name}")
+        logger.info(f"Scanning image: {image_name}")
         
         # Run Trivy scan with custom cache dir
         env = os.environ.copy()
         env['TRIVY_CACHE_DIR'] = TRIVY_CACHE_DIR
         
         result = subprocess.run(
-            ['trivy', 'image', '--format', 'json', '--quiet', image_name],
+            ['trivy', 'image', '--format', 'json', '--skip-db-update', '--quiet', image_name],
             capture_output=True,
             text=True,
-            timeout=300,  # 5 minute timeout
+            timeout=600,  # 10 minute timeout (increased from 5 min)
             env=env
         )
         
         if result.returncode > 1:
             # Exit code > 1 means execution error
-            print(f"Trivy execution error for {image_name}: {result.stderr}")
+            logger.info(f"Trivy execution error for {image_name}: {result.stderr}")
             return None
         
         # Parse JSON output
@@ -1356,13 +1485,13 @@ def scan_image_vulnerabilities(image_name):
         return scan_result
         
     except subprocess.TimeoutExpired:
-        print(f"Trivy scan timeout for {image_name}")
+        logger.info(f"Trivy scan timeout for {image_name}")
         return None
     except json.JSONDecodeError as e:
-        print(f"Failed to parse Trivy output for {image_name}: {e}")
+        logger.info(f"Failed to parse Trivy output for {image_name}: {e}")
         return None
     except Exception as e:
-        print(f"Error scanning {image_name}: {e}")
+        logger.error(f"Error scanning {image_name}: {e}")
         return None
 
 
@@ -1389,9 +1518,9 @@ def load_scan_results():
                         'data': data['data'],
                         'timestamp': data['timestamp']
                     }
-            print(f"Loaded {len(vulnerability_scan_cache)} cached scans")
+            logger.info(f"Loaded {len(vulnerability_scan_cache)} cached scans")
         except Exception as e:
-            print(f"Error loading scan results: {e}")
+            logger.error(f"Error loading scan results: {e}")
 
 
 def save_scan_results():
@@ -1406,7 +1535,7 @@ def save_scan_results():
         with open(SCAN_RESULTS_FILE, 'w') as f:
             json.dump(saved, f, indent=2)
     except Exception as e:
-        print(f"Error saving scan results: {e}")
+        logger.error(f"Error saving scan results: {e}")
 
 
 
@@ -1496,30 +1625,30 @@ def send_notification(title, message, notify_type='info'):
     """Send notification via configured services"""
     # Check notification preferences
     if not config.get('notify_on_check') and 'update available' in message.lower():
-        print(f"Notification skipped (notify_on_check=False): {title}")
+        logger.info(f"Notification skipped (notify_on_check=False): {title}")
         return
     if not config.get('notify_on_update') and 'updated successfully' in message.lower():
-        print(f"Notification skipped (notify_on_update=False): {title}")
+        logger.info(f"Notification skipped (notify_on_update=False): {title}")
         return
     if not config.get('notify_on_error') and notify_type == 'error':
-        print(f"Notification skipped (notify_on_error=False): {title}")
+        logger.info(f"Notification skipped (notify_on_error=False): {title}")
         return
     if not config.get('notify_on_health_failure', True) and 'unhealthy' in message.lower():
-        print(f"Notification skipped (notify_on_health_failure=False): {title}")
+        logger.info(f"Notification skipped (notify_on_health_failure=False): {title}")
         return
     
     if len(apobj) > 0:
-        print(f"Sending notification: {title} - {message}")
+        logger.info(f"Sending notification: {title} - {message}")
         try:
             result = apobj.notify(title=title, body=message, notify_type=notify_type)
             if result:
-                print(f"✓ Notification sent successfully")
+                logger.info(f"✓ Notification sent successfully")
             else:
-                print(f"✗ Notification failed to send")
+                logger.info(f"✗ Notification failed to send")
         except Exception as e:
-            print(f"✗ Notification error: {e}")
+            logger.info(f"✗ Notification error: {e}")
     else:
-        print(f"No notification services configured. Title: {title}")
+        logger.info(f"No notification services configured. Title: {title}")
 
 
 def broadcast_ws(data):
@@ -1532,7 +1661,7 @@ def broadcast_ws(data):
         try:
             client.send(json.dumps(data))
         except Exception as e:
-            print(f"⚠ WebSocket send failed, marking client for removal: {e}")
+            logger.info(f"⚠ WebSocket send failed, marking client for removal: {e}")
             dead_clients.append(client)
     
     # Remove dead clients after iteration
@@ -1577,7 +1706,7 @@ def check_stack_health(stack_name, containers):
             health_status[stack_name]['last_check'] = current_time
             
             failures = health_status[stack_name]['consecutive_failures']
-            print(f"  ⚠ Health check {failures}/{threshold}: {stack_name} has {len(unhealthy_containers)} issue(s)")
+            logger.info(f"  ⚠ Health check {failures}/{threshold}: {stack_name} has {len(unhealthy_containers)} issue(s)")
             
             # Send notification after threshold reached
             if failures >= threshold:
@@ -1676,7 +1805,7 @@ def check_host_health():
             host_monitor_status['current_issues'] = issues
             
             failures = host_monitor_status['consecutive_failures']
-            print(f"  ⚠ Host check {failures}/{alert_threshold}: {len(issues)} issue(s) detected")
+            logger.info(f"  ⚠ Host check {failures}/{alert_threshold}: {len(issues)} issue(s) detected")
             
             # Send notification after threshold reached
             if failures >= alert_threshold:
@@ -1726,7 +1855,7 @@ def check_host_health():
                 }
     
     except Exception as e:
-        print(f"Error checking host health: {e}")
+        logger.error(f"Error checking host health: {e}")
 
 
 def calculate_appdata_sizes():
@@ -1734,21 +1863,21 @@ def calculate_appdata_sizes():
     global appdata_size_cache
     
     try:
-        print("=" * 50)
-        print("Starting appdata size calculation...")
-        print(f"STACKS_DIR: {STACKS_DIR}")
+        logger.info("=" * 50)
+        logger.info("Starting appdata size calculation...")
+        logger.info(f"STACKS_DIR: {STACKS_DIR}")
         
         # Get all stacks
         stacks_dir = Path(STACKS_DIR)
         if not stacks_dir.exists():
-            print(f"ERROR: Stacks directory does not exist: {STACKS_DIR}")
+            logger.info(f"ERROR: Stacks directory does not exist: {STACKS_DIR}")
             return
         
         stack_names = [d.name for d in stacks_dir.iterdir() if d.is_dir()]
-        print(f"Found {len(stack_names)} stack directories: {stack_names}")
+        logger.info(f"Found {len(stack_names)} stack directories: {stack_names}")
         
         if len(stack_names) == 0:
-            print("No stacks found, appdata sizes will be empty")
+            logger.info("No stacks found, appdata sizes will be empty")
             return
         
         for stack_name in stack_names:
@@ -1764,7 +1893,7 @@ def calculate_appdata_sizes():
                         break
                 
                 if not compose_file:
-                    print(f"  {stack_name}: No compose file found, skipping")
+                    logger.info(f"  {stack_name}: No compose file found, skipping")
                     continue
                 
                 # Parse compose file
@@ -1811,13 +1940,13 @@ def calculate_appdata_sizes():
                                             if result.returncode == 0:
                                                 size_bytes = int(result.stdout.split()[0])
                                                 total_size_bytes += size_bytes
-                                                print(f"  {stack_name} - {host_path}: {size_bytes / (1024**3):.2f} GB")
+                                                logger.info(f"  {stack_name} - {host_path}: {size_bytes / (1024**3):.2f} GB")
                                         except subprocess.TimeoutExpired:
-                                            print(f"  Timeout calculating size for {host_path}")
+                                            logger.info(f"  Timeout calculating size for {host_path}")
                                         except Exception as e:
-                                            print(f"  Error calculating size for {host_path}: {e}")
+                                            logger.info(f"  Error calculating size for {host_path}: {e}")
                                     else:
-                                        print(f"  {stack_name} - {host_path}: path does not exist")
+                                        logger.info(f"  {stack_name} - {host_path}: path does not exist")
                         
                         # Handle long-form volume syntax
                         elif isinstance(volume, dict):
@@ -1844,11 +1973,11 @@ def calculate_appdata_sizes():
                                             if result.returncode == 0:
                                                 size_bytes = int(result.stdout.split()[0])
                                                 total_size_bytes += size_bytes
-                                                print(f"  {stack_name} - {host_path}: {size_bytes / (1024**3):.2f} GB")
+                                                logger.info(f"  {stack_name} - {host_path}: {size_bytes / (1024**3):.2f} GB")
                                         except subprocess.TimeoutExpired:
-                                            print(f"  Timeout calculating size for {host_path}")
+                                            logger.info(f"  Timeout calculating size for {host_path}")
                                         except Exception as e:
-                                            print(f"  Error calculating size for {host_path}: {e}")
+                                            logger.info(f"  Error calculating size for {host_path}: {e}")
                 
                 # Convert to GB and cache
                 size_gb = total_size_bytes / (1024**3)
@@ -1859,19 +1988,19 @@ def calculate_appdata_sizes():
                 }
                 
                 if size_gb > 0:
-                    print(f"  ✓ {stack_name}: Total {size_gb:.2f} GB")
+                    logger.info(f"  ✓ {stack_name}: Total {size_gb:.2f} GB")
                 else:
-                    print(f"  - {stack_name}: No bind mounts found or all paths missing")
+                    logger.info(f"  - {stack_name}: No bind mounts found or all paths missing")
                 
             except Exception as e:
-                print(f"Error processing {stack_name}: {e}")
+                logger.error(f"Error processing {stack_name}: {e}")
         
-        print(f"AppData size calculation complete. Cached {len(appdata_size_cache)} stacks")
-        print(f"Cache contents: {list(appdata_size_cache.keys())}")
-        print("=" * 50)
+        logger.info(f"AppData size calculation complete. Cached {len(appdata_size_cache)} stacks")
+        logger.info(f"Cache contents: {list(appdata_size_cache.keys())}")
+        logger.info("=" * 50)
         
     except Exception as e:
-        print(f"ERROR in calculate_appdata_sizes: {e}")
+        logger.info(f"ERROR in calculate_appdata_sizes: {e}")
         import traceback
         traceback.print_exc()
 
@@ -1911,7 +2040,7 @@ def import_orphan_containers_as_stacks():
             if os.path.exists(stack_path):
                 continue
 
-            print(f"[Dockup] Auto-importing orphan container: {container.name} → stack '{stack_name}'")
+            logger.info(f"[Dockup] Auto-importing orphan container: {container.name} → stack '{stack_name}'")
 
             inspect = container.attrs
             cfg = inspect['Config']
@@ -1976,7 +2105,7 @@ def import_orphan_containers_as_stacks():
                 })
                 container.reload()
             except Exception as e:
-                print(f"[Dockup] Warning: Could not label container {container.name}: {e}")
+                logger.info(f"[Dockup] Warning: Could not label container {container.name}: {e}")
 
             send_notification(
                 "Dockup – Orphan Imported",
@@ -1986,7 +2115,7 @@ def import_orphan_containers_as_stacks():
             broadcast_ws({'type': 'stacks_changed'})
 
     except Exception as e:
-        print(f"[Dockup] Orphan import error: {e}")
+        logger.info(f"[Dockup] Orphan import error: {e}")
 
 
 def get_all_used_ports():
@@ -2006,7 +2135,7 @@ def get_all_used_ports():
                                 used_ports[port_num] = []
                             used_ports[port_num].append(container.name)
     except Exception as e:
-        print(f"Error getting used ports: {e}")
+        logger.error(f"Error getting used ports: {e}")
     return used_ports
 
 
@@ -2065,7 +2194,7 @@ def check_port_conflicts(stack_name, compose_content):
                     pass
                     
     except Exception as e:
-        print(f"Error checking port conflicts: {e}")
+        logger.error(f"Error checking port conflicts: {e}")
     
     return conflicts
 
@@ -2085,7 +2214,7 @@ def get_all_containers_cached():
         all_containers_cache['timestamp'] = current_time
         return all_containers
     except Exception as e:
-        print(f"Error fetching containers: {e}")
+        logger.error(f"Error fetching containers: {e}")
         return all_containers_cache.get('data', [])
 
 
@@ -2136,7 +2265,7 @@ def get_stack_stats(stack_name, containers_list=None):
                     total_net_tx_bytes += net_stats.get('tx_bytes', 0)
                 
             except Exception as e:
-                print(f"Error getting stats for {container.name}: {e}")
+                logger.error(f"Error getting stats for {container.name}: {e}")
         
         # Calculate network rate using previous cached values
         net_rx_mbps = 0.0
@@ -2176,7 +2305,7 @@ def get_stack_stats(stack_name, containers_list=None):
             'net_tx_mbps': net_tx_mbps
         }
     except Exception as e:
-        print(f"Error getting stats for {stack_name}: {e}")
+        logger.error(f"Error getting stats for {stack_name}: {e}")
         return {
             'cpu_percent': 0,
             'mem_usage_mb': 0,
@@ -2192,7 +2321,7 @@ def get_container_stats_parallel(container):
     try:
         return container, container.stats(stream=False)
     except Exception as e:
-        print(f"Error getting stats for {container.name}: {e}")
+        logger.error(f"Error getting stats for {container.name}: {e}")
         return container, None
 
 
@@ -2257,7 +2386,7 @@ def get_stack_stats_batch(stack_containers_map):
                 stack_data[stack_name]['rx_bytes'] += net_stats.get('rx_bytes', 0)
                 stack_data[stack_name]['tx_bytes'] += net_stats.get('tx_bytes', 0)
         except Exception as e:
-            print(f"Error processing stats for {container.name}: {e}")
+            logger.error(f"Error processing stats for {container.name}: {e}")
     
     # Calculate final stats for each stack
     for stack_name, data in stack_data.items():
@@ -2401,7 +2530,7 @@ def get_stacks():
                         'compose_file': compose_file
                     }
     except Exception as e:
-        print(f"Error scanning stacks directory: {e}")
+        logger.error(f"Error scanning stacks directory: {e}")
     
     # Also check if there are compose files directly in STACKS_DIR (flat structure)
     try:
@@ -2565,7 +2694,7 @@ def get_stacks():
                 'appdata_last_updated': appdata_size_cache.get(stack_name, {}).get('last_updated', None)
             })
         except Exception as e:
-            print(f"Error loading stack {stack_name}: {e}")
+            logger.error(f"Error loading stack {stack_name}: {e}")
     
     # Sort alphabetically by name (case-insensitive)
     stacks.sort(key=lambda x: x['name'].lower())
@@ -2615,9 +2744,9 @@ def save_stack_compose(stack_name, content, apply_app_data_root=None):
         
         # Log warnings
         if warnings:
-            print(f"App Data Root warnings for {stack_name}:")
+            logger.info(f"App Data Root warnings for {stack_name}:")
             for warning in warnings:
-                print(f"  - {warning}")
+                logger.info(f"  - {warning}")
     
     # Always save as compose.yaml (modern standard)
     compose_file = os.path.join(stack_path, 'compose.yaml')
@@ -2635,9 +2764,9 @@ def save_stack_compose(stack_name, content, apply_app_data_root=None):
         if os.path.exists(old_path):
             try:
                 os.remove(old_path)
-                print(f"Cleaned up old compose file: {old_file} from {stack_name}")
+                logger.info(f"Cleaned up old compose file: {old_file} from {stack_name}")
             except Exception as e:
-                print(f"Warning: Could not delete {old_file}: {e}")
+                logger.info(f"Warning: Could not delete {old_file}: {e}")
     
     return warnings
 
@@ -2703,7 +2832,7 @@ def stack_operation(stack_name, operation):
 def refresh_container_metadata(stack_name):
     """Force refresh of container and image metadata after update"""
     try:
-        print(f"  → Refreshing metadata for {stack_name}")
+        logger.info(f"  → Refreshing metadata for {stack_name}")
         
         containers = docker_client.containers.list(
             all=True,
@@ -2719,13 +2848,13 @@ def refresh_container_metadata(stack_name):
             try:
                 docker_client.images.get(image_name)
             except Exception as e:
-                print(f"  ⚠ Could not refresh image {image_name}: {e}")
+                logger.info(f"  ⚠ Could not refresh image {image_name}: {e}")
         
-        print(f"  ✓ Metadata refreshed for {stack_name}")
+        logger.info(f"  ✓ Metadata refreshed for {stack_name}")
         return True
     
     except Exception as e:
-        print(f"  ✗ Metadata refresh failed: {e}")
+        logger.info(f"  ✗ Metadata refresh failed: {e}")
         return False
 
 def auto_update_stack(stack_name):
@@ -2741,7 +2870,7 @@ def auto_update_stack(stack_name):
                 all_schedules = json.load(f)
                 schedule_info = all_schedules.get(stack_name, {})
     except Exception as e:
-        print(f"[{stack_name}] ERROR reading schedules file: {e}")
+        logger.info(f"[{stack_name}] ERROR reading schedules file: {e}")
         return
     
     mode = schedule_info.get('mode', 'off')
@@ -2749,10 +2878,10 @@ def auto_update_stack(stack_name):
     if mode == 'off':
         return
     
-    print(f"=" * 50)
-    print(f"[{datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S %Z')}] Scheduled check for: {stack_name}")
-    print(f"Mode: {mode}, Cron: {schedule_info.get('cron')}")
-    print(f"=" * 50)
+    logger.info(f"=" * 50)
+    logger.info(f"[{datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S %Z')}] Scheduled check for: {stack_name}")
+    logger.info(f"Mode: {mode}, Cron: {schedule_info.get('cron')}")
+    logger.info(f"=" * 50)
     
     # WATCHTOWER METHOD: Get current image IDs BEFORE pulling
     try:
@@ -2762,7 +2891,7 @@ def auto_update_stack(stack_name):
         )
         
         if not containers:
-            print(f"✗ No containers found for {stack_name}")
+            logger.info(f"✗ No containers found for {stack_name}")
             return
         
         # Store current image IDs - use the ACTUAL running image, not tag reference
@@ -2775,23 +2904,23 @@ def auto_update_stack(stack_name):
                     try:
                         running_image_sha = container.attrs['Image']
                         old_image_ids[image_name] = running_image_sha
-                        print(f"  Current {container.name}: running {running_image_sha[:19]}")
+                        logger.info(f"  Current {container.name}: running {running_image_sha[:19]}")
                     except Exception as e:
                         # Fallback to tag reference if attrs fail
-                        print(f"  ⚠ Could not get running SHA for {container.name}: {e}")
+                        logger.info(f"  ⚠ Could not get running SHA for {container.name}: {e}")
                         old_image_ids[image_name] = container.image.id
-                        print(f"  Current {container.name}: {container.image.id[:12]} (fallback)")
+                        logger.info(f"  Current {container.name}: {container.image.id[:12]} (fallback)")
             except Exception as e:
-                print(f"  ⚠ Failed to process container {container.name}: {e}")
+                logger.info(f"  ⚠ Failed to process container {container.name}: {e}")
                 # Don't send notification for individual container failures
                 # Only notify if entire stack check fails (handled below)
         
         if not old_image_ids:
-            print(f"✗ No tagged images found for {stack_name}")
+            logger.info(f"✗ No tagged images found for {stack_name}")
             return
         
     except Exception as e:
-        print(f"✗ Error getting container info: {e}")
+        logger.info(f"✗ Error getting container info: {e}")
         send_notification(
             f"Dockup - Error",
             f"Failed to check stack '{stack_name}': {str(e)}",
@@ -2800,11 +2929,11 @@ def auto_update_stack(stack_name):
         return
     
     # PULL new images (always pull, like Watchtower)
-    print(f"  → Pulling latest images...")
+    logger.info(f"  → Pulling latest images...")
     success_pull, output_pull = stack_operation(stack_name, 'pull')
     
     if not success_pull:
-        print(f"✗ Pull failed: {output_pull}")
+        logger.info(f"✗ Pull failed: {output_pull}")
         send_notification(
             f"Dockup - Pull Failed",
             f"Failed to pull images for '{stack_name}'",
@@ -2812,7 +2941,7 @@ def auto_update_stack(stack_name):
         )
         return
     
-    print(f"  ✓ Pull completed")
+    logger.info(f"  ✓ Pull completed")
     
     # Get NEW image IDs after pull
     new_image_ids = {}
@@ -2826,14 +2955,14 @@ def auto_update_stack(stack_name):
             new_image_ids[image_name] = new_id
             
             if old_id != new_id:
-                print(f"  ✓ UPDATE DETECTED: {image_name}")
-                print(f"    Old: {old_id[:12]}")
-                print(f"    New: {new_id[:12]}")
+                logger.info(f"  ✓ UPDATE DETECTED: {image_name}")
+                logger.info(f"    Old: {old_id[:12]}")
+                logger.info(f"    New: {new_id[:12]}")
                 images_changed = True
             else:
-                print(f"  = No change: {image_name} ({old_id[:12]})")
+                logger.info(f"  = No change: {image_name} ({old_id[:12]})")
         except Exception as e:
-            print(f"  ⚠ Could not check {image_name}: {e}")
+            logger.info(f"  ⚠ Could not check {image_name}: {e}")
     
     # Update status
     with update_status_lock:
@@ -2847,7 +2976,7 @@ def auto_update_stack(stack_name):
     if mode == 'check':
         # Check-only mode
         if images_changed:
-            print(f"✓ Updates available for {stack_name} (check-only mode)")
+            logger.info(f"✓ Updates available for {stack_name} (check-only mode)")
             send_notification(
                 f"Dockup - Update Available",
                 f"Stack '{stack_name}' has updates available",
@@ -2858,7 +2987,7 @@ def auto_update_stack(stack_name):
                 'stack': stack_name
             })
         else:
-            print(f"✓ No updates for {stack_name}")
+            logger.info(f"✓ No updates for {stack_name}")
             broadcast_ws({
                 'type': 'no_updates',
                 'stack': stack_name
@@ -2867,7 +2996,7 @@ def auto_update_stack(stack_name):
     
     elif mode == 'auto':
         if not images_changed:
-            print(f"✓ Already up to date: {stack_name}")
+            logger.info(f"✓ Already up to date: {stack_name}")
             broadcast_ws({
                 'type': 'no_updates',
                 'stack': stack_name
@@ -2875,26 +3004,26 @@ def auto_update_stack(stack_name):
             return
         
         # AUTO MODE: Actually update the containers
-        print(f"  → Auto-update enabled, recreating containers...")
+        logger.info(f"  → Auto-update enabled, recreating containers...")
         
         # Recreate containers with new images
         success_up, output_up = stack_operation(stack_name, 'up')
         
         if not success_up:
-            print(f"  ✗ First restart failed, retrying...")
+            logger.info(f"  ✗ First restart failed, retrying...")
             time.sleep(3)
             success_up, output_up = stack_operation(stack_name, 'up')
         
         if success_up:
             # Wait for containers to fully start and stabilize
-            print(f"  → Waiting for containers to start...")
+            logger.info(f"  → Waiting for containers to start...")
             time.sleep(10)
             
             # Force Docker to refresh image data
             try:
                 docker_client.images.list()
             except Exception as e:
-                print(f"  ⚠ Could not refresh Docker images list: {e}")
+                logger.info(f"  ⚠ Could not refresh Docker images list: {e}")
                 # Non-fatal but log it for debugging
             
             # Refresh metadata
@@ -2928,35 +3057,35 @@ def auto_update_stack(stack_name):
                     
                     if expected_id:
                         if current_id == expected_id:
-                            print(f"  ✓ {container.name}: Running new image ({current_id[:12]})")
+                            logger.info(f"  ✓ {container.name}: Running new image ({current_id[:12]})")
                             verification_results.append(True)
                         else:
-                            print(f"  ✗ {container.name}: Image mismatch")
-                            print(f"    Expected: {expected_id[:12]}")
-                            print(f"    Got:      {current_id[:12]}")
+                            logger.info(f"  ✗ {container.name}: Image mismatch")
+                            logger.info(f"    Expected: {expected_id[:12]}")
+                            logger.info(f"    Got:      {current_id[:12]}")
                             verification_passed = False
                             verification_results.append(False)
                     else:
                         # Image name not in our tracking dict - could be sidecar or init container
-                        print(f"  ⚠ {container.name}: Image '{image_name}' not in tracking dict")
-                        print(f"    Tracked images: {list(new_image_ids.keys())}")
+                        logger.info(f"  ⚠ {container.name}: Image '{image_name}' not in tracking dict")
+                        logger.info(f"    Tracked images: {list(new_image_ids.keys())}")
                         # Don't fail verification for untracked images
                         
                 except Exception as e:
-                    print(f"  ⚠ {container.name}: Verification error: {e}")
+                    logger.info(f"  ⚠ {container.name}: Verification error: {e}")
             
             # Consider it successful if we verified at least one container successfully
             # and didn't have any explicit failures
             if len(verification_results) == 0:
                 # No containers verified - maybe all are locally built or sidecars
-                print(f"  ⚠ No containers could be verified (may be locally built images)")
+                logger.info(f"  ⚠ No containers could be verified (may be locally built images)")
                 verification_passed = True  # Don't fail if we can't verify
             elif any(verification_results) and not any(not r for r in verification_results):
                 # At least one success and no failures
                 verification_passed = True
             
             if verification_passed:
-                print(f"  ✓✓✓ UPDATE SUCCESSFUL AND VERIFIED ✓✓✓")
+                logger.info(f"  ✓✓✓ UPDATE SUCCESSFUL AND VERIFIED ✓✓✓")
                 # CLEAR update available flag (AUTO UPDATE FIX)
                 with update_status_lock:
                     update_status[stack_name] = {
@@ -2982,7 +3111,7 @@ def auto_update_stack(stack_name):
                     'verified': True
                 })
             else:
-                print(f"  ⚠ Update completed but verification inconclusive")
+                logger.info(f"  ⚠ Update completed but verification inconclusive")
                 
                 # Still record the update attempt
                 update_history[stack_name] = {
@@ -3002,7 +3131,7 @@ def auto_update_stack(stack_name):
                     'verified': False
                 })
         else:
-            print(f"  ✗✗✗ UPDATE FAILED ✗✗✗")
+            logger.info(f"  ✗✗✗ UPDATE FAILED ✗✗✗")
             send_notification(
                 f"Dockup - Update Failed",
                 f"Failed to restart stack '{stack_name}' after pulling new images",
@@ -3038,17 +3167,17 @@ def check_stack_updates(stack_name):
                     image_name = container.image.tags[0]
                     old_image_ids[image_name] = container.image.id
             except Exception as e:
-                print(f"  ⚠ Could not get image ID for {container.name}: {e}")
+                logger.info(f"  ⚠ Could not get image ID for {container.name}: {e}")
         
         if not old_image_ids:
             return True, False
         
         # Pull latest images (required to check for updates reliably)
-        print(f"Checking updates for {stack_name}...")
+        logger.info(f"Checking updates for {stack_name}...")
         success_pull, output_pull = stack_operation(stack_name, 'pull')
         
         if not success_pull:
-            print(f"  Pull failed, cannot check for updates")
+            logger.info(f"  Pull failed, cannot check for updates")
             return False, None
         
         # Get NEW image IDs after pull
@@ -3059,13 +3188,13 @@ def check_stack_updates(stack_name):
                 new_id = new_image.id
                 
                 if old_id != new_id:
-                    print(f"  ✓ Update available: {image_name}")
-                    print(f"    Old: {old_id[:12]}")
-                    print(f"    New: {new_id[:12]}")
+                    logger.info(f"  ✓ Update available: {image_name}")
+                    logger.info(f"    Old: {old_id[:12]}")
+                    logger.info(f"    New: {new_id[:12]}")
                     update_available = True
                     break
             except Exception as e:
-                print(f"  ⚠ Could not check {image_name}: {e}")
+                logger.info(f"  ⚠ Could not check {image_name}: {e}")
         
         # Update status
         with update_status_lock:
@@ -3078,7 +3207,7 @@ def check_stack_updates(stack_name):
         return True, update_available
         
     except Exception as e:
-        print(f"✗ Error checking updates for {stack_name}: {e}")
+        logger.info(f"✗ Error checking updates for {stack_name}: {e}")
         return False, None
 
 
@@ -3104,14 +3233,14 @@ def setup_scheduler():
             timezone=user_tz
         )
         scheduler.start()
-        print("[Scheduler] Created and started with 50 worker threads")
+        logger.info("[Scheduler] Created and started with 50 worker threads")
     else:
         # Update scheduler timezone if needed
         try:
             scheduler.configure(timezone=user_tz)
         except Exception as e:
-            print(f"[Scheduler] Could not update timezone: {e}")
-        print("[Scheduler] Refreshing jobs")
+            logger.info(f"[Scheduler] Could not update timezone: {e}")
+        logger.info("[Scheduler] Refreshing jobs")
 
     # Remove only update jobs safely
     for job in list(scheduler.get_jobs()):
@@ -3119,7 +3248,7 @@ def setup_scheduler():
             if job.id.startswith("update_") or job.id in ("auto_prune", "import_orphans"):
                 scheduler.remove_job(job.id)
         except Exception as e:
-            print(f"[Scheduler] Could not remove job {job.id}: {e}")
+            logger.info(f"[Scheduler] Could not remove job {job.id}: {e}")
 
     # Recreate update schedules
     with schedules_lock:
@@ -3138,9 +3267,9 @@ def setup_scheduler():
                     id=f"update_{stack_name}",
                     replace_existing=True
                 )
-                print(f"[Scheduler] Added update job for {stack_name}: {cron_expr}")
+                logger.info(f"[Scheduler] Added update job for {stack_name}: {cron_expr}")
             except Exception as e:
-                print(f"[Scheduler] Error scheduling {stack_name}: {e}")
+                logger.info(f"[Scheduler] Error scheduling {stack_name}: {e}")
 
     # Auto-prune job
     if config.get("auto_prune", False):
@@ -3153,9 +3282,9 @@ def setup_scheduler():
                 id="auto_prune",
                 replace_existing=True
             )
-            print(f"[Scheduler] Added auto-prune job: {prune_cron}")
+            logger.info(f"[Scheduler] Added auto-prune job: {prune_cron}")
         except Exception as e:
-            print(f"[Scheduler] Error scheduling auto-prune: {e}")
+            logger.info(f"[Scheduler] Error scheduling auto-prune: {e}")
 
     # Orphan importer
     try:
@@ -3166,9 +3295,35 @@ def setup_scheduler():
             id="import_orphans",
             replace_existing=True
         )
-        print("[Scheduler] Added orphan importer job (15m)")
+        logger.info("[Scheduler] Added orphan importer job (15m)")
     except Exception as e:
-        print(f"[Scheduler] Error adding orphan importer: {e}")
+        logger.info(f"[Scheduler] Error adding orphan importer: {e}")
+    
+    # Trivy database update - daily at 1 AM
+    try:
+        trivy_trigger = CronTrigger.from_crontab('0 1 * * *', timezone=user_tz)
+        scheduler.add_job(
+            update_trivy_database,
+            trivy_trigger,
+            id="trivy_db_update",
+            replace_existing=True
+        )
+        logger.info("[Scheduler] Added Trivy DB update job: 1 AM daily")
+    except Exception as e:
+        logger.error(f"[Scheduler] Error scheduling Trivy DB update: {e}")
+    
+    # Template library refresh - Sunday at noon
+    try:
+        template_trigger = CronTrigger.from_crontab('0 12 * * 0', timezone=user_tz)  # Sunday 12:00
+        scheduler.add_job(
+            refresh_templates,
+            template_trigger,
+            id="template_refresh",
+            replace_existing=True
+        )
+        logger.info("[Scheduler] Added template refresh job: Sunday 12:00")
+    except Exception as e:
+        logger.error(f"[Scheduler] Error scheduling template refresh: {e}")
 
     # Host monitoring job
     if config.get("host_monitor_enabled", True):
@@ -3181,9 +3336,9 @@ def setup_scheduler():
                 id="host_monitor",
                 replace_existing=True
             )
-            print(f"[Scheduler] Added host monitoring job ({host_interval}m)")
+            logger.info(f"[Scheduler] Added host monitoring job ({host_interval}m)")
         except Exception as e:
-            print(f"[Scheduler] Error adding host monitoring: {e}")
+            logger.info(f"[Scheduler] Error adding host monitoring: {e}")
 
     # AppData size calculation job (every 3 hours)
     try:
@@ -3194,13 +3349,13 @@ def setup_scheduler():
             id="appdata_sizes",
             replace_existing=True
         )
-        print("[Scheduler] Added appdata size calculation job (3h)")
+        logger.info("[Scheduler] Added appdata size calculation job (3h)")
         
         # Run in background thread so it doesn't block startup
         threading.Thread(target=calculate_appdata_sizes, daemon=True).start()
-        print("[Scheduler] Started background appdata size calculation")
+        logger.info("[Scheduler] Started background appdata size calculation")
     except Exception as e:
-        print(f"[Scheduler] Error adding appdata size job: {e}")
+        logger.info(f"[Scheduler] Error adding appdata size job: {e}")
 
     return scheduler
 
@@ -3407,8 +3562,8 @@ def api_docker_hub_rate_limit():
 def api_appdata_sizes():
     """Get appdata sizes for all stacks"""
     global appdata_size_cache
-    print(f"[DEBUG] /api/appdata/sizes called - cache has {len(appdata_size_cache)} entries")
-    print(f"[DEBUG] Cache keys: {list(appdata_size_cache.keys())}")
+    logger.info(f"[DEBUG] /api/appdata/sizes called - cache has {len(appdata_size_cache)} entries")
+    logger.info(f"[DEBUG] Cache keys: {list(appdata_size_cache.keys())}")
     return jsonify(appdata_size_cache)
 
 
@@ -3594,7 +3749,7 @@ def api_stack_scan_summary(stack_name):
             'total_containers': len(stack.get('containers', [])),
             'last_scan': last_scan
         }
-        print(f"[SCAN SUMMARY] Stack: {stack_name}, Badge: {worst_badge}, Critical: {total_critical}, High: {total_high}")
+        logger.info(f"[SCAN SUMMARY] Stack: {stack_name}, Badge: {worst_badge}, Critical: {total_critical}, High: {total_high}")
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -3829,7 +3984,7 @@ def api_stack_delete(stack_name):
                 try:
                     docker_client.images.remove(image_id, force=True)
                 except Exception as e:
-                    print(f"Warning: Could not delete image {image_id}: {e}")
+                    logger.info(f"Warning: Could not delete image {image_id}: {e}")
         
         # Delete directory if not keeping compose
         if data.get('delete_compose', True):
@@ -3865,7 +4020,7 @@ def api_stack_delete_images(stack_name):
                 docker_client.images.remove(image_id, force=True)
                 deleted.append(image_tags[0] if image_tags else image_id[:12])
             except Exception as e:
-                print(f"Warning: Could not delete image: {e}")
+                logger.info(f"Warning: Could not delete image: {e}")
         
         return jsonify({'success': True, 'deleted': deleted})
     except Exception as e:
@@ -4138,7 +4293,7 @@ def auto_prune_images():
     if not config.get('auto_prune', False):
         return
     
-    print("Running auto-prune...")
+    logger.info("Running auto-prune...")
     try:
         # Prune Docker images
         result = docker_client.images.prune(filters={'dangling': False})
@@ -4161,9 +4316,9 @@ def auto_prune_images():
                             trivy_space_saved += size
                 trivy_space_saved_mb = round(trivy_space_saved / (1024 * 1024), 2)
                 if trivy_space_saved_mb > 0:
-                    print(f"Pruned Trivy cache: {trivy_space_saved_mb} MB freed")
+                    logger.info(f"Pruned Trivy cache: {trivy_space_saved_mb} MB freed")
             except Exception as e:
-                print(f"Trivy cache prune error: {e}")
+                logger.info(f"Trivy cache prune error: {e}")
         
         if deleted > 0 or trivy_space_saved > 0:
             total_saved_mb = space_saved_mb + (trivy_space_saved / (1024 * 1024))
@@ -4172,9 +4327,9 @@ def auto_prune_images():
                 f'Pruned {deleted} images ({space_saved_mb} MB) and Trivy cache ({trivy_space_saved_mb} MB)',
                 'success'
             )
-            print(f"Auto-prune: {deleted} images, {total_saved_mb:.2f} MB total freed")
+            logger.info(f"Auto-prune: {deleted} images, {total_saved_mb:.2f} MB total freed")
     except Exception as e:
-        print(f"Auto-prune error: {e}")
+        logger.info(f"Auto-prune error: {e}")
 
 
 def update_stats_background():
@@ -4217,7 +4372,7 @@ def update_stats_background():
             # Wait 5 seconds before next update
             time.sleep(5)
         except Exception as e:
-            print(f"Stats update error: {e}")
+            logger.info(f"Stats update error: {e}")
             time.sleep(5)
 
 
@@ -4325,7 +4480,7 @@ def api_version():
             'update_available': update_available
         })
     except Exception as e:
-        print(f"Failed to check Docker Hub for updates: {e}")
+        logger.info(f"Failed to check Docker Hub for updates: {e}")
         return jsonify({
             'current': current_version,
             'latest': current_version,
@@ -4609,9 +4764,9 @@ def save_service_sections(stack_name, service_name):
             if os.path.exists(old_path):
                 try:
                     os.remove(old_path)
-                    print(f"Cleaned up old compose file: {old_file} from {stack_name}")
+                    logger.info(f"Cleaned up old compose file: {old_file} from {stack_name}")
                 except Exception as e:
-                    print(f"Warning: Could not delete {old_file}: {e}")
+                    logger.info(f"Warning: Could not delete {old_file}: {e}")
         
         return jsonify({'success': True})
     
@@ -4849,7 +5004,7 @@ def api_get_network_interfaces():
         return jsonify(interfaces)
         
     except Exception as e:
-        print(f"Error detecting network interfaces: {e}")
+        logger.error(f"Error detecting network interfaces: {e}")
         # Fallback to common interface names
         return jsonify([
             {'name': 'ens18', 'ip': 'N/A'},
@@ -4980,7 +5135,7 @@ def websocket(ws):
             if data is None:
                 break
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        logger.info(f"WebSocket error: {e}")
     finally:
         # Always remove, even if exception during removal
         with websocket_clients_lock:
@@ -4990,7 +5145,7 @@ def websocket(ws):
                 # Client already removed (expected in some race conditions)
                 pass
             except Exception as e:
-                print(f"⚠ Error removing WebSocket client: {e}")
+                logger.info(f"⚠ Error removing WebSocket client: {e}")
 
 
 @app.route('/api/stack/<stack_name>/webui', methods=['GET', 'POST'])
@@ -5053,7 +5208,7 @@ def api_stack_webui(stack_name):
                                     web_ui_url = f"http://{host_ip}:{published}"
                             break
             except Exception as e:
-                print(f"Error auto-detecting Web UI URL: {e}")
+                logger.error(f"Error auto-detecting Web UI URL: {e}")
         
         return jsonify({'web_ui_url': web_ui_url})
     
@@ -5130,7 +5285,7 @@ def api_get_all_stacks():
                     stack['is_local'] = False
                 all_stacks.extend(peer_stacks)
         except Exception as e:
-            print(f"Error fetching stacks from peer {peer_id}: {e}")
+            logger.error(f"Error fetching stacks from peer {peer_id}: {e}")
     
     return jsonify(all_stacks)
 
@@ -5254,8 +5409,8 @@ def api_add_peer():
     
     save_config()
     
-    print(f"Added peer {peer_id}: {config['peers'][peer_id]}")
-    print(f"Total peers: {len(config.get('peers', {}))}")
+    logger.info(f"Added peer {peer_id}: {config['peers'][peer_id]}")
+    logger.info(f"Total peers: {len(config.get('peers', {}))}")
     
     return jsonify({'success': True})
 
@@ -5428,64 +5583,1427 @@ def api_regenerate_token():
 
 
 
+# ============================================================================
+# TEMPLATE LIBRARY SYSTEM - LinuxServer.io Fleet Integration
+# ============================================================================
+
+# Template cache
+TEMPLATES_DIR = os.path.join(DATA_DIR, 'templates')
+TEMPLATES_CACHE_FILE = os.path.join(TEMPLATES_DIR, 'cache.json')
+TEMPLATES_LAST_UPDATE_FILE = os.path.join(TEMPLATES_DIR, 'last_update.txt')
+
+# Ensure templates directory exists
+os.makedirs(TEMPLATES_DIR, exist_ok=True)
+
+# Template cache storage
+templates_cache = {
+    'last_updated': None,
+    'templates': []
+}
+templates_cache_lock = threading.Lock()
+
+
+def fetch_linuxserver_templates():
+    """
+    Fetch comprehensive list of LinuxServer.io templates by scraping their GitHub
+    Auto-updates from GitHub API on each refresh
+    Returns list of template dictionaries
+    """
+    try:
+        logger.info("Fetching LinuxServer.io templates from GitHub...")
+        
+        templates = []
+        
+        # Try to fetch from GitHub API first
+        github_templates = fetch_from_github_api()
+        
+        if github_templates and len(github_templates) > 50:
+            logger.info(f"✓ Loaded {len(github_templates)} templates from GitHub API")
+            return github_templates
+        
+        # Fallback to comprehensive static list
+        logger.warning("GitHub API failed, using comprehensive static list...")
+        from linuxserver_templates import get_all_linuxserver_templates
+        
+        lsio_apps = get_all_linuxserver_templates()
+        
+        for app in lsio_apps:
+            template = generate_template_compose(app)
+            templates.append(template)
+        
+        logger.info(f"✓ Loaded {len(templates)} templates from static list")
+        return templates
+        
+    except Exception as e:
+        logger.error(f"Error loading LinuxServer templates: {e}")
+        logger.info("Falling back to basic template list...")
+        return get_fallback_templates()
+
+
+def fetch_from_github_api():
+    """
+    Fetch all LinuxServer.io docker containers from GitHub API
+    Returns list of template dictionaries
+    """
+    try:
+        logger.info("Querying GitHub API for LinuxServer.io repositories...")
+        
+        templates = []
+        page = 1
+        per_page = 100
+        
+        # Fetch repositories from LinuxServer GitHub org
+        while page <= 5:  # Limit to 5 pages (500 repos max)
+            url = f"https://api.github.com/orgs/linuxserver/repos?per_page={per_page}&page={page}&type=public"
+            
+            response = requests.get(url, timeout=30)
+            
+            if response.status_code != 200:
+                logger.warning(f"GitHub API returned {response.status_code}")
+                break
+            
+            repos = response.json()
+            
+            if not repos:
+                break
+            
+            # Filter for docker-* repositories
+            docker_repos = [r for r in repos if r['name'].startswith('docker-')]
+            
+            logger.info(f"Page {page}: Found {len(docker_repos)} docker repos")
+            
+            # Parse each repo
+            for repo in docker_repos:
+                template = parse_github_repo(repo)
+                if template:
+                    templates.append(template)
+            
+            # Check if there are more pages
+            if len(repos) < per_page:
+                break
+            
+            page += 1
+        
+        logger.info(f"✓ Parsed {len(templates)} templates from GitHub")
+        return templates
+        
+    except Exception as e:
+        logger.error(f"Error fetching from GitHub API: {e}")
+        return None
+
+
+def parse_github_repo(repo):
+    """
+    Parse a GitHub repository to extract template metadata
+    Returns template dict or None
+    """
+    try:
+        name = repo['name'].replace('docker-', '')
+        
+        # Skip deprecated or special repos
+        if repo.get('archived', False):
+            return None
+        
+        # Extract category from description or topics
+        description = repo.get('description', '')
+        topics = repo.get('topics', [])
+        
+        category = categorize_container(name, description, topics)
+        
+        # Build image name
+        image = f"lscr.io/linuxserver/{name}:latest"
+        
+        # Get default ports (we'll use common defaults based on container name)
+        ports = get_default_ports(name)
+        
+        # Get default volumes
+        volumes = get_default_volumes(name)
+        
+        # Get default environment variables
+        env = ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        
+        # Get creation date for "Latest" filter
+        created_at = repo.get('created_at', '')
+        
+        # Better description fallback
+        if not description or description.lower() in ['deprecated', 'archived']:
+            description = get_fallback_description(name)
+        
+        # Create template data
+        template_data = {
+            "id": name,
+            "name": name.replace('-', ' ').title(),
+            "category": category,
+            "image": image,
+            "description": description,
+            "ports": ports,
+            "volumes": volumes,
+            "env": env,
+            "created_at": created_at  # Add creation date for sorting
+        }
+        
+        # Generate compose template
+        return generate_template_compose(template_data)
+        
+    except Exception as e:
+        logger.error(f"Error parsing repo {repo.get('name')}: {e}")
+        return None
+
+
+def get_fallback_description(name):
+    """
+    Get fallback description for containers that don't have GitHub descriptions
+    Comprehensive list of popular LinuxServer containers
+    """
+    descriptions = {
+        # Media Servers
+        'plex': 'Stream your personal media collection anywhere - movies, TV, music, photos',
+        'jellyfin': 'Free software media server - the volunteer-built alternative to Plex',
+        'emby': 'Media server to organize, play and stream audio and video',
+        'navidrome': 'Modern music server and streamer compatible with Subsonic/Airsonic',
+        'airsonic': 'Free, web-based media streamer and jukebox',
+        'airsonic-advanced': 'Advanced fork of Airsonic with additional features',
+        'booksonic': 'Audiobook streaming server',
+        'booksonic-air': 'Audiobook and podcast server with web player',
+        
+        # Arr Stack
+        'sonarr': 'Smart PVR for TV shows - monitor, download and organize',
+        'radarr': 'Movie collection manager for Usenet and BitTorrent',
+        'prowlarr': 'Indexer manager/proxy for Sonarr, Radarr, Lidarr, etc',
+        'lidarr': 'Music collection manager for Usenet and BitTorrent',
+        'readarr': 'Book, magazine and audiobook collection manager',
+        'bazarr': 'Companion to Sonarr/Radarr for managing subtitles',
+        'whisparr': 'Adult content collection manager',
+        'mylar3': 'Automated comic book downloader and manager',
+        'lazylibrarian': 'Follow authors and grab metadata for ebooks and audiobooks',
+        'jackett': 'API support for torrent trackers - proxy for *arr apps',
+        'nzbhydra2': 'Meta search for NZB indexers - usenet search aggregator',
+        
+        # Downloads
+        'qbittorrent': 'Free and reliable P2P BitTorrent client',
+        'transmission': 'Fast, easy BitTorrent client with web interface',
+        'deluge': 'Lightweight, free cross-platform BitTorrent client',
+        'sabnzbd': 'Free and easy binary newsreader for Usenet',
+        'nzbget': 'Efficient Usenet downloader',
+        'rutorrent': 'rtorrent client with popular webui',
+        'pyload-ng': 'Free and open-source download manager',
+        
+        # Dashboards
+        'heimdall': 'Application dashboard and launcher',
+        'homer': 'Static application dashboard',
+        'homarr': 'Customizable homelab dashboard with modern UI',
+        'organizr': 'Homelab services organizer with SSO',
+        
+        # Productivity
+        'nextcloud': 'Self-hosted productivity platform - files, calendar, contacts',
+        'code-server': 'VS Code in the browser',
+        'calibre': 'Powerful ebook library management',
+        'calibre-web': 'Web app for browsing and reading ebooks from Calibre',
+        'paperless-ngx': 'Document management system with OCR',
+        'syncthing': 'Continuous file synchronization program',
+        'wikijs': 'Modern and powerful wiki software',
+        'bookstack': 'Simple, self-hosted wiki platform',
+        'grocy': 'ERP system for your kitchen - groceries and household',
+        
+        # Photos
+        'photoprism': 'AI-powered photo management app',
+        'piwigo': 'Photo gallery software for the web',
+        'immich': 'High performance self-hosted photo and video backup',
+        'lychee': 'Free photo management tool for web',
+        
+        # Networking
+        'wireguard': 'Fast modern VPN protocol',
+        'nginx': 'High-performance web server and reverse proxy',
+        'swag': 'Nginx with automatic SSL via Let\'s Encrypt',
+        'nginx-proxy-manager': 'Easy nginx reverse proxy with SSL',
+        'ddclient': 'Dynamic DNS client',
+        'duckdns': 'Free dynamic DNS service',
+        
+        # Monitoring
+        'tautulli': 'Monitoring and tracking for Plex Media Server',
+        'overseerr': 'Request management and media discovery for Plex',
+        'ombi': 'Self-hosted media request management',
+        'uptime-kuma': 'Self-hosted monitoring tool like Uptime Robot',
+        'netdata': 'Real-time performance monitoring',
+        'scrutiny': 'Hard drive S.M.A.R.T monitoring',
+        
+        # Communication
+        'freshrss': 'Free self-hostable RSS aggregator',
+        'miniflux': 'Minimalist and opinionated RSS reader',
+        'apprise-api': 'Send notifications to 100+ services',
+        'ntfy': 'Simple HTTP-based pub-sub notification service',
+        
+        # Desktop
+        'firefox': 'Firefox web browser in Docker',
+        'chromium': 'Chromium web browser in Docker',
+        'webtop': 'Full Linux desktop in your browser',
+        
+        # Development
+        'gitea': 'Lightweight self-hosted Git service',
+        'code-server': 'VS Code in the browser',
+        
+        # Databases
+        'mariadb': 'MySQL-compatible relational database',
+        
+        # Books
+        'kavita': 'Fast, feature rich reading server for manga/comics/books',
+        'komga': 'Media server for comics/mangas/BDs',
+        'ubooquity': 'Free home server for comics and ebooks',
+        
+        # Security
+        'vaultwarden': 'Bitwarden compatible password manager',
+        'authelia': 'Authentication and authorization server',
+        
+        # Smart Home
+        'homeassistant': 'Open source home automation platform',
+        'node-red': 'Flow-based programming for IoT',
+        
+        # TV/Broadcast
+        'tvheadend': 'TV streaming server for Linux',
+        
+        # Backup
+        'duplicati': 'Store encrypted backups online',
+        'resilio-sync': 'Fast, private file syncing',
+        
+        # Other
+        'filebrowser': 'Web file browser and manager',
+        'projectsend': 'Private file sharing application',
+    }
+    
+    return descriptions.get(name, f"LinuxServer.io {name.replace('-', ' ')} container")
+
+
+def categorize_container(name, description, topics):
+    """
+    Categorize container based on name, description, and GitHub topics
+    Uses multi-factor analysis for accurate categorization
+    """
+    name_lower = name.lower()
+    desc_lower = description.lower() if description else ""
+    topics_str = ' '.join(topics).lower() if topics else ""
+    
+    # Combine all text for comprehensive matching
+    all_text = f"{name_lower} {desc_lower} {topics_str}"
+    
+    # === MEDIA SERVERS ===
+    if any(x in name_lower for x in ['plex', 'jellyfin', 'emby', 'navidrome', 'airsonic', 'booksonic', 'subsonic', 'ampache', 'mopidy', 'snapcast', 'forked-daapd', 'muximux']):
+        return 'media'
+    if any(x in all_text for x in ['media server', 'music server', 'video server', 'streaming server', 'media streaming']):
+        return 'media'
+    
+    # === ARR STACK ===
+    if name_lower.endswith('arr'):  # sonarr, radarr, lidarr, etc.
+        return 'arr'
+    if any(x in name_lower for x in ['jackett', 'nzbhydra', 'prowlarr', 'mylar', 'lazylibrarian', 'headphones']):
+        return 'arr'
+    if any(x in all_text for x in ['pvr', 'usenet indexer', 'torrent indexer', 'media automation']):
+        return 'arr'
+    
+    # === DOWNLOAD CLIENTS ===
+    if any(x in name_lower for x in ['qbittorrent', 'transmission', 'deluge', 'sabnzbd', 'nzbget', 'rutorrent', 'pyload', 'jdownloader', 'aria2']):
+        return 'downloads'
+    if any(x in all_text for x in ['torrent client', 'bittorrent', 'usenet client', 'download manager', 'newsreader']):
+        return 'downloads'
+    
+    # === HOME AUTOMATION & DASHBOARDS ===
+    if any(x in name_lower for x in ['heimdall', 'homer', 'homarr', 'homeassistant', 'home-assistant', 'domoticz', 'habridge', 'organizr', 'muximux', 'logarr', 'monitorr']):
+        return 'automation'
+    if any(x in all_text for x in ['dashboard', 'home automation', 'smart home', 'launcher', 'application dashboard']):
+        return 'automation'
+    
+    # === PRODUCTIVITY ===
+    if any(x in name_lower for x in ['nextcloud', 'owncloud', 'calibre', 'paperless', 'obsidian', 'syncthing', 'bookstack', 'wikijs', 'hedgedoc', 'grocy', 'kanboard', 'monica', 'firefly', 'linkding', 'linkwarden', 'shiori', 'wallabag', 'trilium', 'joplin', 'standardnotes']):
+        return 'productivity'
+    if any(x in all_text for x in ['note taking', 'knowledge base', 'document management', 'file sync', 'bookmark', 'personal finance', 'budget', 'recipe']):
+        return 'productivity'
+    
+    # === PHOTOS & IMAGES ===
+    if any(x in name_lower for x in ['photoprism', 'piwigo', 'lychee', 'immich', 'photoview', 'photostructure', 'chevereto', 'pixapop']):
+        return 'photos'
+    if any(x in all_text for x in ['photo management', 'photo gallery', 'image gallery', 'photo organizer']):
+        return 'photos'
+    
+    # === NETWORKING & VPN ===
+    if any(x in name_lower for x in ['wireguard', 'openvpn', 'nginx', 'swag', 'proxy', 'ddclient', 'duckdns', 'netboot', 'smokeping', 'librespeed', 'unifi', 'haproxy', 'traefik', 'endlessh', 'fail2ban', 'ipam', 'pihole', 'adguard']):
+        return 'networking'
+    if any(x in all_text for x in ['reverse proxy', 'vpn', 'network', 'dns', 'dhcp', 'firewall', 'speed test', 'ad blocker', 'proxy server']):
+        return 'networking'
+    
+    # === MONITORING & ANALYTICS ===
+    if any(x in name_lower for x in ['netdata', 'scrutiny', 'healthcheck', 'uptime-kuma', 'tautulli', 'overseerr', 'ombi', 'requestrr', 'varken', 'syslog', 'grafana', 'prometheus', 'glances', 'statping', 'librenms', 'observium']):
+        return 'monitoring'
+    if any(x in all_text for x in ['monitoring', 'metrics', 'analytics', 'uptime', 'tracking', 'statistics', 'performance monitor', 'health check', 'alerting']):
+        return 'monitoring'
+    
+    # === BACKUP & SYNC ===
+    if any(x in name_lower for x in ['duplicati', 'resilio', 'rsnapshot', 'backup', 'duplicacy', 'kopia', 'borg', 'rclone', 'restic']):
+        return 'backup'
+    if any(x in all_text for x in ['backup', 'sync', 'synchronization', 'replication', 'snapshot']):
+        return 'backup'
+    
+    # === DATABASES ===
+    if any(x in name_lower for x in ['mariadb', 'mysql', 'postgres', 'postgresql', 'sqlite', 'mongo', 'mongodb', 'redis', 'influxdb', 'clickhouse', 'cassandra']):
+        return 'database'
+    if any(x in all_text for x in ['database', 'sql', 'nosql', 'data store']):
+        return 'database'
+    
+    # === COMMUNICATION & SOCIAL ===
+    if any(x in name_lower for x in ['freshrss', 'weechat', 'znc', 'apprise', 'ntfy', 'gotify', 'rss', 'miniflux', 'tt-rss', 'flarum', 'discourse', 'mattermost', 'rocketchat', 'matrix', 'mastodon']):
+        return 'communication'
+    if any(x in all_text for x in ['rss reader', 'irc', 'chat', 'messaging', 'notification', 'forum', 'social network', 'feed reader']):
+        return 'communication'
+    
+    # === DESKTOP & BROWSERS ===
+    if any(x in name_lower for x in ['firefox', 'chromium', 'webtop', 'rdesktop', 'guacamole', 'guacd', 'xrdp', 'kasmweb', 'kde', 'xfce', 'mate', 'i3']):
+        return 'desktop'
+    if any(x in all_text for x in ['web browser', 'remote desktop', 'desktop environment', 'browser', 'vnc']):
+        return 'desktop'
+    
+    # === GAMING ===
+    if any(x in name_lower for x in ['steam', 'minetest', 'minecraft', 'terraria', 'factorio', 'valheim', 'gameserver', 'pterodactyl']):
+        return 'gaming'
+    if any(x in all_text for x in ['game server', 'gaming', 'minecraft', 'game']):
+        return 'gaming'
+    
+    # === FILE MANAGEMENT ===
+    if any(x in name_lower for x in ['filebrowser', 'projectsend', 'davos', 'filestash', 'filezilla', 'sftp', 'sftpgo', 'webdav']):
+        return 'files'
+    if any(x in all_text for x in ['file browser', 'file manager', 'file sharing', 'ftp', 'webdav']):
+        return 'files'
+    
+    # === DEVELOPMENT & CODE ===
+    if any(x in name_lower for x in ['code-server', 'vscode', 'gitea', 'gitlab', 'gogs', 'docker', 'git', 'snippet', 'jenkins', 'drone', 'woodpecker', 'forgejo']):
+        return 'development'
+    if any(x in all_text for x in ['code editor', 'ide', 'git', 'ci/cd', 'continuous integration', 'devops', 'repository']):
+        return 'development'
+    
+    # === WEB & CMS ===
+    if any(x in name_lower for x in ['grav', 'wordpress', 'ghost', 'cms', 'nginx', 'apache', 'caddy', 'lighttpd', 'jekyll', 'hugo']):
+        return 'web'
+    if any(x in all_text for x in ['web server', 'content management', 'blog', 'website', 'static site']):
+        return 'web'
+    
+    # === SECURITY ===
+    if any(x in name_lower for x in ['vaultwarden', 'bitwarden', 'keepass', 'authelia', 'authentik', 'keycloak', 'lldap', 'openldap', 'fail2ban', 'crowdsec']):
+        return 'security'
+    if any(x in all_text for x in ['password manager', 'authentication', 'sso', 'single sign-on', 'ldap', 'security', 'access control']):
+        return 'security'
+    
+    # === BOOKS & READING ===
+    if any(x in name_lower for x in ['calibre', 'kavita', 'komga', 'ubooquity', 'cops', 'readarr', 'lazylibrarian']):
+        return 'books'
+    if any(x in all_text for x in ['ebook', 'comic', 'manga', 'book', 'reading', 'library management']):
+        return 'books'
+    
+    # === TV & BROADCAST ===
+    if any(x in name_lower for x in ['tvheadend', 'xteve', 'dizquetv', 'channels', 'plex', 'telly']):
+        return 'tv'
+    if any(x in all_text for x in ['iptv', 'dvr', 'tv tuner', 'epg', 'television']):
+        return 'tv'
+    
+    # === SMART HOME & IOT ===
+    if any(x in name_lower for x in ['homeassistant', 'home-assistant', 'openhab', 'node-red', 'mqtt', 'zigbee', 'zwave', 'esphome']):
+        return 'smarthome'
+    if any(x in all_text for x in ['iot', 'smart home', 'home automation', 'mqtt broker', 'zigbee', 'z-wave']):
+        return 'smarthome'
+    
+    # === UTILITIES ===
+    if any(x in name_lower for x in ['cron', 'ofelia', 'healthcheck', 'diun', 'watchtower', 'webhook', 'changedetection']):
+        return 'utilities'
+    if any(x in all_text for x in ['scheduler', 'cron', 'task automation', 'webhook', 'utility']):
+        return 'utilities'
+    
+    # === SECONDARY CHECKS ON DESCRIPTION/TOPICS ===
+    
+    # Media-related
+    if any(x in desc_lower for x in ['stream', 'video', 'audio', 'music', 'podcast', 'radio', 'movies', 'tv shows']):
+        return 'media'
+    
+    # Monitoring-related
+    if any(x in desc_lower for x in ['monitor', 'tracking', 'metrics', 'dashboard', 'analytics', 'statistics']):
+        return 'monitoring'
+    
+    # Network-related  
+    if any(x in desc_lower for x in ['network', 'proxy', 'vpn', 'dns', 'tunnel', 'firewall']):
+        return 'networking'
+    
+    # Download-related
+    if any(x in desc_lower for x in ['download', 'torrent', 'usenet', 'nzb']):
+        return 'downloads'
+    
+    # File-related
+    if any(x in desc_lower for x in ['file manager', 'file browser', 'file sharing', 'cloud storage']):
+        return 'files'
+    
+    # Default fallback
+    return 'other'
+
+
+def get_default_ports(name):
+    """
+    Get default ports for common containers
+    Comprehensive port mapping for 150+ LinuxServer containers
+    """
+    port_map = {
+        # Media Servers
+        'plex': ['32400:32400'],
+        'jellyfin': ['8096:8096', '8920:8920'],
+        'emby': ['8096:8096', '8920:8920'],
+        'navidrome': ['4533:4533'],
+        'airsonic': ['4040:4040'],
+        'airsonic-advanced': ['4040:4040'],
+        'booksonic': ['4040:4040'],
+        'booksonic-air': ['4040:4040'],
+        'subsonic': ['4040:4040'],
+        'ampache': ['80:80'],
+        'mopidy': ['6680:6680', '6600:6600'],
+        'snapcast': ['1704:1704', '1705:1705'],
+        'kodi-headless': ['8080:8080', '9090:9090'],
+        'muximux': ['80:80'],
+        'kometa': [],  # No web interface
+        
+        # Arr Stack
+        'sonarr': ['8989:8989'],
+        'radarr': ['7878:7878'],
+        'prowlarr': ['9696:9696'],
+        'lidarr': ['8686:8686'],
+        'readarr': ['8787:8787'],
+        'bazarr': ['6767:6767'],
+        'whisparr': ['6969:6969'],
+        'mylar': ['8090:8090'],
+        'mylar3': ['8090:8090'],
+        'lazylibrarian': ['5299:5299'],
+        'headphones': ['8181:8181'],
+        'jackett': ['9117:9117'],
+        'nzbhydra2': ['5076:5076'],
+        
+        # Download Clients
+        'qbittorrent': ['8080:8080', '6881:6881', '6881:6881/udp'],
+        'sabnzbd': ['8080:8080'],
+        'nzbget': ['6789:6789'],
+        'transmission': ['9091:9091', '51413:51413', '51413:51413/udp'],
+        'deluge': ['8112:8112', '6881:6881', '6881:6881/udp'],
+        'rutorrent': ['80:80', '5000:5000', '51413:51413', '6881:6881/udp'],
+        'pyload-ng': ['8000:8000', '9666:9666'],
+        'jdownloader-2': ['5800:5800'],
+        'aria2': ['6800:6800'],
+        
+        # Home Automation & Dashboards
+        'homeassistant': ['8123:8123'],
+        'heimdall': ['80:80', '443:443'],
+        'homer': ['8080:8080'],
+        'homarr': ['7575:7575'],
+        'organizr': ['80:80'],
+        'muximux': ['80:80'],
+        'logarr': ['80:80'],
+        'monitorr': ['80:80'],
+        'domoticz': ['8080:8080', '6144:6144', '1443:1443'],
+        'habridge': ['8080:8080', '50000:50000'],
+        'node-red': ['1880:1880'],
+        'openhab': ['8080:8080', '8443:8443'],
+        
+        # Productivity
+        'nextcloud': ['443:443'],
+        'owncloud': ['80:80', '443:443'],
+        'calibre': ['8080:8080', '8181:8181', '8081:8081'],
+        'calibre-web': ['8083:8083'],
+        'paperless-ngx': ['8000:8000'],
+        'obsidian': ['3000:3000', '3001:3001'],
+        'syncthing': ['8384:8384', '22000:22000', '22000:22000/udp', '21027:21027/udp'],
+        'wikijs': ['3000:3000'],
+        'bookstack': ['6875:80'],
+        'hedgedoc': ['3000:3000'],
+        'grocy': ['80:80'],
+        'kanboard': ['80:80'],
+        'monica': ['80:80'],
+        'firefly-iii': ['8080:8080'],
+        'linkding': ['9090:9090'],
+        'linkwarden': ['3000:3000'],
+        'shiori': ['8080:8080'],
+        'wallabag': ['80:80'],
+        'trilium': ['8080:8080'],
+        'joplin-server': ['22300:22300'],
+        'standardnotes': ['3000:3000'],
+        
+        # Photos
+        'photoprism': ['2342:2342'],
+        'piwigo': ['80:80'],
+        'lychee': ['80:80'],
+        'immich': ['8080:8080'],
+        'photoview': ['80:80'],
+        'photostructure': ['2700:2700'],
+        'chevereto': ['80:80'],
+        'pixapop': ['5000:5000'],
+        
+        # Networking & VPN
+        'wireguard': ['51820:51820/udp'],
+        'openvpn-as': ['943:943', '9443:9443', '1194:1194/udp'],
+        'nginx': ['80:80', '443:443'],
+        'swag': ['443:443', '80:80'],
+        'nginx-proxy-manager': ['80:80', '443:443', '81:81'],
+        'haproxy': ['80:80', '443:443'],
+        'traefik': ['80:80', '443:443', '8080:8080'],
+        'ddclient': [],  # No web interface
+        'duckdns': [],  # No web interface
+        'netbootxyz': ['3000:3000', '69:69/udp', '8080:80'],
+        'smokeping': ['80:80'],
+        'librespeed': ['80:80'],
+        'unifi-network-application': ['8443:8443', '3478:3478/udp', '10001:10001/udp', '8080:8080'],
+        'pihole': ['80:80', '53:53', '53:53/udp'],
+        'adguardhome': ['3000:3000', '53:53', '53:53/udp'],
+        'endlessh': ['2222:2222'],
+        'fail2ban': [],  # No web interface
+        
+        # Monitoring & Analytics
+        'netdata': ['19999:19999'],
+        'scrutiny': ['8080:8080', '8086:8086'],
+        'healthchecks': ['8000:8000'],
+        'uptime-kuma': ['3001:3001'],
+        'tautulli': ['8181:8181'],
+        'overseerr': ['5055:5055'],
+        'ombi': ['3579:3579'],
+        'requestrr': ['4545:4545'],
+        'varken': [],  # No web interface
+        'grafana': ['3000:3000'],
+        'prometheus': ['9090:9090'],
+        'glances': ['61208:61208'],
+        'statping': ['8080:8080'],
+        'librenms': ['8000:8000'],
+        'observium': ['8668:8668'],
+        
+        # Backup & Sync
+        'duplicati': ['8200:8200'],
+        'resilio-sync': ['8888:8888', '55555:55555'],
+        'rsnapshot': [],  # No web interface
+        'duplicacy': ['3875:3875'],
+        'kopia': ['51515:51515'],
+        'rclone': ['5572:5572'],
+        
+        # Databases
+        'mariadb': ['3306:3306'],
+        'mysql-workbench': ['3000:3000', '3001:3001'],
+        'sqlitebrowser': ['3000:3000', '3001:3001'],
+        'postgres': ['5432:5432'],
+        'mongodb': ['27017:27017'],
+        'redis': ['6379:6379'],
+        'influxdb': ['8086:8086'],
+        
+        # Communication & Social
+        'freshrss': ['80:80'],
+        'weechat': ['9001:9001'],
+        'znc': ['6501:6501'],
+        'apprise-api': ['8000:8000'],
+        'ntfy': ['80:80'],
+        'gotify': ['80:80'],
+        'miniflux': ['8080:8080'],
+        'tt-rss': ['80:80'],
+        'flarum': ['80:80'],
+        'discourse': ['80:80'],
+        'mattermost': ['8065:8065'],
+        'rocketchat': ['3000:3000'],
+        
+        # Desktop & Browsers
+        'firefox': ['3000:3000', '3001:3001'],
+        'chromium': ['3000:3000', '3001:3001'],
+        'webtop': ['3000:3000', '3001:3001'],
+        'rdesktop': ['3389:3389'],
+        'guacamole': ['8080:8080'],
+        'guacd': ['4822:4822'],
+        'xrdp': ['3389:3389'],
+        'kasmweb': ['6901:6901'],
+        
+        # Gaming
+        'steamheadless': ['3000:3000', '3001:3001'],
+        'minetest': ['30000:30000/udp'],
+        'minecraft-server': ['25565:25565'],
+        'terraria': ['7777:7777'],
+        'factorio': ['34197:34197/udp', '27015:27015/tcp'],
+        'valheim': ['2456:2456/udp', '2457:2457/udp', '2458:2458/udp'],
+        'pterodactyl': ['80:80', '443:443', '2022:2022'],
+        
+        # File Management
+        'filebrowser': ['80:80'],
+        'projectsend': ['80:80'],
+        'davos': ['8080:8080'],
+        'filestash': ['8334:8334'],
+        'filezilla': ['3000:3000', '3001:3001'],
+        'sftpgo': ['8080:8080', '2022:2022'],
+        
+        # Development & Code
+        'code-server': ['8443:8443'],
+        'gitea': ['3000:3000', '222:22'],
+        'gitlab': ['80:80', '443:443', '22:22'],
+        'gogs': ['3000:3000', '222:22'],
+        'forgejo': ['3000:3000', '222:22'],
+        'jenkins': ['8080:8080', '50000:50000'],
+        'drone': ['80:80', '443:443'],
+        'woodpecker': ['8000:8000', '9000:9000'],
+        'docker-compose': [],  # No web interface
+        
+        # Web & CMS
+        'grav': ['80:80'],
+        'wordpress': ['80:80'],
+        'ghost': ['2368:2368'],
+        'nginx': ['80:80', '443:443'],
+        'apache': ['80:80', '443:443'],
+        'caddy': ['80:80', '443:443'],
+        'lighttpd': ['80:80'],
+        
+        # Security
+        'vaultwarden': ['80:80'],
+        'bitwarden': ['80:80'],
+        'authelia': ['9091:9091'],
+        'authentik': ['9000:9000', '9443:9443'],
+        'keycloak': ['8080:8080'],
+        'lldap': ['3890:3890', '17170:17170'],
+        'openldap': ['389:389', '636:636'],
+        'crowdsec': ['8080:8080'],
+        
+        # Books & Reading
+        'calibre': ['8080:8080', '8181:8181'],
+        'calibre-web': ['8083:8083'],
+        'kavita': ['5000:5000'],
+        'komga': ['8080:8080'],
+        'ubooquity': ['2202:2202', '2203:2203'],
+        'cops': ['80:80'],
+        
+        # TV & Broadcast
+        'tvheadend': ['9981:9981', '9982:9982'],
+        'xteve': ['34400:34400'],
+        'dizquetv': ['8000:8000'],
+        'channels-dvr': ['8089:8089'],
+        'oscam': ['8888:8888'],
+        'minisatip': ['8875:8875', '554:554', '1900:1900/udp'],
+        
+        # Smart Home & IoT
+        'homeassistant': ['8123:8123'],
+        'openhab': ['8080:8080', '8443:8443'],
+        'node-red': ['1880:1880'],
+        'mosquitto': ['1883:1883', '9001:9001'],
+        'zigbee2mqtt': ['8080:8080'],
+        'zwavejs2mqtt': ['8091:8091', '3000:3000'],
+        'esphome': ['6052:6052'],
+        
+        # Utilities
+        'ofelia': [],  # No web interface
+        'diun': [],  # No web interface
+        'watchtower': [],  # No web interface
+        'changedetection': ['5000:5000'],
+        'webhook': ['9000:9000'],
+        
+        # Other
+        'foldingathome': ['7396:7396', '36330:36330'],
+        'boinc': ['8080:8080'],
+        'syslog-ng': ['514:5514/udp', '601:6601/tcp', '6514:6514/tcp'],
+        'snipe-it': ['80:80'],
+        'snippets': ['8080:8080'],
+    }
+    
+    # Return mapped ports or default to 8080
+    return port_map.get(name, ['8080:8080'])
+
+
+def get_default_volumes(name):
+    """
+    Get default volumes for common containers
+    Most containers need /config at minimum
+    """
+    volumes = ['/config']
+    
+    # Media volumes
+    if name in ['plex', 'jellyfin', 'emby', 'kodi-headless']:
+        volumes.append('/media')
+    
+    # Arr stack - downloads
+    if 'arr' in name or name in ['jackett', 'nzbhydra2', 'nzbhydra', 'prowlarr']:
+        volumes.append('/downloads')
+    
+    # Sonarr - TV
+    if name in ['sonarr', 'bazarr']:
+        volumes.append('/tv')
+    
+    # Radarr - Movies
+    if name in ['radarr', 'bazarr']:
+        volumes.append('/movies')
+    
+    # Music
+    if name in ['lidarr', 'navidrome', 'airsonic', 'airsonic-advanced', 'booksonic', 'booksonic-air', 'ampache', 'mopidy']:
+        volumes.append('/music')
+    
+    # Books
+    if name in ['readarr', 'calibre', 'calibre-web', 'lazylibrarian', 'kavita', 'komga', 'ubooquity', 'cops']:
+        volumes.append('/books')
+    
+    # Comics
+    if name in ['mylar3', 'mylar', 'komga', 'kavita']:
+        volumes.append('/comics')
+    
+    # Audiobooks
+    if name in ['booksonic-air', 'audiobookshelf']:
+        volumes.append('/audiobooks')
+    
+    # Podcasts
+    if name in ['booksonic-air', 'airsonic-advanced']:
+        volumes.append('/podcasts')
+    
+    # Download clients
+    if 'torrent' in name or name in ['transmission', 'deluge', 'rutorrent', 'qbittorrent']:
+        volumes.append('/downloads')
+        if name == 'transmission':
+            volumes.append('/watch')
+    
+    if name in ['sabnzbd', 'nzbget', 'pyload-ng']:
+        volumes.append('/downloads')
+    
+    # Photos
+    if name in ['photoprism', 'piwigo', 'immich', 'lychee', 'photoview', 'chevereto']:
+        volumes.append('/photos')
+    
+    if name in ['piwigo']:
+        volumes.append('/gallery')
+    
+    # Cloud storage
+    if name in ['nextcloud', 'owncloud']:
+        volumes.append('/data')
+    
+    # Backup
+    if name in ['duplicati']:
+        volumes.extend(['/backups', '/source'])
+    
+    if name in ['rsnapshot']:
+        volumes.extend(['/snapshots', '/.ssh'])
+    
+    if name in ['resilio-sync', 'syncthing']:
+        volumes.append('/sync')
+    
+    # Document management
+    if name in ['paperless-ngx']:
+        volumes.append('/data')
+    
+    # File browsers
+    if name in ['filebrowser']:
+        volumes.append('/srv')
+    
+    if name in ['projectsend', 'davos']:
+        volumes.append('/data')
+    
+    # TVHeadend
+    if name in ['tvheadend']:
+        volumes.append('/recordings')
+    
+    return volumes
+
+
+def get_fallback_templates():
+    """Minimal fallback templates if comprehensive list fails"""
+    basic_apps = [
+        {
+            "id": "plex",
+            "name": "Plex",
+            "category": "media",
+            "image": "lscr.io/linuxserver/plex:latest",
+            "description": "Your media, your way. Stream your personal collection of movies, TV shows, music, and photos anywhere.",
+            "ports": ["32400:32400"],
+            "volumes": ["/config", "/media"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC", "VERSION=docker"]
+        },
+        {
+            "id": "jellyfin",
+            "name": "Jellyfin",
+            "category": "media",
+            "image": "lscr.io/linuxserver/jellyfin:latest",
+            "description": "Free software media server. Stream your media collection to any device.",
+            "ports": ["8096:8096", "8920:8920"],
+            "volumes": ["/config", "/media"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "sonarr",
+            "name": "Sonarr",
+            "category": "arr",
+            "image": "lscr.io/linuxserver/sonarr:latest",
+            "description": "Smart PVR for newsgroup and bittorrent users. Monitor multiple RSS feeds for new episodes.",
+            "ports": ["8989:8989"],
+            "volumes": ["/config", "/tv", "/downloads"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "radarr",
+            "name": "Radarr",
+            "category": "arr",
+            "image": "lscr.io/linuxserver/radarr:latest",
+            "description": "Movie collection manager for Usenet and BitTorrent users. Monitor multiple RSS feeds.",
+            "ports": ["7878:7878"],
+            "volumes": ["/config", "/movies", "/downloads"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "prowlarr",
+            "name": "Prowlarr",
+            "category": "arr",
+            "image": "lscr.io/linuxserver/prowlarr:latest",
+            "description": "Indexer manager/proxy for Sonarr, Radarr, Lidarr, etc.",
+            "ports": ["9696:9696"],
+            "volumes": ["/config"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "lidarr",
+            "name": "Lidarr",
+            "category": "arr",
+            "image": "lscr.io/linuxserver/lidarr:latest",
+            "description": "Music collection manager for Usenet and BitTorrent users.",
+            "ports": ["8686:8686"],
+            "volumes": ["/config", "/music", "/downloads"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "readarr",
+            "name": "Readarr",
+            "category": "arr",
+            "image": "lscr.io/linuxserver/readarr:develop",
+            "description": "Book, magazine, and audiobook collection manager.",
+            "ports": ["8787:8787"],
+            "volumes": ["/config", "/books", "/downloads"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "qbittorrent",
+            "name": "qBittorrent",
+            "category": "downloads",
+            "image": "lscr.io/linuxserver/qbittorrent:latest",
+            "description": "Free and reliable P2P BitTorrent client.",
+            "ports": ["8080:8080", "6881:6881", "6881:6881/udp"],
+            "volumes": ["/config", "/downloads"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC", "WEBUI_PORT=8080"]
+        },
+        {
+            "id": "sabnzbd",
+            "name": "SABnzbd",
+            "category": "downloads",
+            "image": "lscr.io/linuxserver/sabnzbd:latest",
+            "description": "Free and easy binary newsreader.",
+            "ports": ["8080:8080"],
+            "volumes": ["/config", "/downloads"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "nzbget",
+            "name": "NZBGet",
+            "category": "downloads",
+            "image": "lscr.io/linuxserver/nzbget:latest",
+            "description": "Efficient usenet downloader.",
+            "ports": ["6789:6789"],
+            "volumes": ["/config", "/downloads"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "deluge",
+            "name": "Deluge",
+            "category": "downloads",
+            "image": "lscr.io/linuxserver/deluge:latest",
+            "description": "Lightweight BitTorrent client.",
+            "ports": ["8112:8112", "6881:6881", "6881:6881/udp"],
+            "volumes": ["/config", "/downloads"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "homeassistant",
+            "name": "Home Assistant",
+            "category": "automation",
+            "image": "lscr.io/linuxserver/homeassistant:latest",
+            "description": "Open source home automation platform.",
+            "ports": ["8123:8123"],
+            "volumes": ["/config"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"],
+            "network_mode": "host"
+        },
+        {
+            "id": "nextcloud",
+            "name": "Nextcloud",
+            "category": "cloud",
+            "image": "lscr.io/linuxserver/nextcloud:latest",
+            "description": "Self-hosted productivity platform. File hosting, calendar, contacts, and more.",
+            "ports": ["443:443"],
+            "volumes": ["/config", "/data"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "photoprism",
+            "name": "PhotoPrism",
+            "category": "photos",
+            "image": "lscr.io/linuxserver/photoprism:latest",
+            "description": "AI-powered photo app for the decentralized web.",
+            "ports": ["2342:2342"],
+            "volumes": ["/config", "/photos"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "paperless-ngx",
+            "name": "Paperless-ngx",
+            "category": "productivity",
+            "image": "lscr.io/linuxserver/paperless-ngx:latest",
+            "description": "Document management system with OCR and full-text search.",
+            "ports": ["8000:8000"],
+            "volumes": ["/config", "/data"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "code-server",
+            "name": "Code Server",
+            "category": "development",
+            "image": "lscr.io/linuxserver/code-server:latest",
+            "description": "VS Code in the browser. Code anywhere.",
+            "ports": ["8443:8443"],
+            "volumes": ["/config"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC", "PASSWORD=password"]
+        },
+        {
+            "id": "swag",
+            "name": "SWAG",
+            "category": "networking",
+            "image": "lscr.io/linuxserver/swag:latest",
+            "description": "Secure Web Application Gateway with Nginx, Let's Encrypt, fail2ban, and more.",
+            "ports": ["443:443", "80:80"],
+            "volumes": ["/config"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC", "URL=yourdomain.url", "VALIDATION=http"],
+            "cap_add": ["NET_ADMIN"]
+        },
+        {
+            "id": "nginx",
+            "name": "Nginx",
+            "category": "networking",
+            "image": "lscr.io/linuxserver/nginx:latest",
+            "description": "Simple webserver and reverse proxy.",
+            "ports": ["80:80", "443:443"],
+            "volumes": ["/config"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "wireguard",
+            "name": "WireGuard",
+            "category": "networking",
+            "image": "lscr.io/linuxserver/wireguard:latest",
+            "description": "Fast, modern, secure VPN tunnel.",
+            "ports": ["51820:51820/udp"],
+            "volumes": ["/config"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC", "SERVERURL=auto", "PEERS=1"],
+            "cap_add": ["NET_ADMIN", "SYS_MODULE"],
+            "sysctls": {"net.ipv4.conf.all.src_valid_mark": "1"}
+        },
+        {
+            "id": "vaultwarden",
+            "name": "Vaultwarden",
+            "category": "security",
+            "image": "lscr.io/linuxserver/vaultwarden:latest",
+            "description": "Unofficial Bitwarden compatible server. Password manager.",
+            "ports": ["80:80"],
+            "volumes": ["/config"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "duplicati",
+            "name": "Duplicati",
+            "category": "backup",
+            "image": "lscr.io/linuxserver/duplicati:latest",
+            "description": "Backup software to store encrypted backups online.",
+            "ports": ["8200:8200"],
+            "volumes": ["/config", "/backups", "/source"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "grafana",
+            "name": "Grafana",
+            "category": "monitoring",
+            "image": "lscr.io/linuxserver/grafana:latest",
+            "description": "Analytics and interactive visualization platform.",
+            "ports": ["3000:3000"],
+            "volumes": ["/config"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "emby",
+            "name": "Emby",
+            "category": "media",
+            "image": "lscr.io/linuxserver/emby:latest",
+            "description": "Personal media server with apps on many devices.",
+            "ports": ["8096:8096", "8920:8920"],
+            "volumes": ["/config", "/media"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "transmission",
+            "name": "Transmission",
+            "category": "downloads",
+            "image": "lscr.io/linuxserver/transmission:latest",
+            "description": "Fast, easy, and free BitTorrent client.",
+            "ports": ["9091:9091", "51413:51413", "51413:51413/udp"],
+            "volumes": ["/config", "/downloads", "/watch"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "overseerr",
+            "name": "Overseerr",
+            "category": "media",
+            "image": "lscr.io/linuxserver/overseerr:latest",
+            "description": "Request management and media discovery tool.",
+            "ports": ["5055:5055"],
+            "volumes": ["/config"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "tautulli",
+            "name": "Tautulli",
+            "category": "monitoring",
+            "image": "lscr.io/linuxserver/tautulli:latest",
+            "description": "Monitoring and tracking tool for Plex Media Server.",
+            "ports": ["8181:8181"],
+            "volumes": ["/config"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "bazarr",
+            "name": "Bazarr",
+            "category": "arr",
+            "image": "lscr.io/linuxserver/bazarr:latest",
+            "description": "Companion application to Sonarr and Radarr for managing and downloading subtitles.",
+            "ports": ["6767:6767"],
+            "volumes": ["/config", "/movies", "/tv"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "bookstack",
+            "name": "BookStack",
+            "category": "productivity",
+            "image": "lscr.io/linuxserver/bookstack:latest",
+            "description": "Simple, self-hosted, easy-to-use platform for organizing and storing information.",
+            "ports": ["6875:80"],
+            "volumes": ["/config"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC", "APP_URL=http://localhost:6875", "DB_HOST=bookstack_db", "DB_USER=bookstack", "DB_PASS=yourdbpass", "DB_DATABASE=bookstackapp"]
+        },
+        {
+            "id": "syncthing",
+            "name": "Syncthing",
+            "category": "cloud",
+            "image": "lscr.io/linuxserver/syncthing:latest",
+            "description": "Continuous file synchronization program.",
+            "ports": ["8384:8384", "22000:22000/tcp", "22000:22000/udp", "21027:21027/udp"],
+            "volumes": ["/config", "/data"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        },
+        {
+            "id": "jackett",
+            "name": "Jackett",
+            "category": "arr",
+            "image": "lscr.io/linuxserver/jackett:latest",
+            "description": "API Support for your favorite torrent trackers.",
+            "ports": ["9117:9117"],
+            "volumes": ["/config", "/downloads"],
+            "env": ["PUID=1000", "PGID=1000", "TZ=Etc/UTC"]
+        }
+    ]
+    
+    # Convert to template format
+    templates = []
+    for app in basic_apps:
+        template = generate_template_compose(app)
+        templates.append(template)
+    
+        return templates
+
+
+def generate_template_compose(app_data):
+    """
+    Generate a complete template dictionary with compose file
+    """
+    # Build compose file
+    service_config = {
+        "image": app_data["image"],
+        "container_name": app_data["id"],
+        "environment": app_data["env"],
+        "volumes": [f"./{vol}:{vol}" for vol in app_data["volumes"]],
+        "ports": app_data["ports"],
+        "restart": "unless-stopped"
+    }
+    
+    # Add optional fields
+    if "network_mode" in app_data:
+        service_config["network_mode"] = app_data["network_mode"]
+    if "cap_add" in app_data:
+        service_config["cap_add"] = app_data["cap_add"]
+    if "sysctls" in app_data:
+        service_config["sysctls"] = app_data["sysctls"]
+    
+    compose_dict = {
+        "version": "3.8",
+        "services": {
+            app_data["id"]: service_config
+        }
+    }
+    
+    # Convert to YAML string
+    compose_yaml = yaml.dump(compose_dict, default_flow_style=False, sort_keys=False)
+    
+    return {
+        "id": app_data["id"],
+        "name": app_data["name"],
+        "category": app_data["category"],
+        "description": app_data["description"],
+        "image": app_data["image"],
+        "compose": compose_yaml,
+        "icon": get_category_icon(app_data["category"]),
+        "created_at": app_data.get("created_at", "")  # Include creation date
+    }
+
+
+def get_category_icon(category):
+    """Get emoji icon for category"""
+    icons = {
+        "media": "📺",
+        "arr": "⬇️",
+        "downloads": "📥",
+        "automation": "🏠",
+        "cloud": "☁️",
+        "photos": "📷",
+        "productivity": "📝",
+        "development": "💻",
+        "networking": "🌐",
+        "security": "🔒",
+        "backup": "💾",
+        "monitoring": "📊",
+        "database": "🗄️",
+        "communication": "💬",
+        "desktop": "🖥️",
+        "gaming": "🎮",
+        "files": "📁",
+        "web": "🌍",
+        "books": "📚",
+        "tv": "📡",
+        "smarthome": "🏡",
+        "utilities": "🔧",
+        "other": "📦"
+    }
+    return icons.get(category, "📦")
+
+
+def load_templates_cache():
+    """Load templates from cache file"""
+    global templates_cache
+    
+    if os.path.exists(TEMPLATES_CACHE_FILE):
+        try:
+            with templates_cache_lock:
+                with open(TEMPLATES_CACHE_FILE, 'r') as f:
+                    templates_cache = json.load(f)
+            logger.info(f"Loaded {len(templates_cache.get('templates', []))} templates from cache")
+            return True
+        except Exception as e:
+            logger.error(f"Error loading templates cache: {e}")
+    return False
+
+
+def save_templates_cache():
+    """Save templates to cache file"""
+    try:
+        with templates_cache_lock:
+            with open(TEMPLATES_CACHE_FILE, 'w') as f:
+                json.dump(templates_cache, f, indent=2)
+            
+            # Save last update timestamp
+            with open(TEMPLATES_LAST_UPDATE_FILE, 'w') as f:
+                f.write(datetime.now(pytz.UTC).isoformat())
+        
+        logger.info("✓ Templates cache saved")
+        return True
+    except Exception as e:
+        logger.error(f"Error saving templates cache: {e}")
+        return False
+
+
+def refresh_templates():
+    """
+    Refresh templates from LinuxServer.io
+    Called by scheduler or manual refresh
+    """
+    global templates_cache
+    
+    logger.info("Refreshing template library...")
+    
+    templates = fetch_linuxserver_templates()
+    
+    if templates:
+        with templates_cache_lock:
+            templates_cache = {
+                'last_updated': datetime.now(pytz.UTC).isoformat(),
+                'source': 'linuxserver.io',
+                'count': len(templates),
+                'templates': templates
+            }
+        
+        save_templates_cache()
+        logger.info(f"✓ Template library refreshed: {len(templates)} templates")
+        return True
+    else:
+        logger.warning("Failed to refresh templates, using cache")
+        return False
+
+
+# ============================================================================
+# TEMPLATE API ENDPOINTS
+# ============================================================================
+
+@app.route('/api/templates/list')
+@require_auth
+def api_templates_list():
+    """Get all templates"""
+    try:
+        with templates_cache_lock:
+            return jsonify({
+                'success': True,
+                'last_updated': templates_cache.get('last_updated'),
+                'count': len(templates_cache.get('templates', [])),
+                'templates': templates_cache.get('templates', [])
+            })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/templates/refresh', methods=['POST'])
+@require_auth
+def api_templates_refresh():
+    """Manually refresh templates"""
+    try:
+        success = refresh_templates()
+        if success:
+            return jsonify({
+                'success': True,
+                'message': 'Templates refreshed successfully',
+                'count': len(templates_cache.get('templates', []))
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Failed to refresh templates, using cache'
+            }), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/templates/<template_id>')
+@require_auth
+def api_template_get(template_id):
+    """Get specific template details"""
+    try:
+        with templates_cache_lock:
+            templates = templates_cache.get('templates', [])
+            template = next((t for t in templates if t['id'] == template_id), None)
+            
+            if template:
+                return jsonify(template)
+            else:
+                return jsonify({'error': 'Template not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/templates/categories')
+@require_auth
+def api_templates_categories():
+    """Get all unique categories"""
+    try:
+        with templates_cache_lock:
+            templates = templates_cache.get('templates', [])
+            categories = list(set(t['category'] for t in templates))
+            categories.sort()
+            
+            # Add count per category
+            category_counts = {}
+            for cat in categories:
+                count = sum(1 for t in templates if t['category'] == cat)
+                category_counts[cat] = count
+            
+            return jsonify({
+                'categories': categories,
+                'counts': category_counts
+            })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     try:
         # Test Docker connection
-        print("Testing Docker connection...")
+        logger.info("Testing Docker connection...")
         docker_client.ping()
-        print("✓ Docker connected successfully")
+        logger.info("✓ Docker connected successfully")
+        
+        # Initialize Trivy database on first run
+        logger.info("Checking Trivy vulnerability database...")
+        db_marker = os.path.join(TRIVY_CACHE_DIR, 'db', 'metadata.json')
+        if not os.path.exists(db_marker):
+            logger.info("Trivy database not found, downloading (this may take 2-5 minutes)...")
+            update_trivy_database()
+        else:
+            logger.info("✓ Trivy database exists")
         
         # Load configuration
-        print("Loading configuration...")
+        logger.info("Loading configuration...")
         load_config()
         load_schedules()
         load_health_status()
         load_update_history()
         load_update_status()  # Load per-instance update status
         load_scan_results()  # Load cached scans
-        print("✓ Configuration loaded")
+        logger.info("✓ Configuration loaded")
+        
+        # Load template library cache
+        logger.info("Loading template library...")
+        if not load_templates_cache():
+            logger.info("No template cache found, will refresh on first access")
+        else:
+            logger.info(f"✓ Loaded {len(templates_cache.get('templates', []))} templates")
         
         # Setup scheduler
-        print("Setting up scheduler...")
+        logger.info("Setting up scheduler...")
         scheduler = setup_scheduler()
-        print("✓ Scheduler started")
+        logger.info("✓ Scheduler started")
         
         # Run orphan import on startup
-        print("Scanning for orphan containers to import...")
+        logger.info("Scanning for orphan containers to import...")
         import_orphan_containers_as_stacks()
         
         # Start background stats updater
-        print("Starting background stats updater...")
+        logger.info("Starting background stats updater...")
         stats_thread = threading.Thread(target=update_stats_background, daemon=True)
         stats_thread.start()
-        print("✓ Stats updater started")
+        logger.info("✓ Stats updater started")
         
         # OPTIMIZATION: Start background health checker
-        print("Starting background health checker...")
+        logger.info("Starting background health checker...")
         health_thread = threading.Thread(target=health_check_background_worker, daemon=True)
         health_thread.start()
-        print("✓ Health checker started (runs every 60 seconds)")
+        logger.info("✓ Health checker started (runs every 60 seconds)")
         
         # Display instance info
-        print("=" * 50)
-        print(f"Instance Name: {config.get('instance_name', 'DockUp')}")
-        print(f"API Token: {config.get('api_token', 'Not set')[:16]}...")
-        print(f"Configured Peers: {len(config.get('peers', {}))}")
-        print("=" * 50)
+        logger.info("=" * 50)
+        logger.info(f"Instance Name: {config.get('instance_name', 'DockUp')}")
+        logger.info(f"API Token: {config.get('api_token', 'Not set')[:16]}...")
+        logger.info(f"Configured Peers: {len(config.get('peers', {}))}")
+        logger.info("=" * 50)
         
         # Start Flask app
-        print("Starting Dockup on port 5000...")
-        print("=" * 50)
-        print("Access the UI at: http://localhost:5000")
-        print("=" * 50)
+        logger.info("Starting Dockup on port 5000...")
+        logger.info("=" * 50)
+        logger.info("Access the UI at: http://localhost:5000")
+        logger.info("=" * 50)
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
     except Exception as e:
-        print(f"FATAL ERROR: Failed to start Dockup")
-        print(f"Error: {e}")
-        print("\nTroubleshooting:")
-        print("1. Make sure Docker socket is mounted: -v /var/run/docker.sock:/var/run/docker.sock")
-        print("2. Check if all dependencies are installed: pip install -r requirements.txt")
-        print("3. Ensure port 5000 is not already in use")
+        logger.info(f"FATAL ERROR: Failed to start Dockup")
+        logger.info(f"Error: {e}")
+        logger.info("\nTroubleshooting:")
+        logger.info("1. Make sure Docker socket is mounted: -v /var/run/docker.sock:/var/run/docker.sock")
+        logger.info("2. Check if all dependencies are installed: pip install -r requirements.txt")
+        logger.info("3. Ensure port 5000 is not already in use")
         import traceback
         traceback.print_exc()
         exit(1)
