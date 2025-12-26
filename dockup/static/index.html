@@ -1045,6 +1045,10 @@
                     <i class="fas fa-network-wired"></i>
                     Networks
                 </div>
+                <div class="nav-item" :class="{active: currentView === 'templates'}" @click="currentView = 'templates'; loadTemplates()">
+                    <i class="fas fa-box-open"></i>
+                    Templates
+                </div>
                 <div class="nav-item" :class="{active: currentView === 'settings'}" @click="currentView = 'settings'">
                     <i class="fas fa-cog"></i>
                     Settings
@@ -1275,6 +1279,33 @@
                             </div>
                             <div class="radial-gauge-subtitle">
                                 {{ hostStats.disk_used_gb }} / {{ hostStats.disk_total_gb }} GB
+                            </div>
+                        </div>
+                        
+                        <!-- Temperature Gauge - Only show if temp data available -->
+                        <div v-if="hostStats.temp_celsius !== null && hostStats.temp_celsius !== undefined" style="text-align: center; min-width: 160px;">
+                            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">
+                                <i class="fas fa-thermometer-half"></i> Temperature
+                            </div>
+                            <div class="radial-gauge">
+                                <svg width="140" height="140">
+                                    <circle class="radial-gauge-bg" cx="70" cy="70" r="60"></circle>
+                                    <circle class="radial-gauge-fill" 
+                                            cx="70" cy="70" r="60"
+                                            :stroke="hostStats.temp_celsius > 80 ? '#ef4444' : hostStats.temp_celsius > 70 ? '#f59e0b' : '#3b82f6'"
+                                            :stroke-dasharray="376.99"
+                                            :stroke-dashoffset="376.99 - (376.99 * Math.min(hostStats.temp_celsius, 100) / 100)">
+                                    </circle>
+                                </svg>
+                                <div class="radial-gauge-center">
+                                    <div class="radial-gauge-value" :style="{color: hostStats.temp_celsius > 80 ? '#ef4444' : hostStats.temp_celsius > 70 ? '#f59e0b' : '#3b82f6'}">
+                                        {{ hostStats.temp_celsius }}°C
+                                    </div>
+                                    <div class="radial-gauge-label">CPU Temp</div>
+                                </div>
+                            </div>
+                            <div class="radial-gauge-subtitle">
+                                {{ (hostStats.temp_celsius * 9/5 + 32).toFixed(1) }}°F
                             </div>
                         </div>
                         
@@ -1677,6 +1708,139 @@
             </div>
 
             <!-- Settings View -->
+
+            <!-- Templates View -->
+            <div v-if="currentView === 'templates'">
+                <div class="header">
+                    <h1>📦 Template Library</h1>
+                    <p>Deploy pre-configured stacks from LinuxServer.io</p>
+                </div>
+
+                <!-- Search and Actions -->
+                <div style="display: flex; gap: 15px; margin-bottom: 25px; align-items: center;">
+                    <div style="flex: 1; position: relative;">
+                        <i class="fas fa-search" style="position: absolute; left: 15px; top: 50%; transform: translateY(-50%); color: #64748b;"></i>
+                        <input 
+                            v-model="templateSearch" 
+                            type="text" 
+                            placeholder="Search templates..." 
+                            style="width: 100%; padding: 12px 15px 12px 45px; background: rgba(30, 41, 59, 0.5); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: #e2e8f0; font-size: 14px;"
+                        >
+                    </div>
+                    <button @click="refreshTemplates" class="btn-primary" style="padding: 12px 24px;">
+                        <i class="fas fa-sync-alt" :class="{'fa-spin': templatesRefreshing}"></i>
+                        Refresh
+                    </button>
+                </div>
+
+                <!-- Category Filter -->
+                <div style="display: flex; gap: 10px; margin-bottom: 25px; flex-wrap: wrap;">
+                    <button 
+                        @click="selectedCategory = 'all'" 
+                        class="btn-secondary" 
+                        :style="{background: selectedCategory === 'all' ? 'rgba(147, 197, 253, 0.25)' : '', borderColor: selectedCategory === 'all' ? '#93c5fd' : ''}"
+                        style="padding: 8px 16px; font-size: 13px;"
+                    >
+                        All ({{ templates.length }})
+                    </button>
+                    <button 
+                        @click="selectedCategory = 'latest'" 
+                        class="btn-secondary" 
+                        :style="{background: selectedCategory === 'latest' ? 'rgba(147, 197, 253, 0.25)' : '', borderColor: selectedCategory === 'latest' ? '#93c5fd' : ''}"
+                        style="padding: 8px 16px; font-size: 13px;"
+                        title="Containers released in the last 60 days"
+                    >
+                        <i class="fas fa-star"></i> Latest ({{ latestTemplatesCount }})
+                    </button>
+                    <button 
+                        v-for="cat in templateCategories" 
+                        :key="cat"
+                        @click="selectedCategory = cat" 
+                        class="btn-secondary"
+                        :style="{background: selectedCategory === cat ? 'rgba(147, 197, 253, 0.25)' : '', borderColor: selectedCategory === cat ? '#93c5fd' : ''}"
+                        style="padding: 8px 16px; font-size: 13px; text-transform: capitalize;"
+                    >
+                        {{ cat }} ({{ templates.filter(t => t.category === cat).length }})
+                    </button>
+                </div>
+
+                <!-- Last Updated Info -->
+                <div v-if="templatesLastUpdated" style="margin-bottom: 20px; color: #64748b; font-size: 13px;">
+                    <i class="fas fa-clock"></i>
+                    Last updated: {{ formatDate(templatesLastUpdated) }}
+                </div>
+
+                <!-- Templates Grid -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px;">
+                    <div 
+                        v-for="template in filteredTemplates" 
+                        :key="template.id"
+                        class="card"
+                        style="cursor: pointer; transition: all 0.3s; border: 1px solid rgba(255,255,255,0.1);"
+                        @click="viewTemplate(template)"
+                        @mouseenter="$event.currentTarget.style.borderColor = '#93c5fd'"
+                        @mouseleave="$event.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'"
+                    >
+                        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+                            <div style="font-size: 32px;">{{ template.icon }}</div>
+                            <div style="flex: 1;">
+                                <h3 style="margin: 0; font-size: 16px; color: #e2e8f0;">{{ template.name }}</h3>
+                                <span style="font-size: 11px; color: #64748b; text-transform: uppercase;">{{ template.category }}</span>
+                            </div>
+                        </div>
+                        <p style="font-size: 13px; color: #94a3b8; margin: 0; line-height: 1.5;">
+                            {{ template.description }}
+                        </p>
+                        <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.05);">
+                            <span style="font-size: 11px; color: #64748b;">
+                                <i class="fas fa-box"></i> {{ template.image.split('/').pop().split(':')[0] }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- No Results -->
+                <div v-if="filteredTemplates.length === 0" style="text-align: center; padding: 60px 20px; color: #64748b;">
+                    <i class="fas fa-search" style="font-size: 48px; margin-bottom: 20px; opacity: 0.3;"></i>
+                    <p style="font-size: 16px;">No templates found</p>
+                    <p style="font-size: 14px;">Try a different search or category</p>
+                </div>
+            </div>
+
+            <!-- Template Detail Modal -->
+            <div v-if="selectedTemplate" class="modal-overlay" @click.self="selectedTemplate = null">
+                <div class="modal-content" style="max-width: 900px; max-height: 90vh; overflow-y: auto;">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px;">
+                        <div style="display: flex; align-items: center; gap: 15px;">
+                            <div style="font-size: 48px;">{{ selectedTemplate.icon }}</div>
+                            <div>
+                                <h2 style="margin: 0; font-size: 24px;">{{ selectedTemplate.name }}</h2>
+                                <p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">{{ selectedTemplate.description }}</p>
+                            </div>
+                        </div>
+                        <button @click="selectedTemplate = null" class="btn-secondary" style="padding: 8px 12px;">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+
+                    <!-- Compose Preview -->
+                    <div style="margin-bottom: 20px;">
+                        <h3 style="font-size: 14px; color: #94a3b8; margin-bottom: 10px; text-transform: uppercase;">Docker Compose Preview</h3>
+                        <pre style="background: rgba(15, 23, 42, 0.8); padding: 15px; border-radius: 8px; overflow-x: auto; font-size: 12px; line-height: 1.6; color: #e2e8f0; border: 1px solid rgba(255,255,255,0.1); max-height: 400px; overflow-y: auto;">{{ selectedTemplate.compose }}</pre>
+                    </div>
+
+                    <!-- Actions -->
+                    <div style="display: flex; gap: 10px; justify-flex-end;">
+                        <button @click="selectedTemplate = null" class="btn-secondary">
+                            <i class="fas fa-times"></i> Cancel
+                        </button>
+                        <button @click="deployTemplate(selectedTemplate)" class="btn-primary">
+                            <i class="fas fa-rocket"></i> Deploy Template
+                        </button>
+                    </div>
+                </div>
+            </div>
+
             <div v-if="currentView === 'settings'">
                 <div class="header">
                     <h1>Settings</h1>
@@ -3200,6 +3364,13 @@
         const app = createApp({
             data() {
                 return {
+                // Templates feature
+                templates: [],
+                templateSearch: '',
+                selectedCategory: 'all',
+                selectedTemplate: null,
+                templatesLastUpdated: null,
+                templatesRefreshing: false,
                 version: null,
                 updateAvailable: false,
                 latestVersion: null,
@@ -3340,6 +3511,59 @@
                 };
             },
             computed: {
+                // Template computed properties
+                templateCategories() {
+                    const cats = new Set(this.templates.map(t => t.category));
+                    return Array.from(cats).sort();
+                },
+                latestTemplatesCount() {
+                    // Count templates released in last 60 days
+                    const sixtyDaysAgo = new Date();
+                    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
+                    
+                    return this.templates.filter(t => {
+                        if (!t.created_at) return false;
+                        const createdDate = new Date(t.created_at);
+                        return createdDate >= sixtyDaysAgo;
+                    }).length;
+                },
+                filteredTemplates() {
+                    let filtered = this.templates;
+                    
+                    // Filter by category
+                    if (this.selectedCategory === 'latest') {
+                        // Show containers released in last 60 days, sorted newest first
+                        const sixtyDaysAgo = new Date();
+                        sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
+                        
+                        filtered = filtered.filter(t => {
+                            if (!t.created_at) return false;
+                            const createdDate = new Date(t.created_at);
+                            return createdDate >= sixtyDaysAgo;
+                        });
+                        
+                        // Sort by creation date, newest first
+                        filtered = filtered.sort((a, b) => {
+                            const dateA = new Date(a.created_at || 0);
+                            const dateB = new Date(b.created_at || 0);
+                            return dateB - dateA;
+                        });
+                    } else if (this.selectedCategory !== 'all') {
+                        filtered = filtered.filter(t => t.category === this.selectedCategory);
+                    }
+                    
+                    // Filter by search
+                    if (this.templateSearch) {
+                        const search = this.templateSearch.toLowerCase();
+                        filtered = filtered.filter(t => 
+                            t.name.toLowerCase().includes(search) ||
+                            t.description.toLowerCase().includes(search) ||
+                            t.category.toLowerCase().includes(search)
+                        );
+                    }
+                    
+                    return filtered;
+                },
                 filteredNetworks() {
                     if (this.networkFilter === 'all') return this.networks;
                     return this.networks.filter(n => n.driver === this.networkFilter);
@@ -3416,6 +3640,7 @@
                 }
             },
             async mounted() {
+                this.loadTemplates();  // Load template library
                 // Load theme
                 const savedTheme = localStorage.getItem('dockup_theme');
                 if (savedTheme === 'light') {
@@ -3465,6 +3690,94 @@
                 }
             },
             methods: {
+                // Template methods
+                async loadTemplates() {
+                    try {
+                        const response = await axios.get('/api/templates/list');
+                        this.templates = response.data.templates || [];
+                        this.templatesLastUpdated = response.data.last_updated;
+                        
+                        // If no templates cached, refresh
+                        if (this.templates.length === 0) {
+                            await this.refreshTemplates();
+                        }
+                    } catch (error) {
+                        console.error('Failed to load templates:', error);
+                        this.showToast('Failed to load templates', 'error');
+                    }
+                },
+
+                async refreshTemplates() {
+                    this.templatesRefreshing = true;
+                    try {
+                        const response = await axios.post('/api/templates/refresh');
+                        if (response.data.success) {
+                            await this.loadTemplates();
+                            this.showToast(`Templates refreshed: ${response.data.count} available`, 'success');
+                        }
+                    } catch (error) {
+                        console.error('Failed to refresh templates:', error);
+                        this.showToast('Failed to refresh templates', 'error');
+                    } finally {
+                        this.templatesRefreshing = false;
+                    }
+                },
+
+                viewTemplate(template) {
+                    this.selectedTemplate = template;
+                },
+
+                async deployTemplate(template) {
+                    // Ask for stack name
+                    const stackName = prompt(`Enter name for new stack (suggestion: ${template.id}):`, template.id);
+                    
+                    if (!stackName) return;
+                    
+                    // Validate stack name
+                    if (!/^[a-z0-9][a-z0-9_-]*$/.test(stackName)) {
+                        this.showToast('Invalid stack name. Use lowercase letters, numbers, hyphens, and underscores only.', 'error');
+                        return;
+                    }
+                    
+                    // Check if stack already exists
+                    if (this.stacks.find(s => s.name === stackName)) {
+                        if (!confirm(`Stack "${stackName}" already exists. Overwrite?`)) {
+                            return;
+                        }
+                    }
+                    
+                    try {
+                        // Create stack with template compose
+                        const response = await axios.post(`/api/stack/${stackName}/compose`, {
+                            content: template.compose
+                        });
+                        
+                        if (response.data.error) {
+                            this.showToast(response.data.error, 'error');
+                            return;
+                        }
+                        
+                        this.showToast(`Template deployed: ${stackName}`, 'success');
+                        this.selectedTemplate = null;
+                        
+                        // Switch to dashboard and refresh
+                        this.currentView = 'dashboard';
+                        await this.loadStacks();
+                        
+                        // Open the new stack in editor
+                        setTimeout(() => {
+                            const stack = this.stacks.find(s => s.name === stackName);
+                            if (stack) {
+                                this.editStack(stack);
+                            }
+                        }, 500);
+                        
+                    } catch (error) {
+                        console.error('Failed to deploy template:', error);
+                        this.showToast('Failed to deploy template', 'error');
+                    }
+                },
+
                 async checkVersion() {
                     try {
                         const response = await axios.get('/api/version');
