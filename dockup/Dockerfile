@@ -6,7 +6,8 @@ RUN apt-get update && \
     curl \
     ca-certificates \
     gnupg \
-    lsb-release && \
+    lsb-release \
+    wget && \
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
@@ -17,6 +18,9 @@ RUN apt-get update && \
     apt-get install -y docker-ce-cli docker-compose-plugin && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Install Trivy - using direct binary download (more reliable than apt repo)
+RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.58.0
 
 # Set working directory
 WORKDIR /app
@@ -35,11 +39,12 @@ RUN pip install --no-cache-dir \
     psutil==7.1.3 \
     bcrypt==5.0.0
 
-# Create directories
-RUN mkdir -p /app/static /app/data /stacks
+# Create directories including logs and trivy cache
+RUN mkdir -p /app/static /app/data /app/logs /stacks /config/trivy-cache
 
 # Copy application files
 COPY app.py /app/
+COPY linuxserver_templates.py /app/
 COPY static/index.html /app/static/
 COPY static/login.html /app/static/
 COPY static/setup.html /app/static/
