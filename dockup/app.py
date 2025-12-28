@@ -1064,6 +1064,12 @@ def load_config():
             'host_memory_threshold': 90,  # % RAM usage to alert on
             'host_disk_threshold': 85,  # % Disk usage to alert on
             'host_alert_threshold': 3,  # consecutive failures before alerting
+            # Template settings
+            'templates_enabled': True,  # Enable/disable template library
+            'templates_refresh_schedule': 'weekly_sunday',  # disabled, daily, weekly_sunday, weekly_monday, etc, monthly
+            # Auto-update settings
+            'auto_update_enabled': True,  # Global auto-update toggle
+            'auto_update_check_schedule': 'daily_2am',  # When to check for updates
         }
         save_config()
     
@@ -1096,6 +1102,15 @@ def load_config():
         config['host_disk_threshold'] = 85
     if 'host_alert_threshold' not in config:
         config['host_alert_threshold'] = 3
+        save_config()
+    if 'templates_enabled' not in config:
+        config['templates_enabled'] = True
+    if 'templates_refresh_schedule' not in config:
+        config['templates_refresh_schedule'] = 'weekly_sunday'
+    if 'auto_update_enabled' not in config:
+        config['auto_update_enabled'] = True
+    if 'auto_update_check_schedule' not in config:
+        config['auto_update_check_schedule'] = 'daily_2am'
         save_config()
     # Setup notification services
     setup_notifications()
@@ -2862,6 +2877,11 @@ def auto_update_stack(stack_name):
     Watchtower-style update: Pull first, then compare image IDs
     This is the ONLY reliable method that actually works
     """
+    # Check global auto-update toggle
+    if not config.get('auto_update_enabled', True):
+        logger.debug(f"[{stack_name}] Auto-updates globally disabled, skipping")
+        return
+    
     # Read schedule from FILE (not global dict) to avoid thread issues
     schedule_info = {}
     try:
@@ -3211,6 +3231,29 @@ def check_stack_updates(stack_name):
         return False, None
 
 
+def get_schedule_cron(schedule_name):
+    """
+    Convert schedule name to cron expression
+    Returns None if disabled
+    """
+    schedules = {
+        'disabled': None,
+        'daily': '0 2 * * *',  # 2 AM daily
+        'daily_1am': '0 1 * * *',
+        'daily_2am': '0 2 * * *',
+        'daily_3am': '0 3 * * *',
+        'weekly_sunday': '0 12 * * 0',  # Sunday noon
+        'weekly_monday': '0 12 * * 1',
+        'weekly_tuesday': '0 12 * * 2',
+        'weekly_wednesday': '0 12 * * 3',
+        'weekly_thursday': '0 12 * * 4',
+        'weekly_friday': '0 12 * * 5',
+        'weekly_saturday': '0 12 * * 6',
+        'monthly': '0 12 1 * *',  # 1st of month at noon
+    }
+    return schedules.get(schedule_name, '0 2 * * *')  # Default to 2 AM daily
+
+
 def setup_scheduler():
     """Setup or refresh APScheduler without recreating it"""
     global scheduler
@@ -3312,18 +3355,25 @@ def setup_scheduler():
     except Exception as e:
         logger.error(f"[Scheduler] Error scheduling Trivy DB update: {e}")
     
-    # Template library refresh - Sunday at noon
-    try:
-        template_trigger = CronTrigger.from_crontab('0 12 * * 0', timezone=user_tz)  # Sunday 12:00
-        scheduler.add_job(
-            refresh_templates,
-            template_trigger,
-            id="template_refresh",
-            replace_existing=True
-        )
-        logger.info("[Scheduler] Added template refresh job: Sunday 12:00")
-    except Exception as e:
-        logger.error(f"[Scheduler] Error scheduling template refresh: {e}")
+    # Template library refresh - configurable schedule
+    if config.get('templates_enabled', True):
+        template_schedule = config.get('templates_refresh_schedule', 'weekly_sunday')
+        template_cron = get_schedule_cron(template_schedule)
+        
+        if template_cron:
+            try:
+                template_trigger = CronTrigger.from_crontab(template_cron, timezone=user_tz)
+                scheduler.add_job(
+                    refresh_templates,
+                    template_trigger,
+                    id="template_refresh",
+                    replace_existing=True
+                )
+                logger.info(f"[Scheduler] Added template refresh job: {template_schedule} ({template_cron})")
+            except Exception as e:
+                logger.error(f"[Scheduler] Error scheduling template refresh: {e}")
+        else:
+            logger.info("[Scheduler] Template refresh disabled")
 
     # Host monitoring job
     if config.get("host_monitor_enabled", True):
@@ -4511,6 +4561,14 @@ def api_config_set():
         'peers': config.get('peers', {})
     }
     
+    # Check if schedule-related settings changed
+    schedule_changed = (
+        data.get('templates_enabled') != config.get('templates_enabled') or
+        data.get('templates_refresh_schedule') != config.get('templates_refresh_schedule') or
+        data.get('auto_update_enabled') != config.get('auto_update_enabled') or
+        data.get('auto_update_check_schedule') != config.get('auto_update_check_schedule')
+    )
+    
     # Update config
     config.update(data)
     
@@ -4521,6 +4579,11 @@ def api_config_set():
     # OPTIMIZATION: Debounced save - batches multiple config changes
     save_config_debounced()
     setup_notifications()
+    
+    # Refresh scheduler if schedule-related settings changed
+    if schedule_changed:
+        setup_scheduler()
+        logger.info("Scheduler refreshed due to config changes")
     
     return jsonify({'success': True})
 
@@ -4771,6 +4834,158 @@ def save_service_sections(stack_name, service_name):
         return jsonify({'success': True})
     
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/stack/<stack_name>/resources', methods=['GET'])
+def api_get_stack_resources(stack_name):
+    """Get current resource limits for a stack"""
+    try:
+        stack_path = os.path.join(STACKS_DIR, stack_name)
+        compose_file = None
+        
+        for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
+            potential_file = os.path.join(stack_path, filename)
+            if os.path.exists(potential_file):
+                compose_file = potential_file
+                break
+        
+        if not compose_file:
+            return jsonify({'cpu_limit': 0, 'mem_limit': 0})
+        
+        with open(compose_file, 'r') as f:
+            compose_data = yaml.safe_load(f)
+        
+        services = compose_data.get('services', {})
+        if not services:
+            return jsonify({'cpu_limit': 0, 'mem_limit': 0})
+        
+        # Get first service's limits (we apply limits to all services identically)
+        first_service = list(services.values())[0]
+        cpu_limit = 0
+        mem_limit = 0
+        
+        # Check modern deploy.resources.limits format
+        if 'deploy' in first_service:
+            resources = first_service.get('deploy', {}).get('resources', {})
+            limits = resources.get('limits', {})
+            
+            if 'cpus' in limits:
+                cpu_limit = float(limits['cpus'])
+            
+            if 'memory' in limits:
+                mem_str = str(limits['memory']).upper()
+                if 'G' in mem_str:
+                    mem_limit = float(mem_str.replace('G', ''))
+                elif 'M' in mem_str:
+                    mem_limit = float(mem_str.replace('M', '')) / 1024
+        
+        # Check legacy format
+        if 'cpus' in first_service:
+            cpu_limit = float(first_service['cpus'])
+        
+        if 'mem_limit' in first_service:
+            mem_str = str(first_service['mem_limit']).lower()
+            if 'g' in mem_str:
+                mem_limit = float(mem_str.replace('g', ''))
+            elif 'm' in mem_str:
+                mem_limit = float(mem_str.replace('m', '')) / 1024
+        
+        return jsonify({
+            'cpu_limit': cpu_limit,
+            'mem_limit': mem_limit
+        })
+    
+    except Exception as e:
+        logger.error(f"Error getting resources for {stack_name}: {e}")
+        return jsonify({'cpu_limit': 0, 'mem_limit': 0})
+
+
+@app.route('/api/stack/<stack_name>/resources', methods=['POST'])
+def api_set_stack_resources(stack_name):
+    """Set resource limits for all services in a stack"""
+    try:
+        data = request.json
+        cpu_limit = data.get('cpu_limit', 0)
+        mem_limit = data.get('mem_limit', 0)
+        
+        stack_path = os.path.join(STACKS_DIR, stack_name)
+        compose_file = None
+        
+        for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
+            potential_file = os.path.join(stack_path, filename)
+            if os.path.exists(potential_file):
+                compose_file = potential_file
+                break
+        
+        if not compose_file:
+            return jsonify({'error': 'Compose file not found'}), 404
+        
+        with open(compose_file, 'r') as f:
+            compose_data = yaml.safe_load(f)
+        
+        services = compose_data.get('services', {})
+        
+        # Apply limits to ALL services
+        for service_name, service_data in services.items():
+            # Remove legacy format
+            service_data.pop('cpus', None)
+            service_data.pop('mem_limit', None)
+            
+            # If limits are 0, remove deploy section entirely
+            if cpu_limit == 0 and mem_limit == 0:
+                if 'deploy' in service_data:
+                    if 'resources' in service_data['deploy']:
+                        service_data['deploy'].pop('resources', None)
+                    if not service_data['deploy']:
+                        service_data.pop('deploy', None)
+                continue
+            
+            # Set modern format
+            if 'deploy' not in service_data:
+                service_data['deploy'] = {}
+            if 'resources' not in service_data['deploy']:
+                service_data['deploy']['resources'] = {}
+            if 'limits' not in service_data['deploy']['resources']:
+                service_data['deploy']['resources']['limits'] = {}
+            
+            if cpu_limit > 0:
+                service_data['deploy']['resources']['limits']['cpus'] = str(cpu_limit)
+            else:
+                service_data['deploy']['resources']['limits'].pop('cpus', None)
+            
+            if mem_limit > 0:
+                service_data['deploy']['resources']['limits']['memory'] = f"{mem_limit}G"
+            else:
+                service_data['deploy']['resources']['limits'].pop('memory', None)
+            
+            # Clean up empty structures
+            if not service_data['deploy']['resources']['limits']:
+                service_data['deploy']['resources'].pop('limits', None)
+            if not service_data['deploy']['resources']:
+                service_data['deploy'].pop('resources', None)
+            if not service_data['deploy']:
+                service_data.pop('deploy', None)
+        
+        # Save to compose.yaml
+        new_compose_file = os.path.join(stack_path, 'compose.yaml')
+        with open(new_compose_file, 'w') as f:
+            yaml.safe_dump(compose_data, f, sort_keys=False, default_flow_style=False)
+        
+        # Clean up old compose files
+        for old_file in ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml']:
+            old_path = os.path.join(stack_path, old_file)
+            if os.path.exists(old_path) and old_path != new_compose_file:
+                try:
+                    os.remove(old_path)
+                except Exception:
+                    pass
+        
+        logger.info(f"Resource limits set for {stack_name}: CPU={cpu_limit}, MEM={mem_limit}G")
+        return jsonify({'success': True})
+    
+    except Exception as e:
+        logger.error(f"Error setting resources for {stack_name}: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -5591,6 +5806,7 @@ def api_regenerate_token():
 TEMPLATES_DIR = os.path.join(DATA_DIR, 'templates')
 TEMPLATES_CACHE_FILE = os.path.join(TEMPLATES_DIR, 'cache.json')
 TEMPLATES_LAST_UPDATE_FILE = os.path.join(TEMPLATES_DIR, 'last_update.txt')
+DOCS_CACHE_FILE = os.path.join(TEMPLATES_DIR, 'docs_cache.json')
 
 # Ensure templates directory exists
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
@@ -5602,42 +5818,826 @@ templates_cache = {
 }
 templates_cache_lock = threading.Lock()
 
+# Docs scraping cache storage
+# Structure: {'container_name': {'env': [], 'volumes': [], 'ports': [], ...}}
+docs_cache = {}
+docs_cache_lock = threading.Lock()
+
+
+# ============================================================================
+# CASAOS APPSTORE - WITH FRONTEND COMPATIBILITY
+# ============================================================================
+
+import zipfile
+import re
+
+CASAOS_SOURCES = {
+    "main": {
+        "name": "CasaOS Main",
+        "url": "https://github.com/IceWhaleTech/CasaOS-AppStore/archive/refs/heads/main.zip",
+        "apps_path": "CasaOS-AppStore-main/Apps"
+    },
+    "homeautomation": {
+        "name": "CasaOS Home Automation",
+        "url": "https://github.com/mr-manuel/CasaOS-HomeAutomation-AppStore/archive/refs/tags/latest.zip",
+        "apps_path": "CasaOS-HomeAutomation-AppStore-latest/Apps"
+    },
+    "bigbear": {
+        "name": "Big Bear CasaOS",
+        "url": "https://github.com/bigbeartechworld/big-bear-casaos/archive/refs/heads/master.zip",
+        "apps_path": "big-bear-casaos-master/Apps"
+    }
+}
+
+
+def safe_str(val, maxlen=500):
+    """Safely convert to string"""
+    try:
+        return str(val)[:maxlen].strip() if val else ''
+    except:
+        return ''
+
+
+
+def map_casaos_category(casaos_cat):
+    """Map CasaOS categories to DockUp categories"""
+    if not casaos_cat:
+        return 'other'
+    
+    cat = str(casaos_cat).lower().strip()
+    
+    # Direct matches
+    category_map = {
+        'media': 'media',
+        'entertainment': 'media',
+        'video': 'media',
+        'music': 'media',
+        'photo': 'media',
+        'photos': 'media',
+        
+        'automation': 'automation',
+        'home-automation': 'automation',
+        'smart-home': 'automation',
+        'iot': 'automation',
+        
+        'productivity': 'productivity',
+        'office': 'productivity',
+        'documents': 'productivity',
+        
+        'development': 'development',
+        'developer-tools': 'development',
+        'programming': 'development',
+        'code': 'development',
+        
+        'networking': 'networking',
+        'network': 'networking',
+        'vpn': 'networking',
+        'proxy': 'networking',
+        
+        'security': 'security',
+        'privacy': 'security',
+        
+        'storage': 'storage',
+        'backup': 'storage',
+        'cloud': 'storage',
+        'file-sharing': 'storage',
+        
+        'monitoring': 'monitoring',
+        'analytics': 'monitoring',
+        'metrics': 'monitoring',
+        
+        'communication': 'communication',
+        'chat': 'communication',
+        'messaging': 'communication',
+        
+        'gaming': 'gaming',
+        'games': 'gaming',
+        
+        'utilities': 'utilities',
+        'tools': 'utilities',
+        'utility': 'utilities',
+    }
+    
+    # Check direct match
+    if cat in category_map:
+        return category_map[cat]
+    
+    # Check partial matches
+    for key, value in category_map.items():
+        if key in cat or cat in key:
+            return value
+    
+    return 'other'
+
+def clean_casaos_compose(compose_content):
+    """Clean x-casaos AND comments"""
+    try:
+        if not compose_content:
+            return None
+        
+        # Validate YAML first
+        try:
+            data = yaml.safe_load(compose_content)
+            if not data or 'services' not in data or not data['services']:
+                return None
+        except:
+            return None
+        
+        # Clean line by line
+        lines_list = compose_content.split('\n')
+        cleaned = []
+        in_x = False
+        x_indent = 0
+        
+        for line in lines_list:
+            stripped = line.lstrip()
+            indent = len(line) - len(stripped)
+            
+            # Skip pure comment lines
+            if stripped.startswith('#'):
+                continue
+            
+            # Remove inline comments (preserve # in quoted strings)
+            if '#' in line and not any(q in line[:line.index('#')] for q in ['"', "'"]):
+                line = line[:line.index('#')].rstrip()
+            
+            # Skip x- blocks
+            if stripped.startswith('x-'):
+                in_x = True
+                x_indent = indent
+                continue
+            
+            if in_x:
+                if stripped and indent > x_indent:
+                    continue
+                else:
+                    in_x = False
+            
+            # Skip empty lines
+            if not line.strip():
+                continue
+            
+            cleaned.append(line)
+        
+        result = '\n'.join(cleaned)
+        
+        # Verify still valid
+        try:
+            data = yaml.safe_load(result)
+            if data and 'services' in data and data['services']:
+                return result
+        except:
+            pass
+        
+        return None
+    except:
+        return None
+
+
+
+def fetch_casaos_source(source_key, source_config):
+    """Fetch CasaOS - with IMAGE field for frontend"""
+    templates = []
+    
+    try:
+        logger.info(f"Fetching {source_config['name']}...")
+        response = requests.get(source_config['url'], timeout=120)
+        response.raise_for_status()
+        
+        with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
+            files = zip_ref.namelist()
+            composes = [f for f in files if f.startswith(source_config['apps_path']) and f.endswith('docker-compose.yml')]
+            
+            for cf in composes:
+                try:
+                    app_name = os.path.basename(os.path.dirname(cf))
+                    if not app_name or app_name == 'Apps' or len(app_name) > 100:
+                        continue
+                    
+                    compose_bytes = zip_ref.read(cf)
+                    if len(compose_bytes) > 50000:
+                        continue
+                    
+                    compose_raw = compose_bytes.decode('utf-8', errors='replace')
+                    compose_clean = clean_casaos_compose(compose_raw)
+                    
+                    if not compose_clean or len(compose_clean) > 5000:
+                        continue
+                    
+                    # Extract IMAGE from compose for frontend
+                    image_name = 'unknown:latest'
+                    try:
+                        compose_data = yaml.safe_load(compose_clean)
+                        if compose_data and 'services' in compose_data:
+                            first_service = list(compose_data['services'].values())[0]
+                            if isinstance(first_service, dict) and 'image' in first_service:
+                                image_name = str(first_service['image'])[:200]
+                    except:
+                        pass
+                    
+                    # Get metadata
+                    meta = {'title': app_name.replace('-', ' ').title(), 'description': '', 'category': 'other', 'icon': '', 'author': source_config['name'], 'project_url': ''}
+                    
+                    cfg_path = os.path.join(os.path.dirname(cf), 'config.json')
+                    if cfg_path in files:
+                        try:
+                            cfg_data = json.loads(zip_ref.read(cfg_path).decode('utf-8', errors='replace'))
+                            meta['title'] = safe_str(cfg_data.get('title', cfg_data.get('name', meta['title'])), 100)
+                            meta['description'] = safe_str(cfg_data.get('tagline', cfg_data.get('description', '')), 500)
+                            meta['category'] = map_casaos_category(cfg_data.get('category', 'other'))
+                            meta['icon'] = safe_str(cfg_data.get('icon', ''), 500)
+                            meta['project_url'] = safe_str(cfg_data.get('project_url', ''), 500)
+                        except:
+                            pass
+                    
+                    # Template with ALL frontend fields
+                    template = {
+                        'id': safe_str(f"casaos_{source_key}_{app_name}", 200),
+                        'name': safe_str(meta['title'], 100),
+                        'description': safe_str(meta['description'] or 'No description', 500),
+                        'category': safe_str(meta['category'], 50),
+                        'compose': compose_clean[:5000],  # Max 5KB
+                        'image': image_name,
+                        'icon': safe_str(meta['icon'] or get_category_icon(meta['category']), 500),
+                        'docs_url': safe_str(meta['project_url'], 500),
+                        'github_url': safe_str(meta['project_url'], 500),
+                        'source': source_config['name'],
+                        'stars': 0,
+                        'pulls': 0,
+                        'size_mb': 0
+                    }
+                    
+                    try:
+                        json.dumps(template)
+                        templates.append(template)
+                    except:
+                        continue
+                        
+                except:
+                    continue
+        
+        logger.info(f"✓ {source_config['name']}: {len(templates)}")
+        return templates
+        
+    except Exception as e:
+        logger.error(f"{source_config['name']} error: {e}")
+        return []
+
+
+def fetch_all_casaos():
+    """Fetch all CasaOS"""
+    all_temps = []
+    for key, cfg in CASAOS_SOURCES.items():
+        temps = fetch_casaos_source(key, cfg)
+        all_temps.extend(temps)
+    logger.info(f"✓ CasaOS: {len(all_temps)}")
+    return all_temps
+
+
+
+
+# ============================================================================
+# ENHANCED TEMPLATE SYSTEM - Docker Hub + LinuxServer.io Docs Integration
+# ============================================================================
+
+def fetch_dockerhub_metadata(image_name):
+    """
+    Fetch real metadata from Docker Hub API v2
+    Returns: {
+        'description': str,
+        'stars': int,
+        'pulls': int,
+        'last_updated': str,
+        'tags': list,
+        'size': int
+    }
+    """
+    try:
+        # Parse image name - handle lscr.io/linuxserver/name format
+        if 'linuxserver' in image_name:
+            repo_name = image_name.split('/')[-1].split(':')[0]
+            namespace = 'linuxserver'
+        else:
+            parts = image_name.split('/')
+            namespace = parts[0] if len(parts) > 1 else 'library'
+            repo_name = parts[-1].split(':')[0]
+        
+        # Fetch repository info
+        repo_url = f"https://hub.docker.com/v2/repositories/{namespace}/{repo_name}"
+        response = requests.get(repo_url, timeout=10)
+        
+        if response.status_code == 200:
+            repo_data = response.json()
+            
+            # Fetch available tags
+            tags_url = f"https://hub.docker.com/v2/repositories/{namespace}/{repo_name}/tags?page_size=25"
+            tags_response = requests.get(tags_url, timeout=10)
+            tags_data = tags_response.json() if tags_response.status_code == 200 else {}
+            
+            available_tags = []
+            if 'results' in tags_data:
+                for tag in tags_data['results']:
+                    tag_info = {
+                        'name': tag['name'],
+                        'last_updated': tag.get('last_updated', ''),
+                        'size': tag.get('full_size', 0)
+                    }
+                    # Get architecture info
+                    if 'images' in tag and tag['images']:
+                        tag_info['architectures'] = [img.get('architecture', 'unknown') for img in tag['images']]
+                    available_tags.append(tag_info)
+            
+            return {
+                'description': repo_data.get('description', ''),
+                'full_description': repo_data.get('full_description', ''),
+                'stars': repo_data.get('star_count', 0),
+                'pulls': repo_data.get('pull_count', 0),
+                'last_updated': repo_data.get('last_updated', ''),
+                'tags': available_tags,
+                'is_official': repo_data.get('is_official', False)
+            }
+        
+        return None
+    except Exception as e:
+        logger.debug(f"Failed to fetch Docker Hub metadata for {image_name}: {e}")
+        return None
+
+
+def scrape_linuxserver_docs(container_name):
+    """
+    Scrape LinuxServer.io documentation using BeautifulSoup for proper HTML parsing
+    Extracts docker-compose YAML from <pre><code> blocks
+    Uses disk cache to avoid repeated scraping
+    Returns environment variables, volumes, ports, and special requirements
+    """
+    global docs_cache
+    
+    # Check cache first
+    with docs_cache_lock:
+        if container_name in docs_cache:
+            logger.debug(f"Using cached docs for {container_name}")
+            return docs_cache[container_name]
+    
+    try:
+        from bs4 import BeautifulSoup
+        
+        docs_url = f"https://docs.linuxserver.io/images/docker-{container_name}"
+        response = requests.get(docs_url, timeout=15)
+        
+        if response.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(response.text, 'lxml')
+        
+        # Find all code blocks - LinuxServer docs use <pre><code> for docker-compose
+        yaml_content = None
+        
+        # Look for code blocks containing 'version:' or 'services:' (docker-compose markers)
+        code_blocks = soup.find_all('code')
+        for code in code_blocks:
+            text = code.get_text()
+            if 'services:' in text or 'version:' in text:
+                yaml_content = text
+                break
+        
+        # Fallback: try <pre> tags
+        if not yaml_content:
+            pre_blocks = soup.find_all('pre')
+            for pre in pre_blocks:
+                text = pre.get_text()
+                if 'services:' in text or 'version:' in text:
+                    yaml_content = text
+                    break
+        
+        if not yaml_content:
+            logger.debug(f"No docker-compose YAML found for {container_name}")
+            return None
+        
+        # Parse YAML content to extract configuration
+        env_vars = []
+        volumes = []
+        ports = []
+        cap_add = []
+        devices = []
+        privileged = False
+        network_mode = None
+        
+        # Track which section we're in
+        in_environment = False
+        in_volumes = False
+        in_ports = False
+        in_cap_add = False
+        in_devices = False
+        
+        for line in yaml_content.split('\n'):
+            stripped = line.strip()
+            
+            # Detect sections
+            if 'environment:' in stripped:
+                in_environment = True
+                in_volumes = in_ports = in_cap_add = in_devices = False
+                continue
+            elif 'volumes:' in stripped:
+                in_volumes = True
+                in_environment = in_ports = in_cap_add = in_devices = False
+                continue
+            elif 'ports:' in stripped:
+                in_ports = True
+                in_environment = in_volumes = in_cap_add = in_devices = False
+                continue
+            elif 'cap_add:' in stripped:
+                in_cap_add = True
+                in_environment = in_volumes = in_ports = in_devices = False
+                continue
+            elif 'devices:' in stripped:
+                in_devices = True
+                in_environment = in_volumes = in_ports = in_cap_add = False
+                continue
+            elif stripped and not stripped.startswith('-') and ':' in stripped:
+                # New top-level key, reset all section flags
+                in_environment = in_volumes = in_ports = in_cap_add = in_devices = False
+            
+            # Extract list items based on current section
+            if stripped.startswith('-'):
+                value = stripped[1:].strip()
+                
+                if in_environment:
+                    # Environment: "- KEY=value"
+                    if '=' in value:
+                        var_name = value.split('=')[0]
+                        if var_name not in ['PUID', 'PGID', 'TZ']:
+                            env_vars.append(value)
+                
+                elif in_volumes:
+                    # Volumes: "- /host/path:/container/path"
+                    if ':' in value:
+                        container_path = value.split(':')[1]
+                        if container_path != '/config':
+                            volumes.append(container_path)
+                
+                elif in_ports:
+                    # Ports: "- 8080:8080"
+                    if ':' in value and value[0].isdigit():
+                        ports.append(value)
+                
+                elif in_cap_add:
+                    # Capabilities: "- SYS_ADMIN"
+                    if value.isupper() and '_' in value:
+                        cap_add.append(value)
+                
+                elif in_devices:
+                    # Devices: "- /dev/dri"
+                    if value.startswith('/dev/'):
+                        device_path = value.split(':')[0] if ':' in value else value
+                        devices.append(device_path)
+            
+            # Check for privileged mode
+            if 'privileged:' in stripped and 'true' in stripped:
+                privileged = True
+            
+            # Check for network mode
+            if 'network_mode:' in stripped:
+                if 'host' in stripped:
+                    network_mode = 'host'
+                elif 'bridge' in stripped:
+                    network_mode = 'bridge'
+        
+        # Only return if we found something useful
+        if env_vars or volumes or ports or cap_add or devices or privileged or network_mode:
+            logger.debug(f"Scraped docs for {container_name}: env={len(env_vars)}, vols={len(volumes)}, ports={len(ports)}")
+            result = {
+                'env': env_vars,
+                'volumes': volumes,
+                'ports': ports,
+                'cap_add': cap_add,
+                'devices': devices,
+                'privileged': privileged,
+                'network_mode': network_mode
+            }
+            
+            # Cache the result
+            with docs_cache_lock:
+                docs_cache[container_name] = result
+            
+            return result
+        
+        return None
+        
+    except Exception as e:
+        logger.debug(f"Failed to scrape docs for {container_name}: {e}")
+        return None
+
+
+def get_intelligent_volume_paths(container_name, volumes):
+    """
+    Generate intelligent volume paths using /opt/appdata pattern
+    instead of generic ./volume format
+    
+    Example:
+        /config -> /opt/appdata/plex/config:/config
+        /media -> /mnt/media:/media
+        /downloads -> /mnt/downloads:/downloads
+    """
+    volume_mappings = []
+    
+    for vol in volumes:
+        vol = vol.strip()
+        
+        # Config always goes to /opt/appdata/{name}/config
+        if vol == '/config':
+            volume_mappings.append(f"/opt/appdata/{container_name}/config:/config")
+        
+        # Media paths point to actual media storage
+        elif vol in ['/media', '/movies', '/tv', '/music', '/books', '/photos']:
+            # Map to actual media paths users likely have
+            volume_mappings.append(f"/mnt{vol}:{vol}")
+        
+        # Downloads path
+        elif vol == '/downloads':
+            volume_mappings.append(f"/mnt/downloads:{vol}")
+        
+        # Data/storage paths
+        elif vol in ['/data', '/storage']:
+            volume_mappings.append(f"/opt/appdata/{container_name}/data:{vol}")
+        
+        # Backup paths
+        elif vol in ['/backups', '/backup']:
+            volume_mappings.append(f"/mnt/backups:{vol}")
+        
+        # Everything else goes to /opt/appdata/{name}/{dirname}
+        else:
+            dir_name = vol.split('/')[-1] or 'data'
+            volume_mappings.append(f"/opt/appdata/{container_name}/{dir_name}:{vol}")
+    
+    return volume_mappings
+
+
+def get_container_healthcheck(container_name, ports):
+    """
+    Generate healthcheck configuration based on container type
+    """
+    # Extract first HTTP port
+    http_port = None
+    for port in ports:
+        port_num = port.split(':')[0]
+        if port_num not in ['51820', '1194', '22']:  # Skip VPN/SSH ports
+            http_port = port_num
+            break
+    
+    if not http_port:
+        return None
+    
+    # Common healthcheck patterns
+    healthchecks = {
+        # Media servers
+        'plex': {'test': f'curl -f http://localhost:{http_port}/web || exit 1', 'interval': '30s'},
+        'jellyfin': {'test': f'curl -f http://localhost:{http_port}/health || exit 1', 'interval': '30s'},
+        'emby': {'test': f'curl -f http://localhost:{http_port}/health || exit 1', 'interval': '30s'},
+        
+        # *arr stack
+        'sonarr': {'test': f'curl -f http://localhost:{http_port}/ping || exit 1', 'interval': '30s'},
+        'radarr': {'test': f'curl -f http://localhost:{http_port}/ping || exit 1', 'interval': '30s'},
+        'lidarr': {'test': f'curl -f http://localhost:{http_port}/ping || exit 1', 'interval': '30s'},
+        'prowlarr': {'test': f'curl -f http://localhost:{http_port}/ping || exit 1', 'interval': '30s'},
+        'readarr': {'test': f'curl -f http://localhost:{http_port}/ping || exit 1', 'interval': '30s'},
+        
+        # Generic web UI
+        'default': {'test': f'curl -f http://localhost:{http_port}/ || exit 1', 'interval': '30s'}
+    }
+    
+    check = healthchecks.get(container_name, healthchecks['default'])
+    check.update({
+        'timeout': '10s',
+        'retries': 3,
+        'start_period': '40s'
+    })
+    
+    return check
+
+
+def needs_host_network(container_name):
+    """Determine if container needs host networking"""
+    host_network_containers = [
+        'plex',  # DLNA discovery
+        'homeassistant',  # mDNS discovery
+        'tvheadend',  # Network tuners
+        'unifi-network-application',  # Device discovery
+        'pihole',  # DNS
+        'adguardhome'  # DNS
+    ]
+    return container_name in host_network_containers
+
+
+def get_enhanced_environment_vars(container_name, base_env):
+    """
+    Add container-specific environment variables with sensible defaults
+    """
+    env_vars = base_env.copy()
+    
+    # Container-specific additions
+    env_additions = {
+        'plex': ['VERSION=docker', 'PLEX_CLAIM='],
+        'qbittorrent': ['WEBUI_PORT=8080'],
+        'transmission': ['USER=admin', 'PASS='],
+        'wireguard': ['SERVERURL=auto', 'PEERS=1', 'PEERDNS=auto'],
+        'heimdall': ['APP_NAME=DockUp Dashboard'],
+        'nextcloud': ['NEXTCLOUD_ADMIN_USER=admin', 'NEXTCLOUD_ADMIN_PASSWORD='],
+    }
+    
+    if container_name in env_additions:
+        env_vars.extend(env_additions[container_name])
+    
+    return env_vars
+
+
+def generate_enhanced_compose(app_data, dockerhub_meta=None, docs_config=None):
+    """
+    Generate enhanced Docker Compose with:
+    - Better volume paths
+    - Healthchecks
+    - Proper network modes
+    - Labels for organization
+    - No version (modern compose)
+    """
+    
+    container_name = app_data["id"]
+    
+    # Use docs config if available, otherwise use app_data
+    if docs_config:
+        ports = docs_config.get('ports', [])
+        volumes = docs_config.get('volumes', [])
+        env = docs_config.get('env', [])
+        cap_add = docs_config.get('cap_add', [])
+        devices = docs_config.get('devices', [])
+        privileged = docs_config.get('privileged', False)
+        network_mode = docs_config.get('network_mode')
+    else:
+        ports = []
+        volumes = []
+        env = []
+        cap_add = app_data.get('cap_add', [])
+        devices = []
+        privileged = False
+        network_mode = None
+    
+    # Only use app_data ports/volumes if not found in docs_config
+    if not ports and 'ports' in app_data:
+        ports = app_data.get('ports', [])
+    if not volumes and 'volumes' in app_data:
+        volumes = app_data.get('volumes', [])
+    
+    # Add base environment variables
+    base_env = ['PUID=1000', 'PGID=1000', 'TZ=Etc/UTC']
+    all_env = base_env + env
+    all_env = get_enhanced_environment_vars(container_name, all_env)
+    
+    # Ensure /config is in volumes list, but avoid duplicates
+    all_volumes = list(set(volumes + ['/config']))  # Use set to remove duplicates
+    
+    # Get intelligent volume paths
+    intelligent_volumes = get_intelligent_volume_paths(container_name, all_volumes)
+    
+    # Build service configuration
+    service_config = {
+        'image': app_data['image'],
+        'container_name': container_name,
+        'hostname': container_name,
+        'environment': all_env,
+        'volumes': intelligent_volumes,
+        'restart': 'unless-stopped',
+        'labels': [
+            f"com.dockup.category={app_data.get('category', 'other')}",
+            f"com.dockup.template=true",
+            "com.dockup.managed=true"
+        ]
+    }
+    
+    # Add ports if any
+    if ports:
+        service_config['ports'] = ports
+    
+    # Add network mode
+    if network_mode:
+        service_config['network_mode'] = network_mode
+    elif needs_host_network(container_name):
+        service_config['network_mode'] = 'host'
+    
+    # Add capabilities
+    if cap_add:
+        service_config['cap_add'] = cap_add
+    
+    # Add devices
+    if devices:
+        service_config['devices'] = devices
+    
+    # Add privileged if needed
+    if privileged:
+        service_config['privileged'] = True
+    
+    # Add sysctls if present
+    if 'sysctls' in app_data:
+        service_config['sysctls'] = app_data['sysctls']
+    
+    # Add healthcheck
+    healthcheck = get_container_healthcheck(container_name, ports)
+    if healthcheck:
+        service_config['healthcheck'] = healthcheck
+    
+    # Build compose dict (no version for modern compose)
+    compose_dict = {
+        'services': {
+            container_name: service_config
+        }
+    }
+    
+    # Convert to YAML
+    yaml_str = yaml.dump(compose_dict, default_flow_style=False, sort_keys=False, width=1000)
+    
+    return yaml_str
+
 
 def fetch_linuxserver_templates():
     """
-    Fetch comprehensive list of LinuxServer.io templates by scraping their GitHub
-    Auto-updates from GitHub API on each refresh
-    Returns list of template dictionaries
+    Enhanced template fetching with Docker Hub integration and docs scraping
     """
     try:
-        logger.info("Fetching LinuxServer.io templates from GitHub...")
+        logger.info("Fetching LinuxServer.io templates with enhanced metadata...")
         
         templates = []
         
-        # Try to fetch from GitHub API first
+        # Try GitHub API first for repository list
         github_templates = fetch_from_github_api()
         
         if github_templates and len(github_templates) > 50:
-            logger.info(f"✓ Loaded {len(github_templates)} templates from GitHub API")
-            return github_templates
+            logger.info(f"Processing {len(github_templates)} templates from GitHub...")
+            
+            # Enhance each template with Docker Hub data and docs
+            for i, template in enumerate(github_templates):
+                try:
+                    container_name = template['id']
+                    image_name = template['image']
+                    
+                    # Fetch Docker Hub metadata
+                    dockerhub_meta = fetch_dockerhub_metadata(image_name)
+                    
+                    # Fetch LinuxServer.io docs (now properly extracts YAML only)
+                    docs_config = scrape_linuxserver_docs(container_name)
+                    
+                    # Enhance description with Docker Hub data
+                    if dockerhub_meta:
+                        if dockerhub_meta['description']:
+                            template['description'] = dockerhub_meta['description']
+                        template['stars'] = dockerhub_meta['stars']
+                        template['pulls'] = dockerhub_meta['pulls']
+                        template['last_updated'] = dockerhub_meta['last_updated']
+                        template['available_tags'] = [t['name'] for t in dockerhub_meta['tags'][:10]]  # Top 10 tags
+                        
+                        # Add size info from latest tag
+                        if dockerhub_meta['tags']:
+                            template['size_mb'] = round(dockerhub_meta['tags'][0].get('size', 0) / 1024 / 1024, 1)
+                    
+                    # Regenerate compose with enhanced data (docs_config has clean YAML data)
+                    template['compose'] = generate_enhanced_compose(template, dockerhub_meta, docs_config)
+                    
+                    # Add docs URL
+                    template['docs_url'] = f"https://docs.linuxserver.io/images/docker-{container_name}"
+                    template['github_url'] = f"https://github.com/linuxserver/docker-{container_name}"
+                    
+                    templates.append(template)
+                    
+                    if (i + 1) % 10 == 0:
+                        logger.info(f"Enhanced {i + 1}/{len(github_templates)} templates...")
+                    
+                except Exception as e:
+                    logger.debug(f"Failed to enhance template {template.get('id', 'unknown')}: {e}")
+                    templates.append(template)  # Add original template on error
+            
+            logger.info(f"✓ Enhanced {len(templates)} templates with Docker Hub metadata")
+            return templates
         
-        # Fallback to comprehensive static list
-        logger.warning("GitHub API failed, using comprehensive static list...")
+        # Fallback to static list
+        logger.warning("GitHub API failed, using enhanced static list...")
         from linuxserver_templates import get_all_linuxserver_templates
         
         lsio_apps = get_all_linuxserver_templates()
         
         for app in lsio_apps:
-            template = generate_template_compose(app)
+            # Enhance static templates with Docker Hub and docs
+            dockerhub_meta = fetch_dockerhub_metadata(app['image'])
+            docs_config = scrape_linuxserver_docs(app['id'])
+            
+            template = generate_template_compose(app, dockerhub_meta, docs_config)
             templates.append(template)
         
-        logger.info(f"✓ Loaded {len(templates)} templates from static list")
+        logger.info(f"✓ Enhanced {len(templates)} templates from static list")
         return templates
         
     except Exception as e:
         logger.error(f"Error loading LinuxServer templates: {e}")
         logger.info("Falling back to basic template list...")
         return get_fallback_templates()
+
+
 
 
 def fetch_from_github_api():
@@ -5742,8 +6742,8 @@ def parse_github_repo(repo):
             "created_at": created_at  # Add creation date for sorting
         }
         
-        # Generate compose template
-        return generate_template_compose(template_data)
+        # Return template (will be enhanced later by fetch_linuxserver_templates)
+        return template_data
         
     except Exception as e:
         logger.error(f"Error parsing repo {repo.get('name')}: {e}")
@@ -6712,48 +7712,37 @@ def get_fallback_templates():
         return templates
 
 
-def generate_template_compose(app_data):
+def generate_template_compose(app_data, dockerhub_meta=None, docs_config=None):
     """
-    Generate a complete template dictionary with compose file
+    Generate complete template dictionary with enhanced compose file
+    Integrates Docker Hub metadata and LinuxServer docs config
     """
-    # Build compose file
-    service_config = {
-        "image": app_data["image"],
-        "container_name": app_data["id"],
-        "environment": app_data["env"],
-        "volumes": [f"./{vol}:{vol}" for vol in app_data["volumes"]],
-        "ports": app_data["ports"],
-        "restart": "unless-stopped"
+    # Generate enhanced compose
+    compose_yaml = generate_enhanced_compose(app_data, dockerhub_meta, docs_config)
+    
+    template = {
+        'id': app_data['id'],
+        'name': app_data['name'],
+        'category': app_data['category'],
+        'description': app_data['description'],
+        'image': app_data['image'],
+        'compose': compose_yaml,
+        'icon': get_category_icon(app_data['category']),
+        'docs_url': f"https://docs.linuxserver.io/images/docker-{app_data['id']}",
+        'github_url': f"https://github.com/linuxserver/docker-{app_data['id']}",
+        'created_at': app_data.get('created_at', '')
     }
     
-    # Add optional fields
-    if "network_mode" in app_data:
-        service_config["network_mode"] = app_data["network_mode"]
-    if "cap_add" in app_data:
-        service_config["cap_add"] = app_data["cap_add"]
-    if "sysctls" in app_data:
-        service_config["sysctls"] = app_data["sysctls"]
+    # Add Docker Hub metadata if available
+    if dockerhub_meta:
+        template['stars'] = dockerhub_meta.get('stars', 0)
+        template['pulls'] = dockerhub_meta.get('pulls', 0)
+        template['last_updated'] = dockerhub_meta.get('last_updated', '')
+        template['available_tags'] = [t['name'] for t in dockerhub_meta.get('tags', [])[:10]]
+        if dockerhub_meta.get('tags'):
+            template['size_mb'] = round(dockerhub_meta['tags'][0].get('size', 0) / 1024 / 1024, 1)
     
-    compose_dict = {
-        "version": "3.8",
-        "services": {
-            app_data["id"]: service_config
-        }
-    }
-    
-    # Convert to YAML string
-    compose_yaml = yaml.dump(compose_dict, default_flow_style=False, sort_keys=False)
-    
-    return {
-        "id": app_data["id"],
-        "name": app_data["name"],
-        "category": app_data["category"],
-        "description": app_data["description"],
-        "image": app_data["image"],
-        "compose": compose_yaml,
-        "icon": get_category_icon(app_data["category"]),
-        "created_at": app_data.get("created_at", "")  # Include creation date
-    }
+    return template
 
 
 def get_category_icon(category):
@@ -6820,32 +7809,85 @@ def save_templates_cache():
         return False
 
 
+def load_docs_cache():
+    """Load scraped docs from cache file"""
+    global docs_cache
+    
+    if os.path.exists(DOCS_CACHE_FILE):
+        try:
+            with docs_cache_lock:
+                with open(DOCS_CACHE_FILE, 'r') as f:
+                    docs_cache = json.load(f)
+            logger.info(f"Loaded scraped docs for {len(docs_cache)} containers from cache")
+            return True
+        except Exception as e:
+            logger.error(f"Error loading docs cache: {e}")
+    return False
+
+
+def save_docs_cache():
+    """Save scraped docs to cache file"""
+    try:
+        with docs_cache_lock:
+            with open(DOCS_CACHE_FILE, 'w') as f:
+                json.dump(docs_cache, f, indent=2)
+        logger.debug(f"Saved scraped docs for {len(docs_cache)} containers")
+        return True
+    except Exception as e:
+        logger.error(f"Error saving docs cache: {e}")
+        return False
+
+
 def refresh_templates():
-    """
-    Refresh templates from LinuxServer.io
-    Called by scheduler or manual refresh
-    """
+    """Refresh templates"""
     global templates_cache
     
-    logger.info("Refreshing template library...")
+    logger.info("Refreshing templates...")
+    safe_templates = []
     
-    templates = fetch_linuxserver_templates()
+    # LinuxServer
+    try:
+        lsio = fetch_linuxserver_templates()
+        if lsio:
+            for t in lsio:
+                try:
+                    json.dumps(t)
+                    safe_templates.append(t)
+                except:
+                    pass
+            logger.info(f"✓ LinuxServer: {len([t for t in safe_templates if 'casaos' not in t.get('id', '')])}")
+    except Exception as e:
+        logger.error(f"LinuxServer error: {e}")
     
-    if templates:
-        with templates_cache_lock:
-            templates_cache = {
+    # CasaOS
+    try:
+        casaos = fetch_all_casaos()
+        if casaos:
+            safe_templates.extend(casaos)
+    except Exception as e:
+        logger.error(f"CasaOS error: {e}")
+    
+    if safe_templates:
+        try:
+            cache_obj = {
                 'last_updated': datetime.now(pytz.UTC).isoformat(),
-                'source': 'linuxserver.io',
-                'count': len(templates),
-                'templates': templates
+                'count': len(safe_templates),
+                'templates': safe_templates
             }
-        
-        save_templates_cache()
-        logger.info(f"✓ Template library refreshed: {len(templates)} templates")
-        return True
-    else:
-        logger.warning("Failed to refresh templates, using cache")
-        return False
+            json.dumps(cache_obj)
+            
+            with templates_cache_lock:
+                templates_cache = cache_obj
+            
+            save_templates_cache()
+            save_docs_cache()
+            logger.info(f"✓ TOTAL: {len(safe_templates)}")
+            return True
+        except Exception as e:
+            logger.error(f"Cache error: {e}")
+            return False
+    
+    return False
 
 
 # ============================================================================
@@ -6857,9 +7899,21 @@ def refresh_templates():
 def api_templates_list():
     """Get all templates"""
     try:
+        # Check if templates are enabled
+        if not config.get('templates_enabled', True):
+            return jsonify({
+                'success': True,
+                'enabled': False,
+                'message': 'Template library is disabled',
+                'last_updated': None,
+                'count': 0,
+                'templates': []
+            })
+        
         with templates_cache_lock:
             return jsonify({
                 'success': True,
+                'enabled': True,
                 'last_updated': templates_cache.get('last_updated'),
                 'count': len(templates_cache.get('templates', [])),
                 'templates': templates_cache.get('templates', [])
@@ -6873,6 +7927,13 @@ def api_templates_list():
 def api_templates_refresh():
     """Manually refresh templates"""
     try:
+        # Check if templates are enabled
+        if not config.get('templates_enabled', True):
+            return jsonify({
+                'success': False,
+                'message': 'Template library is disabled in settings'
+            }), 400
+        
         success = refresh_templates()
         if success:
             return jsonify({
@@ -6962,6 +8023,12 @@ if __name__ == '__main__':
             logger.info("No template cache found, will refresh on first access")
         else:
             logger.info(f"✓ Loaded {len(templates_cache.get('templates', []))} templates")
+        
+        # Load docs scraping cache
+        if not load_docs_cache():
+            logger.info("No docs cache found, will scrape on first refresh")
+        else:
+            logger.info(f"✓ Loaded docs cache for {len(docs_cache)} containers")
         
         # Setup scheduler
         logger.info("Setting up scheduler...")
