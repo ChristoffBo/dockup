@@ -1045,7 +1045,7 @@
                     <i class="fas fa-network-wired"></i>
                     Networks
                 </div>
-                <div class="nav-item" :class="{active: currentView === 'templates'}" @click="currentView = 'templates'; loadTemplates()">
+                <div class="nav-item" :class="{active: currentView === 'templates'}" @click="currentView = 'templates'; loadTemplates()" v-if="settings.templates_enabled">
                     <i class="fas fa-box-open"></i>
                     Templates
                 </div>
@@ -1498,6 +1498,47 @@
                                     <i class="fas fa-arrow-up" style="margin-left: 8px;"></i> {{ stack.stats.net_tx_mbps || 0 }} Mbps
                                 </span>
                             </div>
+                            
+                            <!-- Resource Limits - Same style as stack info rows -->
+                            <div v-if="stack.is_local" class="stack-info-row">
+                                <span class="stack-info-label"><i class="fas fa-microchip"></i> CPU Limit:</span>
+                                <span class="stack-info-value" style="display: flex; align-items: center; gap: 10px;">
+                                    <input type="range" 
+                                           @input="stack.cpu_limit = Math.round((hostStats ? hostStats.cpu_count : 16) * ($event.target.value / 100) * 10) / 10"
+                                           :value="stack.cpu_limit ? Math.round((stack.cpu_limit / (hostStats ? hostStats.cpu_count : 16)) * 100) : 0"
+                                           min="0" 
+                                           max="100" 
+                                           step="1" 
+                                           style="flex: 1; min-width: 100px;">
+                                    <span style="min-width: 80px; text-align: right;">
+                                        {{ stack.cpu_limit ? Math.round((stack.cpu_limit / (hostStats ? hostStats.cpu_count : 16)) * 100) : 0 }}% 
+                                        ({{ stack.cpu_limit || 0 }} cores)
+                                    </span>
+                                    <button @click="stack.cpu_limit = 0" class="btn" style="font-size: 10px; padding: 2px 6px;">∞</button>
+                                </span>
+                            </div>
+                            <div v-if="stack.is_local" class="stack-info-row">
+                                <span class="stack-info-label"><i class="fas fa-memory"></i> RAM Limit:</span>
+                                <span class="stack-info-value" style="display: flex; align-items: center; gap: 10px;">
+                                    <input type="range" 
+                                           v-model.number="stack.mem_limit" 
+                                           min="0" 
+                                           :max="hostStats ? hostStats.memory_total_gb : 32" 
+                                           step="0.5" 
+                                           style="flex: 1; min-width: 100px;">
+                                    <span style="min-width: 60px; text-align: right;">{{ stack.mem_limit || 0 }} GB</span>
+                                    <button @click="stack.mem_limit = 0" class="btn" style="font-size: 10px; padding: 2px 6px;">∞</button>
+                                </span>
+                            </div>
+                            <div v-if="stack.is_local" class="stack-info-row">
+                                <span class="stack-info-label"></span>
+                                <span class="stack-info-value">
+                                    <button class="btn btn-success" @click="applyResourceLimits(stack.name)" style="font-size: 12px; padding: 4px 12px;">
+                                        <i class="fas fa-check"></i> Apply Limits
+                                    </button>
+                                </span>
+                            </div>
+                            
                             </div>
                             <!-- End Collapsible Stats -->
                             
@@ -1771,7 +1812,7 @@
                 </div>
 
                 <!-- Templates Grid -->
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px;">
                     <div 
                         v-for="template in filteredTemplates" 
                         :key="template.id"
@@ -1791,6 +1832,20 @@
                         <p style="font-size: 13px; color: #94a3b8; margin: 0; line-height: 1.5;">
                             {{ template.description }}
                         </p>
+                        
+                        <!-- Enhanced Metadata Stats -->
+                        <div v-if="template.stars || template.pulls || template.size_mb" style="margin-top: 12px; padding: 10px; background: rgba(147, 197, 253, 0.05); border-radius: 6px; display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px;">
+                            <span v-if="template.stars" style="color: #fbbf24; display: flex; align-items: center; gap: 4px;" :title="template.stars.toLocaleString() + ' stars'">
+                                <i class="fas fa-star"></i> {{ formatNumber(template.stars) }}
+                            </span>
+                            <span v-if="template.pulls" style="color: #60a5fa; display: flex; align-items: center; gap: 4px;" :title="template.pulls.toLocaleString() + ' pulls'">
+                                <i class="fas fa-download"></i> {{ formatNumber(template.pulls) }}
+                            </span>
+                            <span v-if="template.size_mb" style="color: #a78bfa; display: flex; align-items: center; gap: 4px;" :title="template.size_mb + ' MB'">
+                                <i class="fas fa-hdd"></i> {{ template.size_mb }}MB
+                            </span>
+                        </div>
+                        
                         <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.05);">
                             <span style="font-size: 11px; color: #64748b;">
                                 <i class="fas fa-box"></i> {{ template.image.split('/').pop().split(':')[0] }}
@@ -1821,6 +1876,49 @@
                         <button @click="selectedTemplate = null" class="btn-secondary" style="padding: 8px 12px;">
                             <i class="fas fa-times"></i>
                         </button>
+                    </div>
+
+                    <!-- Enhanced Stats and Links -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                        <!-- Stats -->
+                        <div v-if="selectedTemplate.stars" style="background: rgba(251, 191, 36, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(251, 191, 36, 0.3);">
+                            <div style="font-size: 11px; color: #fbbf24; text-transform: uppercase; margin-bottom: 5px;">Stars</div>
+                            <div style="font-size: 20px; font-weight: bold; color: #fbbf24;">
+                                <i class="fas fa-star"></i> {{ formatNumber(selectedTemplate.stars) }}
+                            </div>
+                        </div>
+                        <div v-if="selectedTemplate.pulls" style="background: rgba(96, 165, 250, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(96, 165, 250, 0.3);">
+                            <div style="font-size: 11px; color: #60a5fa; text-transform: uppercase; margin-bottom: 5px;">Total Pulls</div>
+                            <div style="font-size: 20px; font-weight: bold; color: #60a5fa;">
+                                <i class="fas fa-download"></i> {{ formatNumber(selectedTemplate.pulls) }}
+                            </div>
+                        </div>
+                        <div v-if="selectedTemplate.size_mb" style="background: rgba(167, 139, 250, 0.1); padding: 15px; border-radius: 8px; border: 1px solid rgba(167, 139, 250, 0.3);">
+                            <div style="font-size: 11px; color: #a78bfa; text-transform: uppercase; margin-bottom: 5px;">Image Size</div>
+                            <div style="font-size: 20px; font-weight: bold; color: #a78bfa;">
+                                <i class="fas fa-hdd"></i> {{ selectedTemplate.size_mb }} MB
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Available Tags -->
+                    <div v-if="selectedTemplate.available_tags && selectedTemplate.available_tags.length" style="margin-bottom: 20px;">
+                        <h3 style="font-size: 14px; color: #94a3b8; margin-bottom: 10px; text-transform: uppercase;">Available Tags</h3>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <span v-for="tag in selectedTemplate.available_tags.slice(0, 8)" :key="tag" style="background: rgba(147, 197, 253, 0.1); padding: 6px 12px; border-radius: 6px; font-size: 12px; color: #93c5fd; border: 1px solid rgba(147, 197, 253, 0.3);">
+                                {{ tag }}
+                            </span>
+                        </div>
+                    </div>
+
+                    <!-- Quick Links -->
+                    <div v-if="selectedTemplate.docs_url || selectedTemplate.github_url" style="margin-bottom: 20px; display: flex; gap: 10px;">
+                        <a v-if="selectedTemplate.docs_url" :href="selectedTemplate.docs_url" target="_blank" class="btn-secondary" style="text-decoration: none; display: inline-flex; align-items: center; gap: 8px;">
+                            <i class="fas fa-book"></i> Documentation
+                        </a>
+                        <a v-if="selectedTemplate.github_url" :href="selectedTemplate.github_url" target="_blank" class="btn-secondary" style="text-decoration: none; display: inline-flex; align-items: center; gap: 8px;">
+                            <i class="fab fa-github"></i> GitHub
+                        </a>
                     </div>
 
                     <!-- Compose Preview -->
@@ -1954,6 +2052,67 @@
                                 <li>System paths are exempt</li>
                                 <li>Paths already under this root are left unchanged</li>
                             </ul>
+                        </div>
+                    </div>
+
+                    <!-- Template Library Settings -->
+                    <div class="settings-section">
+                        <h3><i class="fas fa-boxes"></i> Template Library</h3>
+                        
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.templates_enabled">
+                                <span>Enable Template Library</span>
+                            </label>
+                            <small style="color: #94a3b8; margin-top: 5px; display: block; margin-left: 30px;">
+                                Show the Templates tab with 220+ pre-configured LinuxServer.io containers
+                            </small>
+                        </div>
+                        
+                        <div v-if="settings.templates_enabled" style="margin-top: 16px;">
+                            <div class="form-group">
+                                <label class="form-label">Template Refresh Schedule</label>
+                                <select class="form-input" v-model="settings.templates_refresh_schedule">
+                                    <option value="disabled">Disabled (manual refresh only)</option>
+                                    <option value="daily">Daily (2 AM)</option>
+                                    <option value="weekly_sunday">Weekly - Sunday (12 PM)</option>
+                                    <option value="weekly_monday">Weekly - Monday (12 PM)</option>
+                                    <option value="weekly_tuesday">Weekly - Tuesday (12 PM)</option>
+                                    <option value="weekly_wednesday">Weekly - Wednesday (12 PM)</option>
+                                    <option value="weekly_thursday">Weekly - Thursday (12 PM)</option>
+                                    <option value="weekly_friday">Weekly - Friday (12 PM)</option>
+                                    <option value="weekly_saturday">Weekly - Saturday (12 PM)</option>
+                                    <option value="monthly">Monthly (1st at 12 PM)</option>
+                                </select>
+                                <small style="color: #94a3b8; margin-top: 5px; display: block;">
+                                    When to automatically update the template library from LinuxServer.io
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Auto-Update Settings -->
+                    <div class="settings-section">
+                        <h3><i class="fas fa-sync-alt"></i> Auto-Update Settings</h3>
+                        
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.auto_update_enabled">
+                                <span>Enable Auto-Updates</span>
+                            </label>
+                            <small style="color: #94a3b8; margin-top: 5px; display: block; margin-left: 30px;">
+                                Global toggle for all stack auto-updates. When disabled, no automatic updates will run.
+                            </small>
+                        </div>
+                        
+                        <div v-if="!settings.auto_update_enabled" style="margin-top: 16px; padding: 16px; 
+                                    background: rgba(251, 191, 36, 0.1); border-left: 3px solid #fbbf24; 
+                                    border-radius: 6px;">
+                            <div style="color: #fcd34d; font-size: 13px;">
+                                <i class="fas fa-exclamation-triangle"></i> 
+                                <strong>Auto-updates are globally disabled.</strong> 
+                                Individual stack schedules will not run until this is enabled.
+                            </div>
                         </div>
                     </div>
 
@@ -3640,7 +3799,11 @@
                 }
             },
             async mounted() {
-                this.loadTemplates();  // Load template library
+                // Load settings first, then conditionally load templates
+                await this.loadSettings();
+                if (this.settings.templates_enabled) {
+                    this.loadTemplates();  // Load template library
+                }
                 // Load theme
                 const savedTheme = localStorage.getItem('dockup_theme');
                 if (savedTheme === 'light') {
@@ -3692,18 +3855,26 @@
             methods: {
                 // Template methods
                 async loadTemplates() {
+                    // Don't load if templates are disabled
+                    if (!this.settings.templates_enabled) {
+                        return;
+                    }
+                    
                     try {
                         const response = await axios.get('/api/templates/list');
                         this.templates = response.data.templates || [];
                         this.templatesLastUpdated = response.data.last_updated;
                         
-                        // If no templates cached, refresh
-                        if (this.templates.length === 0) {
+                        // If no templates cached, refresh (only if enabled)
+                        if (this.templates.length === 0 && response.data.enabled !== false) {
                             await this.refreshTemplates();
                         }
                     } catch (error) {
                         console.error('Failed to load templates:', error);
-                        this.showToast('Failed to load templates', 'error');
+                        // Don't show error toast if templates are disabled
+                        if (this.settings.templates_enabled) {
+                            this.showToast('Failed to load templates', 'error');
+                        }
                     }
                 },
 
@@ -3886,7 +4057,30 @@
                 async loadStacks() {
                     try {
                         const response = await axios.get('/api/stacks/all');
-                        this.stacks = response.data;
+                        
+                        // Initialize cpu_limit and mem_limit on each stack FIRST
+                        this.stacks = response.data.map(stack => ({
+                            ...stack,
+                            cpu_limit: 0,
+                            mem_limit: 0
+                        }));
+                        
+                        // THEN load actual resource limits for local stacks
+                        const limitPromises = this.stacks
+                            .filter(stack => stack.is_local)
+                            .map(async (stack) => {
+                                try {
+                                    const res = await axios.get(`/api/stack/${stack.name}/resources`);
+                                    stack.cpu_limit = res.data.cpu_limit || 0;
+                                    stack.mem_limit = res.data.mem_limit || 0;
+                                } catch (err) {
+                                    // Keep defaults (0, 0) on error
+                                    console.error(`Failed to load limits for ${stack.name}:`, err);
+                                }
+                            });
+                        
+                        // Wait for all limits to load
+                        await Promise.all(limitPromises);
                         
                         // Update "Apply to All" UI based on current schedules
                         this.updateApplyAllUI();
@@ -5259,6 +5453,14 @@
                     const diffDays = Math.floor(diffHours / 24);
                     return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
                 },
+                formatNumber(num) {
+                    // Format numbers for display (1000 -> 1K, 1000000 -> 1M)
+                    if (!num) return '0';
+                    if (num >= 1000000000) return (num / 1000000000).toFixed(1) + 'B';
+                    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+                    if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+                    return num.toString();
+                },
                 getStackUptime(stack) {
                     // Get the longest uptime from all running containers in stack
                     if (!stack.containers || stack.containers.length === 0) return '';
@@ -5629,6 +5831,25 @@
                     } catch (error) {
                         this.showToast('Error', 'Failed to save stack', 'error');
                         console.error(error);
+                    }
+                },
+                
+                async applyResourceLimits(stackName) {
+                    try {
+                        const stack = this.stacks.find(s => s.name === stackName);
+                        if (!stack) return;
+                        
+                        const cpu = stack.cpu_limit || 0;
+                        const mem = stack.mem_limit || 0;
+                        
+                        await axios.post(`/api/stack/${stackName}/resources`, {
+                            cpu_limit: cpu,
+                            mem_limit: mem
+                        });
+                        
+                        this.showToast('Success', `Resource limits applied to ${stackName}`, 'success');
+                    } catch (error) {
+                        this.showToast('Error', `Failed to apply limits: ${error.response?.data?.error || error.message}`, 'error');
                     }
                 }
             }
