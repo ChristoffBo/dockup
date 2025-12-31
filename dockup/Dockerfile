@@ -7,7 +7,11 @@ RUN apt-get update && \
     ca-certificates \
     gnupg \
     lsb-release \
-    wget && \
+    wget \
+    build-essential \
+    python3-dev \
+    libxml2-dev \
+    libxslt1-dev && \
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
@@ -31,13 +35,15 @@ RUN pip install --no-cache-dir \
     flask-sock==0.7.0 \
     docker==7.1.0 \
     pyyaml==6.0.3 \
-    apscheduler==3.11.1 \
+    apscheduler==3.11.2 \
     apprise==1.9.6 \
     croniter==6.0.0 \
     requests==2.32.5 \
     pytz==2025.2 \
-    psutil==7.1.3 \
-    bcrypt==5.0.0
+    psutil==7.2.1 \
+    bcrypt==5.0.0 \
+    beautifulsoup4==4.12.3 \
+    lxml==5.3.0
 
 # Create directories including logs and trivy cache
 RUN mkdir -p /app/static /app/data /app/logs /stacks /config/trivy-cache

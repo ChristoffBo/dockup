@@ -5,7 +5,7 @@ Combines Dockge functionality with Tugtainer/Watchtower update capabilities
 
 PERFORMANCE OPTIMIZATIONS:
 1. Metadata caching in memory - 90% faster metadata access
-2. Compose file metadata caching - Reduces disk reads
+DOCKUP_VERSION = "1.2.7"
 3. Config save debouncing - Batches multiple changes
 4. Host stats response caching - Reduces CPU usage
 5. Health check optimization - Background thread instead of per-request
@@ -15,7 +15,7 @@ PERFORMANCE OPTIMIZATIONS:
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.2.6"
+DOCKUP_VERSION = "1.2.7"
 
 import os
 import json
