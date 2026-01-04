@@ -5,8 +5,7 @@ Combines Dockge functionality with Tugtainer/Watchtower update capabilities
 
 PERFORMANCE OPTIMIZATIONS:
 1. Metadata caching in memory - 90% faster metadata access
-DOCKUP_VERSION = "1.2.7"
-3. Config save debouncing - Batches multiple changes
+2. Config save debouncing - Batches multiple changes
 4. Host stats response caching - Reduces CPU usage
 5. Health check optimization - Background thread instead of per-request
 6. Container cache TTL optimized - Prevents race conditions with stats updater
@@ -15,7 +14,7 @@ DOCKUP_VERSION = "1.2.7"
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.2.7"
+DOCKUP_VERSION = "1.2.8"
 
 import os
 import json
@@ -1674,6 +1673,88 @@ def send_notification(title, message, notify_type='info'):
         logger.info(f"No notification services configured. Title: {title}")
 
 
+# ============================================================================
+# STACK ACTION FUNCTIONS - Start/Stop/Restart
+# ============================================================================
+
+def stack_action(stack_name, action):
+    """
+    Perform action on stack (start/stop/restart)
+    Returns: (success: bool, message: str)
+    """
+    stack_path = os.path.join(STACKS_DIR, stack_name)
+    compose_file = os.path.join(stack_path, 'compose.yaml')
+    
+    if not os.path.exists(compose_file):
+        compose_file = os.path.join(stack_path, 'docker-compose.yml')
+    
+    if not os.path.exists(compose_file):
+        return False, "Compose file not found"
+    
+    try:
+        if action == 'start':
+            result = subprocess.run(
+                ['docker', 'compose', '-f', compose_file, 'up', '-d'],
+                capture_output=True,
+                text=True,
+                cwd=stack_path,
+                timeout=300
+            )
+        elif action == 'stop':
+            result = subprocess.run(
+                ['docker', 'compose', '-f', compose_file, 'stop'],
+                capture_output=True,
+                text=True,
+                cwd=stack_path,
+                timeout=300
+            )
+        elif action == 'restart':
+            result = subprocess.run(
+                ['docker', 'compose', '-f', compose_file, 'restart'],
+                capture_output=True,
+                text=True,
+                cwd=stack_path,
+                timeout=300
+            )
+        else:
+            return False, f"Unknown action: {action}"
+        
+        if result.returncode == 0:
+            logger.info(f"[{action.upper()}] {stack_name} - Success")
+            
+            # Invalidate caches
+            invalidate_metadata_cache(stack_name)
+            invalidate_compose_cache(stack_name)
+            
+            return True, f"Stack {action}ed successfully"
+        else:
+            error_msg = result.stderr or result.stdout
+            logger.error(f"[{action.upper()}] {stack_name} - Failed: {error_msg}")
+            return False, error_msg
+            
+    except subprocess.TimeoutExpired:
+        return False, f"Action {action} timed out after 5 minutes"
+    except Exception as e:
+        logger.error(f"[{action.upper()}] {stack_name} - Exception: {e}")
+        return False, str(e)
+
+
+def scheduled_stack_action(stack_name, action):
+    """Execute scheduled stack action with notification"""
+    logger.info(f"[Schedule] Running {action} for {stack_name}")
+    
+    success, message = stack_action(stack_name, action)
+    
+    if success:
+        title = f"✓ Scheduled {action.title()}: {stack_name}"
+        send_notification(title, message, notify_type='success')
+    else:
+        title = f"✗ Scheduled {action.title()} Failed: {stack_name}"
+        send_notification(title, f"Error: {message}", notify_type='error')
+    
+    return success
+
+
 def broadcast_ws(data):
     """Broadcast message to all WebSocket clients"""
     with websocket_clients_lock:
@@ -3313,7 +3394,11 @@ def setup_scheduler():
     # Remove only update jobs safely
     for job in list(scheduler.get_jobs()):
         try:
-            if job.id.startswith("update_") or job.id in ("auto_prune", "import_orphans"):
+            if (job.id.startswith("update_") or 
+                job.id.startswith("start_") or 
+                job.id.startswith("stop_") or 
+                job.id.startswith("restart_") or
+                job.id in ("auto_prune", "import_orphans")):
                 scheduler.remove_job(job.id)
         except Exception as e:
             logger.info(f"[Scheduler] Could not remove job {job.id}: {e}")
@@ -3338,6 +3423,40 @@ def setup_scheduler():
                 logger.info(f"[Scheduler] Added update job for {stack_name}: {cron_expr}")
             except Exception as e:
                 logger.info(f"[Scheduler] Error scheduling {stack_name}: {e}")
+    
+    # Add stack action schedules (start/stop/restart) from metadata
+    try:
+        stacks = get_stack_list_cached()
+        for stack_name in stacks:
+            metadata = get_metadata_cached(stack_name)
+            action_schedules = metadata.get('action_schedules', [])
+            
+            for schedule in action_schedules:
+                if not schedule.get('enabled', True):
+                    continue
+                
+                action = schedule.get('action')  # 'start', 'stop', 'restart'
+                cron_expr = schedule.get('cron')
+                
+                if not action or not cron_expr:
+                    continue
+                
+                try:
+                    trigger = CronTrigger.from_crontab(cron_expr, timezone=user_tz)
+                    job_id = f"{action}_{stack_name}_{schedule.get('id', hashlib.md5(cron_expr.encode()).hexdigest()[:8])}"
+                    
+                    scheduler.add_job(
+                        scheduled_stack_action,
+                        trigger,
+                        args=[stack_name, action],
+                        id=job_id,
+                        replace_existing=True
+                    )
+                    logger.info(f"[Scheduler] Added {action} job for {stack_name}: {cron_expr}")
+                except Exception as e:
+                    logger.error(f"[Scheduler] Error scheduling {action} for {stack_name}: {e}")
+    except Exception as e:
+        logger.error(f"[Scheduler] Error loading action schedules: {e}")
 
     # Auto-prune job
     if config.get("auto_prune", False):
@@ -4499,6 +4618,65 @@ def api_stack_schedule_set(stack_name):
         croniter(cron)
     except:
         return jsonify({'error': 'Invalid cron expression'}), 400
+    
+    with schedules_lock:
+        schedules[stack_name] = {
+            'mode': mode,
+            'cron': cron
+        }
+    save_schedules()
+    
+    # Trigger scheduler update
+    setup_scheduler()
+    
+    return jsonify({'success': True})
+
+
+@app.route('/api/stack/<stack_name>/action-schedules', methods=['GET'])
+@require_auth
+def api_stack_action_schedules_get(stack_name):
+    """Get stack action schedules (start/stop/restart)"""
+    metadata = get_metadata_cached(stack_name)
+    action_schedules = metadata.get('action_schedules', [])
+    return jsonify({'schedules': action_schedules})
+
+
+@app.route('/api/stack/<stack_name>/action-schedules', methods=['POST'])
+@require_auth
+def api_stack_action_schedules_set(stack_name):
+    """Set stack action schedules"""
+    data = request.json
+    schedules_list = data.get('schedules', [])
+    
+    # Validate each schedule
+    for schedule in schedules_list:
+        action = schedule.get('action')
+        cron = schedule.get('cron')
+        
+        if action not in ['start', 'stop', 'restart']:
+            return jsonify({'error': f'Invalid action: {action}'}), 400
+        
+        if not cron:
+            return jsonify({'error': 'Cron expression required'}), 400
+        
+        try:
+            croniter(cron)
+        except:
+            return jsonify({'error': f'Invalid cron expression: {cron}'}), 400
+        
+        # Ensure each schedule has a unique ID
+        if 'id' not in schedule:
+            schedule['id'] = hashlib.md5(f"{action}{cron}{time.time()}".encode()).hexdigest()[:8]
+    
+    # Save to metadata
+    metadata = get_metadata_cached(stack_name)
+    metadata['action_schedules'] = schedules_list
+    save_metadata_cached(stack_name, metadata)
+    
+    # Trigger scheduler update
+    setup_scheduler()
+    
+    return jsonify({'success': True})
     
     with schedules_lock:
         schedules[stack_name] = {
