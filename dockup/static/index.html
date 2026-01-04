@@ -3083,35 +3083,140 @@
 
         <!-- Schedule Modal -->
         <div class="modal" v-if="showScheduleModal" @click.self="showScheduleModal = false">
-            <div class="modal-content">
+            <div class="modal-content" style="max-width: 700px;">
                 <div class="modal-header">
-                    <h2>Update Schedule - {{ scheduleStackName }}</h2>
+                    <h2><i class="fas fa-clock"></i> Stack Schedules - {{ scheduleStackName }}</h2>
                     <button class="close-btn" @click="showScheduleModal = false">&times;</button>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Update Mode</label>
-                    <select class="form-select" v-model="scheduleMode">
-                        <option value="off">Off - Don't check for updates</option>
-                        <option value="check">Check Only - Notify but don't update</option>
-                        <option value="auto">Auto Update - Automatically update when available</option>
-                    </select>
+                
+                <!-- Tabs -->
+                <div style="display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid #1e293b;">
+                    <button 
+                        @click="scheduleTab = 'update'" 
+                        :class="['tab-btn', scheduleTab === 'update' ? 'active' : '']"
+                        style="padding: 10px 20px; background: none; border: none; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.2s;"
+                        :style="scheduleTab === 'update' ? 'border-bottom-color: #10b981; color: #10b981;' : 'color: #94a3b8;'">
+                        <i class="fas fa-sync"></i> Auto-Update
+                    </button>
+                    <button 
+                        @click="scheduleTab = 'actions'" 
+                        :class="['tab-btn', scheduleTab === 'actions' ? 'active' : '']"
+                        style="padding: 10px 20px; background: none; border: none; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.2s;"
+                        :style="scheduleTab === 'actions' ? 'border-bottom-color: #10b981; color: #10b981;' : 'color: #94a3b8;'">
+                        <i class="fas fa-play-circle"></i> Start/Stop/Restart
+                    </button>
                 </div>
-                <div class="form-group" v-if="scheduleMode !== 'off'">
-                    <label class="form-label">Cron Schedule</label>
-                    <input type="text" class="form-input" v-model="scheduleCron" placeholder="0 2 * * *">
-                    <small style="color: #94a3b8; display: block; margin-top: 5px;">
-                        Examples:<br>
-                        • "0 2 * * *" = Daily at 2 AM<br>
-                        • "0 */6 * * *" = Every 6 hours<br>
-                        • "0 0 * * 0" = Weekly on Sunday at midnight
-                    </small>
+                
+                <!-- Update Schedule Tab -->
+                <div v-if="scheduleTab === 'update'">
+                    <div class="form-group">
+                        <label class="form-label">Update Mode</label>
+                        <select class="form-select" v-model="scheduleMode">
+                            <option value="off">Off - Don't check for updates</option>
+                            <option value="check">Check Only - Notify but don't update</option>
+                            <option value="auto">Auto Update - Automatically update when available</option>
+                        </select>
+                    </div>
+                    <div class="form-group" v-if="scheduleMode !== 'off'">
+                        <label class="form-label">Cron Schedule</label>
+                        <input type="text" class="form-input" v-model="scheduleCron" placeholder="0 2 * * *">
+                        <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                            Examples:<br>
+                            • "0 2 * * *" = Daily at 2 AM<br>
+                            • "0 */6 * * *" = Every 6 hours<br>
+                            • "0 0 * * 0" = Weekly on Sunday at midnight
+                        </small>
+                    </div>
                 </div>
-                <div class="btn-group">
+                
+                <!-- Action Schedules Tab -->
+                <div v-if="scheduleTab === 'actions'">
+                    <p style="color: #94a3b8; margin-bottom: 15px;">
+                        Schedule automatic start, stop, or restart actions for this stack.
+                    </p>
+                    
+                    <!-- Existing Action Schedules -->
+                    <div v-if="actionSchedules.length > 0" style="margin-bottom: 20px;">
+                        <div v-for="(schedule, index) in actionSchedules" :key="index" 
+                             style="background: #1e293b; padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 3px solid #10b981;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <div style="display: flex; align-items: center; gap: 15px;">
+                                    <span :style="'padding: 5px 12px; border-radius: 4px; font-size: 0.85em; font-weight: 600; background: ' + getActionColor(schedule.action) + '; color: white;'">
+                                        <i :class="getActionIcon(schedule.action)"></i> {{ schedule.action.toUpperCase() }}
+                                    </span>
+                                    <code style="background: #0f172a; padding: 5px 10px; border-radius: 4px; color: #10b981;">{{ schedule.cron }}</code>
+                                </div>
+                                <div style="display: flex; gap: 10px;">
+                                    <button @click="editActionSchedule(index)" class="btn btn-sm btn-secondary" title="Edit">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    <button @click="deleteActionSchedule(index)" class="btn btn-sm btn-danger" title="Delete">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                    <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                                        <input type="checkbox" v-model="schedule.enabled" @change="saveActionSchedules">
+                                        <span style="font-size: 0.9em; color: #94a3b8;">Enabled</span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div style="color: #94a3b8; font-size: 0.9em;">
+                                {{ cronToHuman(schedule.cron) }}
+                            </div>
+                        </div>
+                    </div>
+                    <div v-else style="text-align: center; padding: 30px; color: #64748b;">
+                        <i class="fas fa-calendar-times fa-2x" style="margin-bottom: 10px;"></i>
+                        <p>No action schedules configured</p>
+                    </div>
+                    
+                    <!-- Add New Schedule Form -->
+                    <div v-if="showAddActionSchedule" style="background: #0f172a; padding: 15px; border-radius: 8px; border: 2px dashed #334155;">
+                        <h4 style="margin-bottom: 15px; color: #f1f5f9;"><i class="fas fa-plus-circle"></i> Add Action Schedule</h4>
+                        <div class="form-group">
+                            <label class="form-label">Action</label>
+                            <select class="form-select" v-model="newActionSchedule.action">
+                                <option value="start">Start - Bring stack up</option>
+                                <option value="stop">Stop - Stop stack containers</option>
+                                <option value="restart">Restart - Restart all containers</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Cron Schedule</label>
+                            <input type="text" class="form-input" v-model="newActionSchedule.cron" placeholder="0 6 * * *">
+                            <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                Examples:<br>
+                                • "0 6 * * *" = Daily at 6 AM<br>
+                                • "0 22 * * *" = Daily at 10 PM<br>
+                                • "0 8 * * 1-5" = Weekdays at 8 AM
+                            </small>
+                        </div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="newActionSchedule.enabled">
+                                <span>Enabled</span>
+                            </label>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button @click="addActionSchedule" class="btn btn-success btn-sm">
+                                <i class="fas fa-check"></i> {{ editingActionIndex !== null ? 'Update' : 'Add' }} Schedule
+                            </button>
+                            <button @click="cancelAddActionSchedule" class="btn btn-secondary btn-sm">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                    <button v-else @click="showAddActionScheduleForm" class="btn btn-primary btn-sm" style="width: 100%;">
+                        <i class="fas fa-plus"></i> Add New Schedule
+                    </button>
+                </div>
+                
+                <!-- Action Buttons -->
+                <div class="btn-group" style="margin-top: 20px;">
                     <button class="btn btn-success" @click="saveSchedule">
-                        <i class="fas fa-save"></i> Save Schedule
+                        <i class="fas fa-save"></i> Save All Changes
                     </button>
                     <button class="btn btn-secondary" @click="showScheduleModal = false">
-                        Cancel
+                        Close
                     </button>
                 </div>
             </div>
@@ -3592,6 +3697,15 @@
                     scheduleStackName: '',
                     scheduleMode: 'off',
                     scheduleCron: '0 2 * * *',
+                    scheduleTab: 'update',
+                    actionSchedules: [],
+                    showAddActionSchedule: false,
+                    editingActionIndex: null,
+                    newActionSchedule: {
+                        action: 'start',
+                        cron: '0 6 * * *',
+                        enabled: true
+                    },
                     showTerminalModal: false,
                     terminalStack: '',
                     terminalOperation: '',
@@ -5379,10 +5493,26 @@
                 },
                 async configureSchedule(stackName) {
                     try {
+                        // Load update schedule
                         const response = await axios.get(`/api/stack/${stackName}/schedule`);
                         this.scheduleStackName = stackName;
                         this.scheduleMode = response.data.mode || 'off';
                         this.scheduleCron = response.data.cron || this.settings.default_cron;
+                        
+                        // Load action schedules
+                        const actionResponse = await axios.get(`/api/stack/${stackName}/action-schedules`);
+                        this.actionSchedules = actionResponse.data.schedules || [];
+                        
+                        // Reset tab and form state
+                        this.scheduleTab = 'update';
+                        this.showAddActionSchedule = false;
+                        this.editingActionIndex = null;
+                        this.newActionSchedule = {
+                            action: 'start',
+                            cron: '0 6 * * *',
+                            enabled: true
+                        };
+                        
                         this.showScheduleModal = true;
                     } catch (error) {
                         this.showToast('Error', 'Failed to load schedule', 'error');
@@ -5390,16 +5520,129 @@
                 },
                 async saveSchedule() {
                     try {
+                        // Save update schedule
                         await axios.post(`/api/stack/${this.scheduleStackName}/schedule`, {
                             mode: this.scheduleMode,
                             cron: this.scheduleCron
                         });
-                        this.showToast('Success', 'Schedule saved successfully', 'success');
+                        
+                        // Save action schedules
+                        await this.saveActionSchedules();
+                        
+                        this.showToast('Success', 'All schedules saved successfully', 'success');
                         this.showScheduleModal = false;
                         await this.loadStacks();
                     } catch (error) {
                         this.showToast('Error', `Failed to save schedule: ${error.response?.data?.error || error.message}`, 'error');
                     }
+                },
+                async saveActionSchedules() {
+                    try {
+                        await axios.post(`/api/stack/${this.scheduleStackName}/action-schedules`, {
+                            schedules: this.actionSchedules
+                        });
+                    } catch (error) {
+                        throw error;
+                    }
+                },
+                showAddActionScheduleForm() {
+                    this.showAddActionSchedule = true;
+                    this.editingActionIndex = null;
+                    this.newActionSchedule = {
+                        action: 'start',
+                        cron: '0 6 * * *',
+                        enabled: true
+                    };
+                },
+                cancelAddActionSchedule() {
+                    this.showAddActionSchedule = false;
+                    this.editingActionIndex = null;
+                },
+                async addActionSchedule() {
+                    try {
+                        // Validate cron
+                        if (!this.newActionSchedule.cron || this.newActionSchedule.cron.trim() === '') {
+                            this.showToast('Error', 'Cron expression is required', 'error');
+                            return;
+                        }
+                        
+                        if (this.editingActionIndex !== null) {
+                            // Update existing
+                            this.actionSchedules[this.editingActionIndex] = {...this.newActionSchedule};
+                        } else {
+                            // Add new
+                            this.actionSchedules.push({...this.newActionSchedule});
+                        }
+                        
+                        // Save immediately
+                        await this.saveActionSchedules();
+                        this.showToast('Success', 'Action schedule saved', 'success');
+                        
+                        // Reset form
+                        this.cancelAddActionSchedule();
+                    } catch (error) {
+                        this.showToast('Error', `Failed to save action schedule: ${error.response?.data?.error || error.message}`, 'error');
+                    }
+                },
+                editActionSchedule(index) {
+                    this.editingActionIndex = index;
+                    this.newActionSchedule = {...this.actionSchedules[index]};
+                    this.showAddActionSchedule = true;
+                },
+                async deleteActionSchedule(index) {
+                    if (confirm('Delete this schedule?')) {
+                        try {
+                            this.actionSchedules.splice(index, 1);
+                            await this.saveActionSchedules();
+                            this.showToast('Success', 'Schedule deleted', 'success');
+                        } catch (error) {
+                            this.showToast('Error', 'Failed to delete schedule', 'error');
+                        }
+                    }
+                },
+                getActionColor(action) {
+                    const colors = {
+                        'start': '#10b981',
+                        'stop': '#ef4444',
+                        'restart': '#f59e0b'
+                    };
+                    return colors[action] || '#6366f1';
+                },
+                getActionIcon(action) {
+                    const icons = {
+                        'start': 'fas fa-play',
+                        'stop': 'fas fa-stop',
+                        'restart': 'fas fa-sync'
+                    };
+                    return icons[action] || 'fas fa-clock';
+                },
+                cronToHuman(cron) {
+                    // Simple cron to human converter
+                    const parts = cron.split(' ');
+                    if (parts.length < 5) return cron;
+                    
+                    const [minute, hour, day, month, weekday] = parts;
+                    
+                    // Daily patterns
+                    if (day === '*' && month === '*' && weekday === '*') {
+                        if (hour !== '*' && minute !== '*') {
+                            return `Daily at ${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
+                        }
+                    }
+                    
+                    // Weekly patterns
+                    if (day === '*' && month === '*' && weekday !== '*') {
+                        const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                        const dayName = days[parseInt(weekday)] || weekday;
+                        return `Every ${dayName} at ${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
+                    }
+                    
+                    // Weekday pattern
+                    if (weekday === '1-5') {
+                        return `Weekdays at ${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
+                    }
+                    
+                    return cron;
                 },
                 async checkUpdates(stackName) {
                     try {
