@@ -1,0 +1,19 @@
+DockUp Update Summary
+=====================
+Date: 2026-01-06 10:17:13
+Backup: [0;34mℹ Creating backup: backup-1.2.8-20260106-101613[0m
+[0;32m✓ Backup created: /DATA/Compose/dockup/Old/backup-1.2.8-20260106-101613[0m
+/DATA/Compose/dockup/Old/backup-1.2.8-20260106-101613
+
+Version Change: 1.2.8 → 1.2.9
+
+Dependencies Updated:
+Trivy Scanner:\n  - Trivy: v0.58.0 → v0.68.2\n\n
+
+Build Status: SUCCESS
+Container Status: RUNNING
+
+Ready to push to Docker Hub:
+  docker push cbothma/dockup:latest
+  docker tag cbothma/dockup:latest cbothma/dockup:1.2.9
+  docker push cbothma/dockup:1.2.9
