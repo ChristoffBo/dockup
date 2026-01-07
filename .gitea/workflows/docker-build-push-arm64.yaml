@@ -1,0 +1,35 @@
+name: Build and Push Docker Image
+
+on:
+  workflow_dispatch:   # Manual run only
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Gitea Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: gitea.bothmainc.com
+          username: Cbothma
+          password: Lilly@057!
+
+      - name: Build and push multi-arch image (with registry cache)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./dockup
+          file: ./dockup/Dockerfile
+          push: true
+          platforms: linux/arm64
+          tags: |
+            gitea.bothmainc.com/cbothma/dockup:arm64
+            gitea.bothmainc.com/cbothma/dockup:${{ gitea.sha }}
+          cache-from: type=registry,ref=gitea.bothmainc.com/cbothma/dockup:buildcache
+          cache-to: type=registry,ref=gitea.bothmainc.com/cbothma/dockup:buildcache,mode=max
