@@ -27,5 +27,5 @@ jobs:
           file: ./dockup/Dockerfile          # Exact path to your Dockerfile
           push: true
           tags: |
-            gitea.bothmainc.com/cbothma/ewelink:latest
-            gitea.bothmainc.com/cbothma/ewelink:${{ gitea.sha }}
+            gitea.bothmainc.com/cbothma/dockup:latest
+            gitea.bothmainc.com/cbothma/dockup:${{ gitea.sha }}
