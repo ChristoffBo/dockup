@@ -37,3 +37,4 @@ jobs:
           platforms: linux/amd64
           tags: |
             cbothma/dockup:latest
+            cbothma/dockup:1.2.9
