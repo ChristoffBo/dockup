@@ -1,3 +1,5 @@
+Build From Local
+
 docker stop dockup && docker rm dockup
 docker build -t dockup:latest .
 docker run -d \
@@ -9,7 +11,29 @@ docker run -d \
   --restart unless-stopped \
   dockup:latest
 
+Build from Gitea
 
+# Stop and remove the existing container
+docker stop dockup && docker rm dockup
+
+# Build the image directly from your private Gitea repo
+# Format: http://username:password@host/path/to/repo.git#branch:subdirectory
+docker build -t dockup:latest \
+  http://Cbothma:Lilly%40057%21@gitea.bothmainc.com/cbothma/dockup_local.git#main:dockup
+
+# Run the freshly built container
+docker run -d \
+  --name dockup \
+  -p 5000:5000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /DATA/Compose:/stacks \
+  -v /DATA/AppData:/DATA/AppData:ro \
+  -v dockup_data:/app/data \
+  --restart unless-stopped \
+  dockup:latest
+
+
+pull and install from Docker hub:
 
 docker build -t cbothma/dockup:latest .
 docker tag cbothma/dockup:latest cbothma/dockup:1.2.9
@@ -17,7 +41,9 @@ docker tag cbothma/dockup:latest cbothma/dockup:1.2.9
 docker push cbothma/dockup:latest
 docker push cbothma/dockup:1.2.9
 
-pull and install from Docker hub:
+docker push gitea.bothmainc.com/cbothma/dockup:latest
+
+
 
 
 
@@ -34,3 +60,23 @@ docker run -d \
   -v dockup_data:/app/data \
   --restart unless-stopped \
   dockup:latest
+
+gitea to dockerhub amd64
+
+# 1️⃣ Pull the latest image from Gitea
+docker pull gitea.bothmainc.com/cbothma/dockup:latest
+
+# 2️⃣ Re-tag the image for GitHub Container Registry
+docker tag gitea.bothmainc.com/cbothma/dockup:latest cbothma/dockup:latest
+
+# 3️⃣ Push the re-tagged image to GitHub
+docker push cbothma/dockup:latest
+
+gitea to dockerhub arm64
+
+docker pull gitea.bothmainc.com/cbothma/dockup:arm64
+
+docker tag gitea.bothmainc.com/cbothma/dockup:arm64 cbothma/dockup:arm64
+
+
+docker push cbothma/dockup:arm648
