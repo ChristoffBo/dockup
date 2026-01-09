@@ -18,7 +18,7 @@ jobs:
         with:
           registry: gitea.bothmainc.com
           username: Cbothma
-          password: Lilly@057!
+          password: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
