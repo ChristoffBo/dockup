@@ -23,7 +23,7 @@ jobs:
         with:
           registry: gitea.bothmainc.com
           username: Cbothma
-          password: Lilly@057!
+          password: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Login to Docker Hub
         run: |
