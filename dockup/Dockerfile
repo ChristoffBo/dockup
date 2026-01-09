@@ -1,5 +1,9 @@
 FROM python:3.14-slim
 
+# Build args for debugging
+ARG TARGETARCH
+ARG TARGETOS
+
 # Install Docker CLI and Docker Compose
 RUN apt-get update && \
     apt-get install -y \
@@ -11,7 +15,9 @@ RUN apt-get update && \
     build-essential \
     python3-dev \
     libxml2-dev \
-    libxslt1-dev && \
+    libxslt1-dev \
+    cargo \
+    rustc && \
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
@@ -23,8 +29,14 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Trivy - using direct binary download (more reliable than apt repo)
-RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.58.0
+# Install Trivy - with proper ARM detection
+RUN echo "Target architecture: ${TARGETARCH:-unknown}" && \
+    if [ "$(uname -m)" = "aarch64" ] || [ "${TARGETARCH}" = "arm64" ]; then \
+        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.58.0/trivy_0.58.0_Linux-ARM64.tar.gz | tar -xz -C /usr/local/bin trivy; \
+    else \
+        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.58.0/trivy_0.58.0_Linux-64bit.tar.gz | tar -xz -C /usr/local/bin trivy; \
+    fi && \
+    chmod +x /usr/local/bin/trivy
 
 # Set working directory
 WORKDIR /app
