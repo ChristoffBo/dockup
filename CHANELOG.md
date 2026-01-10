@@ -1,3 +1,5 @@
+## latest (2026-01-10)
+Updated dependencies
 ## latest (2025-12-18)
 fixed an issue with the docker run parser
 ## latest (2025-12-17)
