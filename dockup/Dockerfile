@@ -53,7 +53,7 @@ RUN pip install --no-cache-dir \
     requests==2.32.5 \
     pytz==2025.2 \
     psutil==7.2.1 \
-    bcrypt==5.0.0 \
+    bcrypt==4.1.2 \
     beautifulsoup4==4.12.3 \
     lxml==5.3.0
 
