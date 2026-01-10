@@ -67,7 +67,7 @@ COPY static/index.html /app/static/
 COPY static/login.html /app/static/
 COPY static/setup.html /app/static/
 
-# Set default port
+# Set default port (can be overridden with -e PORT=80)
 ENV PORT=5000
 
 # Expose port
@@ -77,5 +77,5 @@ EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:${PORT}/api/stacks || exit 1
 
-# Run the application with configurable port
-CMD python -c "from app import app; app.run(host='0.0.0.0', port=int(__import__('os').environ.get('PORT', 5000)), debug=False)"
+# Run the application - app.py now reads PORT environment variable
+CMD ["python", "app.py"]

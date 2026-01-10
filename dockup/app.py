@@ -8266,11 +8266,12 @@ if __name__ == '__main__':
         logger.info("=" * 50)
         
         # Start Flask app
-        logger.info("Starting Dockup on port 5000...")
+        port = int(os.environ.get('PORT', 5000))
+        logger.info(f"Starting Dockup on port {port}...")
         logger.info("=" * 50)
-        logger.info("Access the UI at: http://localhost:5000")
+        logger.info(f"Access the UI at: http://localhost:{port}")
         logger.info("=" * 50)
-        app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
     except Exception as e:
         logger.info(f"FATAL ERROR: Failed to start Dockup")
         logger.info(f"Error: {e}")
