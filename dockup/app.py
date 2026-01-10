@@ -14,7 +14,7 @@ DOCKUP_VERSION = "1.2.9"
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.3.0"
+DOCKUP_VERSION = "1.2.9"
 
 import os
 import json
@@ -8261,7 +8261,8 @@ if __name__ == '__main__':
         # Display instance info
         logger.info("=" * 50)
         logger.info(f"Instance Name: {config.get('instance_name', 'DockUp')}")
-        logger.info(f"API Token: {config.get('api_token', 'Not set')[:16]}...")
+        api_token = config.get('api_token') or 'Not set'
+        logger.info(f"API Token: {api_token[:16]}...")
         logger.info(f"Configured Peers: {len(config.get('peers', {}))}")
         logger.info("=" * 50)
         
