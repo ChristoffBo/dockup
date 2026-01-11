@@ -2130,6 +2130,14 @@ def import_orphan_containers_as_stacks():
             if 'dockup' in name_lower or 'dockge' in name_lower:
                 continue
 
+            # Skip BuildKit containers (Docker Buildx infrastructure)
+            if container.name.startswith('buildx_buildkit_builder'):
+                continue
+
+            # Skip Gitea Actions temporary containers
+            if container.name.startswith('GITEA-ACTIONS-TASK'):
+                continue
+
             if container.image and container.image.tags:
                 image_tags_lower = ' '.join(tag.lower() for tag in container.image.tags)
                 if 'dockup' in image_tags_lower or 'dockge' in image_tags_lower:
