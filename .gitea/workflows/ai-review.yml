@@ -1,0 +1,79 @@
+name: AI Code Review on Push
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      
+      - name: Get commit diff and review
+        run: |
+          git diff HEAD^ HEAD > changes.diff
+          
+          if [ ! -s changes.diff ]; then
+            echo "No changes to review"
+            exit 0
+          fi
+          
+          python3 -c "
+          import json
+          
+          with open('changes.diff', 'r') as f:
+              diff = f.read()
+          
+          request = {
+              'contents': [{
+                  'parts': [{
+                      'text': 'Review this code change and identify bugs, security issues, or improvements:\n\n' + diff
+                  }]
+              }]
+          }
+          
+          with open('request.json', 'w') as f:
+              json.dump(request, f)
+          "
+          
+          curl -s -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d @request.json > response.json
+          
+          python3 -c "
+          import json
+          
+          with open('response.json', 'r') as f:
+              data = json.load(f)
+          
+          try:
+              review = data['candidates'][0]['content']['parts'][0]['text']
+              with open('review.txt', 'w') as f:
+                  f.write(review)
+              print(review)
+          except (KeyError, IndexError) as e:
+              print('No review generated')
+              with open('review.txt', 'w') as f:
+                  f.write('AI review failed')
+          "
+      
+      - name: Send to Gotify
+        if: always()
+        run: |
+          REVIEW=$(cat review.txt 2>/dev/null || echo "No review")
+          REPO="${{ github.repository }}"
+          COMMIT="${{ github.sha }}"
+          
+          curl -X POST "http://10.0.0.100:2580/message?token=${{ secrets.GOTIFY_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"title\": \"AI Code Review: ${REPO}\",
+              \"message\": \"Commit: ${COMMIT}\n\n${REVIEW}\",
+              \"priority\": 5
+            }"
