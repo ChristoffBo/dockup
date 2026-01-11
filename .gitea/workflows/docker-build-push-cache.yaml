@@ -1,7 +1,7 @@
 name: Build and Push Docker Image
 
 on:
-  workflow_dispatch:   # Manual run only
+  workflow_dispatch:
 
 jobs:
   docker:
@@ -30,6 +30,22 @@ jobs:
           platforms: linux/amd64
           tags: |
             gitea.bothmainc.com/cbothma/dockup:latest
-            gitea.bothmainc.com/cbothma/dockup:${{ gitea.sha }}
+            gitea.bothmainc.com/cbothma/dockup:${{ github.sha }}
           cache-from: type=registry,ref=gitea.bothmainc.com/cbothma/dockup:buildcache
           cache-to: type=registry,ref=gitea.bothmainc.com/cbothma/dockup:buildcache,mode=max
+
+      - name: Notify Gotify
+        if: always()
+        run: |
+          TITLE="🐳 Docker Build (Cached): ${{ github.repository }}"
+          MESSAGE="Platform: linux/amd64\nImage: dockup:latest\nCache: enabled\nStatus: ${{ job.status }}"
+          
+          if [ "${{ job.status }}" = "success" ]; then
+            PRIORITY=3
+          else
+            PRIORITY=7
+          fi
+          
+          curl -X POST "http://10.0.0.100:2580/message?token=120ff2" \
+            -H "Content-Type: application/json" \
+            -d "{\"title\": \"${TITLE}\", \"message\": \"${MESSAGE}\", \"priority\": ${PRIORITY}}"

@@ -40,14 +40,29 @@ jobs:
           tags: |
             cbothma/dockup:latest
             cbothma/dockup:1.3.0
-          # Use Gitea registry for cache, NOT DockerHub
           cache-from: type=registry,ref=gitea.bothmainc.com/cbothma/dockup:buildcache
           cache-to: type=registry,ref=gitea.bothmainc.com/cbothma/dockup:buildcache,mode=max
 
       - name: Build summary
         run: |
           echo "✅ Multi-arch build complete!"
-          echo "🏗️  Platforms: linux/amd64, linux/arm64"
+          echo "🗂️  Platforms: linux/amd64, linux/arm64"
           echo "📦 Pushed to DockerHub: cbothma/dockup:latest"
           echo "📦 Pushed to DockerHub: cbothma/dockup:1.3.0"
           echo "💾 Cache stored in Gitea registry (not DockerHub)"
+
+      - name: Notify Gotify
+        if: always()
+        run: |
+          TITLE="🐳 DockerHub Multi-Arch: dockup"
+          MESSAGE="Platforms: amd64 + arm64\nRegistry: DockerHub\nTags: latest, 1.3.0\nStatus: ${{ job.status }}"
+          
+          if [ "${{ job.status }}" = "success" ]; then
+            PRIORITY=4
+          else
+            PRIORITY=8
+          fi
+          
+          curl -X POST "http://10.0.0.100:2580/message?token=120ff2" \
+            -H "Content-Type: application/json" \
+            -d "{\"title\": \"${TITLE}\", \"message\": \"${MESSAGE}\", \"priority\": ${PRIORITY}}"
