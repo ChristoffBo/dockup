@@ -1065,6 +1065,7 @@ Built with inspiration from:
 - **Portainer** — Comprehensive Docker management
 - **Trivy** — Industry-standard vulnerability scanning
 - **LinuxServer.io** — Excellent container templates and documentation
+- Created with the assistance of AI. 
 
 DockUp aims to be lightweight, focused, and genuinely useful for homelabs and small deployments.
 
