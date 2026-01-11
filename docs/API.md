@@ -748,6 +748,6 @@ curl -X POST http://localhost:5000/api/stack/myapp/operation \
 
 ## That's It
 
-If you find bugs or want features, file an issue. If you're using this for SSL automation and it works, let me know - always curious how people are using it.
+
 
 The code is solid but if you're exposing this to the internet, please add rate limiting and better auth. Right now it's designed for internal homelab use.
