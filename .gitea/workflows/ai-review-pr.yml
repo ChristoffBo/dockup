@@ -28,31 +28,31 @@ jobs:
           
           echo "HAS_CHANGES=true" >> $GITHUB_ENV
           
-          python3 -c "
+          python3 << 'EOFPYTHON'
           import json
           
           with open('changes.diff', 'r') as f:
               diff = f.read()
           
-          prompt = '''Analyze this code diff for bugs, syntax errors, indentation issues, or improvements.
+          prompt = """Analyze this code diff for bugs, syntax errors, indentation issues, or improvements.
 
-Return ONLY a JSON object:
-{
-  \"has_issues\": true/false,
-  \"issues_summary\": \"brief description of issues found\",
-  \"fixes\": [
-    {
-      \"file\": \"path/to/file\",
-      \"description\": \"what was fixed\",
-      \"fixed_content\": \"complete corrected file content\"
-    }
-  ]
-}
+          Return ONLY a JSON object:
+          {
+            "has_issues": true/false,
+            "issues_summary": "brief description of issues found",
+            "fixes": [
+              {
+                "file": "path/to/file",
+                "description": "what was fixed",
+                "fixed_content": "complete corrected file content"
+              }
+            ]
+          }
 
-If no issues: {\"has_issues\": false, \"issues_summary\": \"Code looks good\", \"fixes\": []}
+          If no issues: {"has_issues": false, "issues_summary": "Code looks good", "fixes": []}
 
-Diff:
-''' + diff
+          Diff:
+          """ + diff
           
           request = {
               'contents': [{
@@ -64,7 +64,7 @@ Diff:
           
           with open('request.json', 'w') as f:
               json.dump(request, f)
-          "
+          EOFPYTHON
           
           curl -s -X POST \
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
