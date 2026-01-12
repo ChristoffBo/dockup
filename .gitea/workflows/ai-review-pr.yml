@@ -8,12 +8,13 @@ on:
 jobs:
   review-and-fix:
     runs-on: ubuntu-latest
+    # Prevent infinite loops - skip if commit was made by AI
+    if: "!contains(github.event.head_commit.message, '🤖 AI Auto-fix:')"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 2
-          token: ${{ secrets.REGISTRY_TOKEN }}
       
       - name: Get diff and analyze
         run: |
@@ -73,13 +74,15 @@ Diff:
           python3 << 'PYTHON'
           import json
           import re
-          
-          with open('response.json', 'r') as f:
-              data = json.load(f)
+          import sys
           
           try:
+              with open('response.json', 'r') as f:
+                  data = json.load(f)
+              
               response_text = data['candidates'][0]['content']['parts'][0]['text']
               
+              # Extract JSON from markdown code blocks if present
               json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
               if json_match:
                   response_text = json_match.group(1)
@@ -92,9 +95,10 @@ Diff:
               print(json.dumps(analysis, indent=2))
               
           except Exception as e:
-              print(f"Analysis failed: {e}")
-              with open('analysis.json', 'w') as f:
-                  json.dump({"has_issues": False, "issues_summary": "Analysis error", "fixes": []}, f)
+              print(f"ERROR: AI analysis failed - {e}")
+              print(f"Raw response: {data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', 'No text')}")
+              # Fail the step so it's visible
+              sys.exit(1)
           PYTHON
       
       - name: Create fix branch and apply fixes
@@ -122,7 +126,7 @@ Diff:
               exit(0)
           
           # Create fix branch
-          commit_sha = os.environ['GITHUB_SHA'][:7]
+          commit_sha = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode().strip()
           branch_name = f"ai-fix-{commit_sha}"
           
           subprocess.run(['git', 'config', 'user.name', 'AI Code Fixer'], check=True)
@@ -157,10 +161,10 @@ Diff:
               f.write(f"🤖 AI Code Fixes: {issues_summary}")
           
           # Create PR body
-          pr_body = f"## AI Detected Issues\n\n{issues_summary}\n\n## Fixes Applied\n\n"
+          pr_body = f"## AI Detected Issues\\n\\n{issues_summary}\\n\\n## Fixes Applied\\n\\n"
           for fix in fixes:
-              pr_body += f"- **{fix['file']}**: {fix['description']}\n"
-          pr_body += "\n---\n*This PR was automatically created by AI code review. Please review the changes before merging.*"
+              pr_body += f"- **{fix['file']}**: {fix['description']}\\n"
+          pr_body += "\\n---\\n*This PR was automatically created by AI code review. Please review the changes before merging.*"
           
           with open('pr_body.txt', 'w') as f:
               f.write(pr_body)
@@ -181,27 +185,43 @@ Diff:
           TITLE=$(cat pr_title.txt)
           BODY=$(cat pr_body.txt)
           
+          # Extract owner and repo from GITHUB_REPOSITORY (format: owner/repo)
+          OWNER=$(echo "$GITHUB_REPOSITORY" | cut -d'/' -f1)
+          REPO=$(echo "$GITHUB_REPOSITORY" | cut -d'/' -f2)
+          
+          echo "Creating PR for $OWNER/$REPO from branch $BRANCH"
+          
           # Create PR via Gitea API
-          PR_RESPONSE=$(curl -X POST \
-            "https://gitea.bothmainc.com/api/v1/repos/${{ github.repository }}/pulls" \
-            -H "Authorization: token ${{ secrets.REGISTRY_TOKEN }}" \
+          PR_RESPONSE=$(curl -s -X POST \
+            "https://gitea.bothmainc.com/api/v1/repos/${OWNER}/${REPO}/pulls" \
+            -H "Authorization: token ${{ secrets.AI_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"title\": \"${TITLE}\",
-              \"body\": \"${BODY}\",
-              \"head\": \"${BRANCH}\",
-              \"base\": \"main\"
-            }")
+            -d @- << EOF
+          {
+            "title": "${TITLE}",
+            "body": "${BODY}",
+            "head": "${BRANCH}",
+            "base": "main"
+          }
+          EOF
+          )
           
-          echo "$PR_RESPONSE" > pr_response.json
+          echo "$PR_RESPONSE" | tee pr_response.json
           
-          PR_NUMBER=$(echo "$PR_RESPONSE" | jq -r '.number')
-          PR_URL=$(echo "$PR_RESPONSE" | jq -r '.html_url')
-          
-          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
-          echo "PR_URL=$PR_URL" >> $GITHUB_ENV
-          
-          echo "Created PR #$PR_NUMBER: $PR_URL"
+          # Check if PR creation was successful
+          if echo "$PR_RESPONSE" | grep -q '"number"'; then
+            PR_NUMBER=$(echo "$PR_RESPONSE" | grep -o '"number":[0-9]*' | cut -d':' -f2)
+            PR_URL=$(echo "$PR_RESPONSE" | grep -o '"html_url":"[^"]*"' | cut -d'"' -f4)
+            
+            echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+            echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+            
+            echo "✓ Created PR #$PR_NUMBER: $PR_URL"
+          else
+            echo "✗ Failed to create PR"
+            echo "Response: $PR_RESPONSE"
+            exit 1
+          fi
       
       - name: Notify Gotify
         if: always()
