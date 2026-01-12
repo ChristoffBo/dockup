@@ -14,7 +14,7 @@ DOCKUP_VERSION = "1.2.9"
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.3.0"
+DOCKUP_VERSION = "1.3.1"
 
 import os
 import json
@@ -2989,7 +2989,8 @@ def refresh_container_metadata(stack_name):
 def auto_update_stack(stack_name):
     """
     Watchtower-style update: Pull first, then compare image IDs
-    This is the ONLY reliable method that actually works
+    FIXED: Now reads image names from compose file instead of running containers
+    This prevents digest caching issues when registry URLs change
     """
     # Check global auto-update toggle
     if not config.get('auto_update_enabled', True):
@@ -3017,47 +3018,56 @@ def auto_update_stack(stack_name):
     logger.info(f"Mode: {mode}, Cron: {schedule_info.get('cron')}")
     logger.info(f"=" * 50)
     
-    # WATCHTOWER METHOD: Get current image IDs BEFORE pulling
+    # FIXED: Get image names from COMPOSE FILE (not running containers)
+    # This prevents digest cache mismatches when registry URLs change
     try:
-        containers = docker_client.containers.list(
-            all=True,
-            filters={'label': f'com.docker.compose.project={stack_name}'}
-        )
+        stack_path = os.path.join(STACKS_DIR, stack_name)
+        compose_file = None
+        for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
+            potential_file = os.path.join(stack_path, filename)
+            if os.path.exists(potential_file):
+                compose_file = potential_file
+                break
         
-        if not containers:
-            logger.info(f"✗ No containers found for {stack_name}")
+        if not compose_file:
+            logger.info(f"✗ No compose file found for {stack_name}")
             return
         
-        # Store current image IDs - use the ACTUAL running image, not tag reference
+        # Parse compose file to get image names
+        with open(compose_file, 'r') as f:
+            compose_data = yaml.safe_load(f)
+        
+        services = compose_data.get('services', {})
+        if not services:
+            logger.info(f"✗ No services found in compose file for {stack_name}")
+            return
+        
+        # Get current image IDs using compose file image names
         old_image_ids = {}
-        for container in containers:
-            try:
-                if container.image.tags:
-                    image_name = container.image.tags[0]
-                    # Try to get the SHA256 of what's ACTUALLY running
-                    try:
-                        running_image_sha = container.attrs['Image']
-                        old_image_ids[image_name] = running_image_sha
-                        logger.info(f"  Current {container.name}: running {running_image_sha[:19]}")
-                    except Exception as e:
-                        # Fallback to tag reference if attrs fail
-                        logger.info(f"  ⚠ Could not get running SHA for {container.name}: {e}")
-                        old_image_ids[image_name] = container.image.id
-                        logger.info(f"  Current {container.name}: {container.image.id[:12]} (fallback)")
-            except Exception as e:
-                logger.info(f"  ⚠ Failed to process container {container.name}: {e}")
-                # Don't send notification for individual container failures
-                # Only notify if entire stack check fails (handled below)
+        for service_name, service_config in services.items():
+            image_name = service_config.get('image')
+            if image_name:
+                try:
+                    # Get current image ID from Docker
+                    current_image = docker_client.images.get(image_name)
+                    old_image_ids[image_name] = current_image.id
+                    logger.info(f"  Current {service_name}: {image_name} ({current_image.id[:12]})")
+                except docker.errors.ImageNotFound:
+                    # Image not pulled yet - will be considered an update
+                    old_image_ids[image_name] = None
+                    logger.info(f"  Current {service_name}: {image_name} (not pulled yet)")
+                except Exception as e:
+                    logger.info(f"  ⚠ Could not get current ID for {image_name}: {e}")
         
         if not old_image_ids:
-            logger.info(f"✗ No tagged images found for {stack_name}")
+            logger.info(f"✗ No images found in compose file for {stack_name}")
             return
         
     except Exception as e:
-        logger.info(f"✗ Error getting container info: {e}")
+        logger.info(f"✗ Error reading compose file: {e}")
         send_notification(
             f"Dockup - Error",
-            f"Failed to check stack '{stack_name}': {str(e)}",
+            f"Failed to read compose file for '{stack_name}': {str(e)}",
             'error'
         )
         return
@@ -3088,7 +3098,12 @@ def auto_update_stack(stack_name):
             new_id = new_image.id
             new_image_ids[image_name] = new_id
             
-            if old_id != new_id:
+            # If old_id is None (image wasn't pulled before), it's an update
+            if old_id is None:
+                logger.info(f"  ✓ NEW IMAGE: {image_name}")
+                logger.info(f"    New: {new_id[:12]}")
+                images_changed = True
+            elif old_id != new_id:
                 logger.info(f"  ✓ UPDATE DETECTED: {image_name}")
                 logger.info(f"    Old: {old_id[:12]}")
                 logger.info(f"    New: {new_id[:12]}")
@@ -3275,6 +3290,7 @@ def auto_update_stack(stack_name):
                 'type': 'update_failed',
                 'stack': stack_name
             })
+
 
 
 def check_stack_updates(stack_name):
