@@ -1,10 +1,11 @@
-FROM python:3.14-slim
+# syntax=docker/dockerfile:1
+FROM python:3.14-slim as builder
 
 # Build args for debugging
 ARG TARGETARCH
 ARG TARGETOS
 
-# Install Docker CLI and Docker Compose
+# Install build dependencies
 RUN apt-get update && \
     apt-get install -y \
     curl \
@@ -18,6 +19,33 @@ RUN apt-get update && \
     libxslt1-dev \
     cargo \
     rustc && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first for better caching
+COPY requirements.txt /tmp/requirements.txt
+
+# Install Python dependencies with BuildKit cache
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cargo/registry \
+    pip install --no-cache-dir -r /tmp/requirements.txt
+
+# ============================================
+# Final stage - smaller, runtime only
+# ============================================
+FROM python:3.14-slim
+
+# Build args for debugging
+ARG TARGETARCH
+ARG TARGETOS
+
+# Install runtime dependencies only (no build tools)
+RUN apt-get update && \
+    apt-get install -y \
+    curl \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    wget && \
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
@@ -32,35 +60,23 @@ RUN apt-get update && \
 # Install Trivy - with proper ARM detection
 RUN echo "Target architecture: ${TARGETARCH:-unknown}" && \
     if [ "$(uname -m)" = "aarch64" ] || [ "${TARGETARCH}" = "arm64" ]; then \
-        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.58.0/trivy_0.58.0_Linux-ARM64.tar.gz | tar -xz -C /usr/local/bin trivy; \
+        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.68.1/trivy_0.68.1_Linux-ARM64.tar.gz | tar -xz -C /usr/local/bin trivy; \
     else \
-        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.58.0/trivy_0.58.0_Linux-64bit.tar.gz | tar -xz -C /usr/local/bin trivy; \
+        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.68.1/trivy_0.68.1_Linux-64bit.tar.gz | tar -xz -C /usr/local/bin trivy; \
     fi && \
     chmod +x /usr/local/bin/trivy
+
+# Copy Python packages from builder stage
+COPY --from=builder /usr/local/lib/python3.14/site-packages /usr/local/lib/python3.14/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Set working directory
 WORKDIR /app
 
-# Install Python dependencies with latest versions
-RUN pip install --no-cache-dir \
-    flask==3.1.2 \
-    flask-sock==0.7.0 \
-    docker==7.1.0 \
-    pyyaml==6.0.3 \
-    apscheduler==3.11.2 \
-    apprise==1.9.6 \
-    croniter==6.0.0 \
-    requests==2.32.5 \
-    pytz==2025.2 \
-    psutil==7.2.1 \
-    bcrypt==4.1.2 \
-    beautifulsoup4==4.12.3 \
-    lxml==5.3.0
-
 # Create directories including logs and trivy cache
 RUN mkdir -p /app/static /app/data /app/logs /stacks /config/trivy-cache
 
-# Copy application files
+# Copy application files (these change most frequently, so last)
 COPY app.py /app/
 COPY linuxserver_templates.py /app/
 COPY static/index.html /app/static/
