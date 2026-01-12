@@ -3282,26 +3282,45 @@ def check_stack_updates(stack_name):
     Simple update check for UI - pulls latest and compares image IDs
     This is called by the "Check for Updates" button
     
-    This uses the same method as auto_update_stack to ensure consistency
+    FIXED: Now reads image names from compose file instead of running containers
+    This ensures correct registry URLs are used after switching registries
     """
     try:
-        containers = docker_client.containers.list(
-            all=True,
-            filters={'label': f'com.docker.compose.project={stack_name}'}
-        )
+        # Get stack path and compose file
+        stack_path = os.path.join(STACKS_DIR, stack_name)
+        compose_file = None
+        for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
+            potential_file = os.path.join(stack_path, filename)
+            if os.path.exists(potential_file):
+                compose_file = potential_file
+                break
         
-        if not containers:
+        if not compose_file:
+            logger.info(f"  No compose file found for {stack_name}")
+            return False, None
+        
+        # Parse compose file to get image names from COMPOSE FILE (not running containers)
+        with open(compose_file, 'r') as f:
+            compose_data = yaml.safe_load(f)
+        
+        services = compose_data.get('services', {})
+        if not services:
             return True, False
         
-        # Get current image IDs
+        # Get image names from compose file and current IDs from Docker
         old_image_ids = {}
-        for container in containers:
-            try:
-                if container.image.tags:
-                    image_name = container.image.tags[0]
-                    old_image_ids[image_name] = container.image.id
-            except Exception as e:
-                logger.info(f"  ⚠ Could not get image ID for {container.name}: {e}")
+        for service_name, service_config in services.items():
+            image_name = service_config.get('image')
+            if image_name:
+                try:
+                    # Get current image ID from Docker
+                    current_image = docker_client.images.get(image_name)
+                    old_image_ids[image_name] = current_image.id
+                except docker.errors.ImageNotFound:
+                    # Image not pulled yet - will be considered an update
+                    old_image_ids[image_name] = None
+                except Exception as e:
+                    logger.info(f"  ⚠ Could not get current ID for {image_name}: {e}")
         
         if not old_image_ids:
             return True, False
@@ -3321,7 +3340,12 @@ def check_stack_updates(stack_name):
                 new_image = docker_client.images.get(image_name)
                 new_id = new_image.id
                 
-                if old_id != new_id:
+                # If old_id is None (image wasn't pulled before), it's an update
+                if old_id is None:
+                    logger.info(f"  ✓ New image available: {image_name}")
+                    update_available = True
+                    break
+                elif old_id != new_id:
                     logger.info(f"  ✓ Update available: {image_name}")
                     logger.info(f"    Old: {old_id[:12]}")
                     logger.info(f"    New: {new_id[:12]}")
@@ -4680,18 +4704,6 @@ def api_stack_action_schedules_set(stack_name):
     metadata = get_metadata_cached(stack_name)
     metadata['action_schedules'] = schedules_list
     save_metadata_cached(stack_name, metadata)
-    
-    # Trigger scheduler update
-    setup_scheduler()
-    
-    return jsonify({'success': True})
-    
-    with schedules_lock:
-        schedules[stack_name] = {
-            'mode': mode,
-            'cron': cron
-        }
-    save_schedules()
     
     # Trigger scheduler update
     setup_scheduler()
