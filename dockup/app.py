@@ -3018,6 +3018,24 @@ def auto_update_stack(stack_name):
     logger.info(f"Mode: {mode}, Cron: {schedule_info.get('cron')}")
     logger.info(f"=" * 50)
     
+    # CRITICAL: Only auto-update stacks that are actually DEPLOYED (have containers)
+    # This prevents saved/inactive compose files from being auto-started
+    try:
+        stack_containers = docker_client.containers.list(
+            all=True,
+            filters={'label': f'com.docker.compose.project={stack_name}'}
+        )
+        
+        if not stack_containers:
+            logger.debug(f"[{stack_name}] Stack has no containers (not deployed), skipping auto-update")
+            return
+            
+        logger.info(f"  Stack has {len(stack_containers)} container(s), proceeding with update check")
+        
+    except Exception as e:
+        logger.info(f"✗ Error checking stack deployment status: {e}")
+        return
+    
     # FIXED: Get image names from COMPOSE FILE (not running containers)
     # This prevents digest cache mismatches when registry URLs change
     try:
