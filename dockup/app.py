@@ -14,7 +14,7 @@ DOCKUP_VERSION = "1.2.9"
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.3.1"
+DOCKUP_VERSION = "1.3.2"
 
 import os
 import json
@@ -1012,7 +1012,16 @@ stack_stats_cache = {}  # Cache for stack stats
 network_stats_cache = {}  # Cache for network bytes tracking (for rate calculation)
 appdata_size_cache = {}  # Cache for appdata sizes (stack_name: {size_gb, last_updated})
 peer_sessions = {}  # Cache for peer authentication sessions
-scheduler = None  # Global APScheduler instance
+
+# CRITICAL: Create and start scheduler at module load (not conditionally)
+# This ensures it exists and is running before any code tries to use it
+scheduler = BackgroundScheduler(
+    executors={'default': APThreadPoolExecutor(50)},
+    job_defaults={'coalesce': False, 'max_instances': 1},
+    timezone=pytz.UTC  # Will be updated with user timezone in setup_scheduler
+)
+scheduler.start()
+logger.info("[Module Init] Scheduler created and started")
 
 # Performance optimization caches
 stacks_list_cache = {
@@ -1739,11 +1748,69 @@ def stack_action(stack_name, action):
         return False, str(e)
 
 
+def update_stack_action_jobs(stack_name, schedules_list):
+    """Update action jobs for a single stack without recreating scheduler"""
+    global scheduler
+    
+    if scheduler is None:
+        logger.error("[update_stack_action_jobs] Scheduler not initialized")
+        return
+    
+    user_tz = pytz.timezone(config.get('timezone', 'UTC'))
+    
+    # Remove old action jobs for this stack
+    for job in list(scheduler.get_jobs()):
+        if (job.id.startswith(f"start_{stack_name}_") or 
+            job.id.startswith(f"stop_{stack_name}_") or 
+            job.id.startswith(f"restart_{stack_name}_")):
+            try:
+                scheduler.remove_job(job.id)
+                logger.info(f"[Action Jobs] Removed old job: {job.id}")
+            except Exception as e:
+                logger.error(f"[Action Jobs] Could not remove job {job.id}: {e}")
+    
+    # Add new action jobs for this stack
+    for schedule in schedules_list:
+        if not schedule.get('enabled', True):
+            continue
+        
+        action = schedule.get('action')
+        cron_expr = schedule.get('cron')
+        
+        if not action or not cron_expr:
+            continue
+        
+        try:
+            trigger = CronTrigger.from_crontab(cron_expr, timezone=user_tz)
+            job_id = f"{action}_{stack_name}_{schedule.get('id', hashlib.md5(cron_expr.encode()).hexdigest()[:8])}"
+            
+            scheduler.add_job(
+                scheduled_stack_action,
+                trigger,
+                args=[stack_name, action],
+                id=job_id,
+                replace_existing=True
+            )
+            
+            job = scheduler.get_job(job_id)
+            if job:
+                logger.info(f"[Action Jobs] ✓ Added {action} for {stack_name} @ {cron_expr} | Next: {job.next_run_time}")
+            else:
+                logger.error(f"[Action Jobs] ✗ Failed to add {action} for {stack_name}")
+        except Exception as e:
+            logger.error(f"[Action Jobs] Error adding {action} for {stack_name}: {e}")
+
+
 def scheduled_stack_action(stack_name, action):
     """Execute scheduled stack action with notification"""
-    logger.info(f"[Schedule] Running {action} for {stack_name}")
+    logger.info("=" * 80)
+    logger.info(f"SCHEDULED ACTION FIRING: {action.upper()} on {stack_name}")
+    logger.info(f"Time: {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    logger.info("=" * 80)
     
     success, message = stack_action(stack_name, action)
+    
+    logger.info(f"Result: {'SUCCESS' if success else 'FAILED'} - {message}")
     
     if success:
         title = f"✓ Scheduled {action.title()}: {stack_name}"
@@ -3427,35 +3494,24 @@ def get_schedule_cron(schedule_name):
 
 
 def setup_scheduler():
-    """Setup or refresh APScheduler without recreating it"""
+    """
+    Setup or refresh APScheduler without recreating it
+    
+    CRITICAL: This function should ONLY be called at startup!
+    DO NOT call this from API routes - it removes ALL jobs and rebuilds them.
+    To update individual stack schedules, use update_stack_action_jobs() instead.
+    """
     global scheduler
     
     # Get user timezone
     user_tz = pytz.timezone(config.get('timezone', 'UTC'))
 
-    # Initialize scheduler ONLY once
-    if scheduler is None:
-        executors = {
-            'default': APThreadPoolExecutor(50)
-        }
-        job_defaults = {
-            'coalesce': False,
-            'max_instances': 1
-        }
-        scheduler = BackgroundScheduler(
-            executors=executors,
-            job_defaults=job_defaults,
-            timezone=user_tz
-        )
-        scheduler.start()
-        logger.info("[Scheduler] Created and started with 50 worker threads")
-    else:
-        # Update scheduler timezone if needed
-        try:
-            scheduler.configure(timezone=user_tz)
-        except Exception as e:
-            logger.info(f"[Scheduler] Could not update timezone: {e}")
-        logger.info("[Scheduler] Refreshing jobs")
+    # Update scheduler timezone (scheduler already exists and is running from module init)
+    try:
+        scheduler.configure(timezone=user_tz)
+        logger.info(f"[Scheduler] Configured timezone: {user_tz}")
+    except Exception as e:
+        logger.error(f"[Scheduler] Could not update timezone: {e}")
 
     # Remove only update jobs safely
     for job in list(scheduler.get_jobs()):
@@ -3616,6 +3672,23 @@ def setup_scheduler():
         logger.info("[Scheduler] Started background appdata size calculation")
     except Exception as e:
         logger.info(f"[Scheduler] Error adding appdata size job: {e}")
+    
+    # Log final state
+    all_jobs = scheduler.get_jobs()
+    action_jobs = [j for j in all_jobs if j.id.startswith(('start_', 'stop_', 'restart_'))]
+    logger.info("=" * 80)
+    logger.info(f"SCHEDULER SETUP COMPLETE")
+    logger.info(f"Action jobs registered: {len(action_jobs)}")
+    logger.info(f"Total jobs: {len(all_jobs)}")
+    logger.info(f"Scheduler running: {scheduler.running}")
+    logger.info("=" * 80)
+    
+    if action_jobs:
+        logger.info("Action jobs:")
+        for job in action_jobs:
+            logger.info(f"  - {job.id} → Next: {job.next_run_time}")
+    else:
+        logger.info("No action jobs registered (no schedules saved yet)")
 
     return scheduler
 
@@ -4739,8 +4812,8 @@ def api_stack_action_schedules_set(stack_name):
     metadata['action_schedules'] = schedules_list
     save_metadata_cached(stack_name, metadata)
     
-    # Trigger scheduler update
-    setup_scheduler()
+    # Update ONLY this stack's action jobs (don't recreate entire scheduler)
+    update_stack_action_jobs(stack_name, schedules_list)
     
     return jsonify({'success': True})
 
