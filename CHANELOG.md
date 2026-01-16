@@ -1,5 +1,5 @@
 ## latest (2026-01-16)
-Updated Dependencies and changed a spilt editor parsing issue with using local docker registries. it will low support up address if you wish to go the http route.
+Updated Dependencies and changed a spilt editor parsing issue with using local docker registries. it will now support ip addressea if you wish to go the http route.
 ## latest (2026-01-12)
 Updated where DockUp checks for updates. it used to check the image of the container it now checks the compsoe files. there might be a breaking change where by a stack might get stuck on update. just delete if the stack image and up it again.
 ## latest (2025-12-18)
