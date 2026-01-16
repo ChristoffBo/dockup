@@ -5,16 +5,15 @@ Combines Dockge functionality with Tugtainer/Watchtower update capabilities
 
 PERFORMANCE OPTIMIZATIONS:
 1. Metadata caching in memory - 90% faster metadata access
-DOCKUP_VERSION = "1.2.9"
-4. Host stats response caching - Reduces CPU usage
-5. Health check optimization - Background thread instead of per-request
-6. Container cache TTL optimized - Prevents race conditions with stats updater
-7. Stack list caching - 90% reduction in file I/O operations
-8. Page visibility detection - Pauses polling when tab hidden (80% fewer API calls)
+2. Host stats response caching - Reduces CPU usage
+3. Health check optimization - Background thread instead of per-request
+4. Container cache TTL optimized - Prevents race conditions with stats updater
+5. Stack list caching - 90% reduction in file I/O operations
+6. Page visibility detection - Pauses polling when tab hidden (80% fewer API calls)
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.3.2"
+DOCKUP_VERSION = "1.3.3"
 
 import os
 import json
@@ -679,7 +678,8 @@ def parse_docker_run_command(command: str) -> Tuple[Dict[str, Any], List[str]]:
         compose['container_name'] = container_name
     else:
         # Derive service name from image (e.g., 'nginx:latest' -> 'nginx')
-        service_name = image.split(':')[0].split('/')[-1]
+        # Fixed: Split on '/' first to handle IP:PORT registries (e.g., 10.0.0.240:3000/repo/image:latest)
+        service_name = image.split('/')[-1].split(':')[0]
     
     compose['image'] = image
     
