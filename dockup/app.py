@@ -140,6 +140,12 @@ active_scans = {}  # container_id -> {'start_time': time, 'process': subprocess.
 active_scans_lock = threading.Lock()
 SCAN_TIMEOUT = 600  # 10 minutes maximum scan time
 
+# Terminal session tracking - for interactive container shells
+terminal_sessions = {}  # WebSocket -> {'socket': exec_socket, 'exec_id': id, 'container_id': id, 'start_time': time}
+terminal_sessions_lock = threading.Lock()
+TERMINAL_SESSION_TIMEOUT = 3600  # 1 hour max session time
+
+
 
 def get_metadata_cached(stack_name):
     """Get metadata from cache or load from disk"""
@@ -5674,6 +5680,191 @@ def api_delete_network(network_id):
 
 
 @sock.route('/ws')
+
+
+def cleanup_terminal_session(ws):
+    """Clean up terminal session resources"""
+    with terminal_sessions_lock:
+        if ws in terminal_sessions:
+            session = terminal_sessions[ws]
+            try:
+                # Close the socket
+                if 'socket' in session:
+                    session['socket'].close()
+                logger.info(f"Closed terminal session for container {session.get('container_id', 'unknown')}")
+            except Exception as e:
+                logger.error(f"Error closing terminal socket: {e}")
+            finally:
+                del terminal_sessions[ws]
+
+
+@sock.route('/ws/terminal/<container_id>')
+def websocket_terminal(ws, container_id):
+    """WebSocket endpoint for interactive container terminal"""
+    import select
+    
+    try:
+        # Verify container exists and is running
+        try:
+            container = docker_client.containers.get(container_id)
+            if container.status != 'running':
+                ws.send(json.dumps({'type': 'error', 'data': 'Container is not running'}))
+                return
+        except docker.errors.NotFound:
+            ws.send(json.dumps({'type': 'error', 'data': 'Container not found'}))
+            return
+        except Exception as e:
+            logger.error(f"Error getting container {container_id}: {e}")
+            ws.send(json.dumps({'type': 'error', 'data': f'Error: {str(e)}'}))
+            return
+        
+        # Create exec instance with interactive shell
+        # Try bash first, fall back to sh
+        exec_command = ['/bin/sh', '-c', 'command -v bash >/dev/null && exec bash || exec sh']
+        
+        try:
+            exec_instance = docker_client.api.exec_create(
+                container.id,
+                exec_command,
+                stdin=True,
+                tty=True,
+                environment={'TERM': 'xterm-256color', 'COLORTERM': 'truecolor'}
+            )
+        except Exception as e:
+            logger.error(f"Error creating exec instance: {e}")
+            ws.send(json.dumps({'type': 'error', 'data': f'Failed to create terminal: {str(e)}'}))
+            return
+        
+        exec_id = exec_instance['Id']
+        
+        try:
+            exec_socket = docker_client.api.exec_start(exec_id, socket=True, tty=True)
+        except Exception as e:
+            logger.error(f"Error starting exec: {e}")
+            ws.send(json.dumps({'type': 'error', 'data': f'Failed to start terminal: {str(e)}'}))
+            return
+        
+        # Store session with timeout tracking
+        with terminal_sessions_lock:
+            terminal_sessions[ws] = {
+                'socket': exec_socket,
+                'exec_id': exec_id,
+                'container_id': container_id,
+                'container_name': container.name,
+                'start_time': time.time()
+            }
+        
+        logger.info(f"Terminal session started for container {container.name} ({container_id[:12]})")
+        
+        # Send connection confirmation
+        ws.send(json.dumps({
+            'type': 'connected',
+            'data': f'Connected to {container.name}\r\n'
+        }))
+        
+        # Thread to read from container and send to websocket
+        def read_from_container():
+            try:
+                while True:
+                    # Check session timeout
+                    with terminal_sessions_lock:
+                        if ws in terminal_sessions:
+                            elapsed = time.time() - terminal_sessions[ws]['start_time']
+                            if elapsed > TERMINAL_SESSION_TIMEOUT:
+                                logger.info(f"Terminal session timeout for {container.name}")
+                                ws.send(json.dumps({
+                                    'type': 'output',
+                                    'data': '\r\n\r\n[Session timeout - 1 hour limit reached]\r\n'
+                                }))
+                                break
+                        else:
+                            # Session was cleaned up
+                            break
+                    
+                    try:
+                        # Use select to check if data is available (non-blocking with timeout)
+                        readable, _, _ = select.select([exec_socket._sock], [], [], 0.5)
+                        
+                        if readable:
+                            data = exec_socket._sock.recv(4096)
+                            if not data:
+                                logger.info(f"Container terminal closed for {container.name}")
+                                break
+                            
+                            # Send to websocket
+                            ws.send(json.dumps({
+                                'type': 'output',
+                                'data': data.decode('utf-8', errors='ignore')
+                            }))
+                    except Exception as e:
+                        logger.error(f"Error reading from container: {e}")
+                        break
+                        
+            except Exception as e:
+                logger.error(f"Terminal read thread error: {e}")
+            finally:
+                # Signal connection close
+                try:
+                    ws.send(json.dumps({'type': 'close'}))
+                except:
+                    pass
+                # Don't close socket here - let cleanup_terminal_session handle it
+        
+        # Start read thread
+        read_thread = threading.Thread(target=read_from_container, daemon=True)
+        read_thread.start()
+        
+        # Main loop: receive from websocket and send to container
+        while True:
+            try:
+                message = ws.receive(timeout=1.0)
+                
+                if message is None:
+                    # Connection closed
+                    break
+                
+                # Parse message
+                try:
+                    data = json.loads(message)
+                    msg_type = data.get('type')
+                    
+                    if msg_type == 'input':
+                        # Send input to container
+                        input_data = data.get('data', '')
+                        exec_socket._sock.send(input_data.encode('utf-8'))
+                    
+                    elif msg_type == 'resize':
+                        # Resize terminal
+                        height = data.get('rows', 24)
+                        width = data.get('cols', 80)
+                        try:
+                            docker_client.api.exec_resize(exec_id, height=height, width=width)
+                        except Exception as e:
+                            logger.error(f"Error resizing terminal: {e}")
+                            
+                except json.JSONDecodeError:
+                    logger.error(f"Invalid JSON from websocket: {message}")
+                except Exception as e:
+                    logger.error(f"Error processing message: {e}")
+                    
+            except Exception as e:
+                # Timeout or connection error
+                if "timed out" not in str(e).lower():
+                    logger.error(f"WebSocket receive error: {e}")
+                    break
+        
+    except Exception as e:
+        logger.error(f"Terminal WebSocket error: {e}")
+        try:
+            ws.send(json.dumps({'type': 'error', 'data': str(e)}))
+        except:
+            pass
+    finally:
+        # Clean up session
+        cleanup_terminal_session(ws)
+        logger.info(f"Terminal session ended for container {container_id[:12]}")
+
+
 def websocket(ws):
     """WebSocket endpoint for real-time updates"""
     with websocket_clients_lock:
