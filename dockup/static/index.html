@@ -1005,6 +1005,10 @@
 <style>
 </style>
 
+    <!-- xterm.js for terminal -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
 </head>
 <body>
 
@@ -1574,6 +1578,39 @@
                                 <i class="fas fa-arrow-up"></i> Update Now
                             </button>
                             <button class="btn btn-info" @click="checkUpdates(stack.name)">
+
+                        <!-- Containers Section (Collapsible) -->
+                        <div v-if="stack.containers && stack.containers.length > 0 && stack.status === 'running' && !collapsedStacks[stack.name]" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+                            <h4 style="color: #94a3b8; margin-bottom: 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">
+                                <i class="fas fa-box"></i> Containers ({{ stack.containers.length }})
+                            </h4>
+                            <div v-for="container in stack.containers" :key="container.id" style="padding: 8px; background: rgba(30, 41, 59, 0.5); border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                                <div style="flex: 1;">
+                                    <div style="font-weight: 500; color: #e2e8f0; font-size: 13px;">{{ container.name }}</div>
+                                    <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
+                                        <span :class="['status-badge', container.status === 'running' ? 'status-running' : 'status-stopped']" style="font-size: 10px; padding: 2px 6px;">
+                                            {{ container.status }}
+                                        </span>
+                                        <span v-if="container.health" :class="['health-badge', 
+                                            container.health === 'healthy' ? 'health-healthy' : 
+                                            container.health === 'unhealthy' ? 'health-unhealthy' : 'health-starting']" 
+                                            style="font-size: 10px; padding: 2px 6px; margin-left: 5px;">
+                                            {{ container.health }}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div>
+                                    <button v-if="container.status === 'running'" 
+                                            class="btn btn-sm" 
+                                            @click="openTerminal(container.id, container.name)"
+                                            style="padding: 4px 10px; font-size: 11px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981;"
+                                            title="Open terminal">
+                                        <i class="fas fa-terminal"></i> Shell
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
                                 <i class="fas fa-sync"></i> Check
                             </button>
                             <button class="btn btn-scan" @click="scanContainer(stack)" v-if="stack.containers.length > 0 && stack.is_local" title="Scan for vulnerabilities">
@@ -3074,6 +3111,23 @@
                     <h2>Logs - {{ logsStackName }}</h2>
                     <button class="close-btn" @click="showLogsModal = false">&times;</button>
                 </div>
+
+        <!-- Terminal Modal -->
+        <div class="modal" v-if="showTerminalModal" @click.self="closeTerminal">
+            <div class="modal-content" style="max-width: 1000px; max-height: 80vh;">
+                <div class="modal-header">
+                    <h2><i class="fas fa-terminal"></i> Terminal - {{ terminalContainerName }}</h2>
+                    <button class="close-btn" @click="closeTerminal">&times;</button>
+                </div>
+                <div style="background: #000; padding: 10px; border-radius: 6px;">
+                    <div id="terminal-container" style="height: 500px;"></div>
+                </div>
+                <div style="margin-top: 15px; color: #64748b; font-size: 12px;">
+                    <i class="fas fa-info-circle"></i> Press Ctrl+C to interrupt, type 'exit' to close, or click the × button above
+                </div>
+            </div>
+        </div>
+
                 <div v-for="(log, container) in stackLogs" :key="container">
                     <h3 style="margin: 20px 0 10px;">{{ container }}</h3>
                     <div class="logs-container">{{ log }}</div>
@@ -3691,6 +3745,12 @@
                     availableServices: [],
                     serviceSections: null,
                     showLogsModal: false,
+                showTerminalModal: false,
+                terminalContainerName: '',
+                terminalContainerId: '',
+                terminalInstance: null,
+                terminalSocket: null,
+                terminalFitAddon: null,
                     logsStackName: '',
                     stackLogs: {},
                     showScheduleModal: false,
@@ -6130,4 +6190,142 @@
     <!-- JS-YAML for parsing YAML in split editor -->
     <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
 </body>
-</html>
+</html>,
+                
+                openTerminal(containerId, containerName) {
+                    this.terminalContainerId = containerId;
+                    this.terminalContainerName = containerName;
+                    this.showTerminalModal = true;
+                    
+                    // Initialize terminal on next tick after modal is rendered
+                    this.$nextTick(() => {
+                        this.initTerminal();
+                    });
+                },
+                
+                initTerminal() {
+                    // Create terminal instance
+                    this.terminalInstance = new Terminal({
+                        cursorBlink: true,
+                        fontSize: 14,
+                        fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+                        theme: {
+                            background: '#000000',
+                            foreground: '#ffffff',
+                            cursor: '#00ff00',
+                            black: '#000000',
+                            red: '#ff6b6b',
+                            green: '#51cf66',
+                            yellow: '#ffd43b',
+                            blue: '#74c0fc',
+                            magenta: '#f783ac',
+                            cyan: '#3bc9db',
+                            white: '#dee2e6',
+                            brightBlack: '#495057',
+                            brightRed: '#ff8787',
+                            brightGreen: '#69db7c',
+                            brightYellow: '#ffe066',
+                            brightBlue: '#91d7ff',
+                            brightMagenta: '#faa2c1',
+                            brightCyan: '#66d9e8',
+                            brightWhite: '#f8f9fa'
+                        },
+                        rows: 30,
+                        cols: 100
+                    });
+                    
+                    // Create fit addon
+                    this.terminalFitAddon = new FitAddon.FitAddon();
+                    this.terminalInstance.loadAddon(this.terminalFitAddon);
+                    
+                    // Open terminal in container
+                    const container = document.getElementById('terminal-container');
+                    this.terminalInstance.open(container);
+                    this.terminalFitAddon.fit();
+                    
+                    // Connect WebSocket
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${protocol}//${window.location.host}/ws/terminal/${this.terminalContainerId}`;
+                    
+                    this.terminalSocket = new WebSocket(wsUrl);
+                    
+                    this.terminalSocket.onopen = () => {
+                        console.log('Terminal WebSocket connected');
+                    };
+                    
+                    this.terminalSocket.onmessage = (event) => {
+                        try {
+                            const data = JSON.parse(event.data);
+                            
+                            if (data.type === 'output' || data.type === 'connected') {
+                                this.terminalInstance.write(data.data);
+                            } else if (data.type === 'error') {
+                                this.terminalInstance.write(\`\r\n\x1b[1;31mError: \${data.data}\x1b[0m\r\n\`);
+                            } else if (data.type === 'close') {
+                                this.terminalInstance.write('\r\n\r\n[Connection closed]\r\n');
+                                if (this.terminalSocket) {
+                                    this.terminalSocket.close();
+                                }
+                            }
+                        } catch (e) {
+                            console.error('Error parsing terminal message:', e);
+                        }
+                    };
+                    
+                    this.terminalSocket.onerror = (error) => {
+                        console.error('Terminal WebSocket error:', error);
+                        this.terminalInstance.write('\r\n\x1b[1;31m[WebSocket error]\x1b[0m\r\n');
+                    };
+                    
+                    this.terminalSocket.onclose = () => {
+                        console.log('Terminal WebSocket closed');
+                    };
+                    
+                    // Send input to WebSocket
+                    this.terminalInstance.onData((data) => {
+                        if (this.terminalSocket && this.terminalSocket.readyState === WebSocket.OPEN) {
+                            this.terminalSocket.send(JSON.stringify({
+                                type: 'input',
+                                data: data
+                            }));
+                        }
+                    });
+                    
+                    // Handle terminal resize
+                    const resizeObserver = new ResizeObserver(() => {
+                        if (this.terminalFitAddon) {
+                            this.terminalFitAddon.fit();
+                            
+                            if (this.terminalSocket && this.terminalSocket.readyState === WebSocket.OPEN) {
+                                this.terminalSocket.send(JSON.stringify({
+                                    type: 'resize',
+                                    rows: this.terminalInstance.rows,
+                                    cols: this.terminalInstance.cols
+                                }));
+                            }
+                        }
+                    });
+                    resizeObserver.observe(container);
+                    
+                    // Focus terminal
+                    this.terminalInstance.focus();
+                },
+                
+                closeTerminal() {
+                    // Close WebSocket
+                    if (this.terminalSocket) {
+                        this.terminalSocket.close();
+                        this.terminalSocket = null;
+                    }
+                    
+                    // Dispose terminal
+                    if (this.terminalInstance) {
+                        this.terminalInstance.dispose();
+                        this.terminalInstance = null;
+                    }
+                    
+                    this.terminalFitAddon = null;
+                    this.showTerminalModal = false;
+                    this.terminalContainerId = '';
+                    this.terminalContainerName = '';
+                }
