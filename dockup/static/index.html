@@ -1608,7 +1608,7 @@
                                         <i class="fas fa-terminal"></i> Shell
                                     </button>
                                 </div>
-            </div>
+                            </div>
                         </div>
 
                                 <i class="fas fa-sync"></i> Check
@@ -6188,14 +6188,12 @@
                     this.terminalContainerName = containerName;
                     this.showTerminalModal = true;
                     
-                    // Initialize terminal on next tick after modal is rendered
                     this.$nextTick(() => {
                         this.initTerminal();
                     });
                 },
                 
                 initTerminal() {
-                    // Create terminal instance
                     this.terminalInstance = new Terminal({
                         cursorBlink: true,
                         fontSize: 14,
@@ -6225,16 +6223,13 @@
                         cols: 100
                     });
                     
-                    // Create fit addon
                     this.terminalFitAddon = new FitAddon.FitAddon();
                     this.terminalInstance.loadAddon(this.terminalFitAddon);
                     
-                    // Open terminal in container
                     const container = document.getElementById('terminal-container');
                     this.terminalInstance.open(container);
                     this.terminalFitAddon.fit();
                     
-                    // Connect WebSocket
                     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                     const wsUrl = `${protocol}//${window.location.host}/ws/terminal/${this.terminalContainerId}`;
                     
@@ -6254,7 +6249,6 @@
                                 this.terminalInstance.write(`\r\n\x1b[1;31mError: ${data.data}\x1b[0m\r\n`);
                             } else if (data.type === 'close') {
                                 this.terminalInstance.write('\r\n\r\n[Connection closed]\r\n');
-                                // FIXED: Removed redundant socket.close() - onclose handler will fire
                             }
                         } catch (e) {
                             console.error('Error parsing terminal message:', e);
@@ -6270,7 +6264,6 @@
                         console.log('Terminal WebSocket closed');
                     };
                     
-                    // Send input to WebSocket
                     this.terminalInstance.onData((data) => {
                         if (this.terminalSocket && this.terminalSocket.readyState === WebSocket.OPEN) {
                             this.terminalSocket.send(JSON.stringify({
@@ -6280,7 +6273,6 @@
                         }
                     });
                     
-                    // FIXED: Store resizeObserver for proper cleanup
                     this.terminalResizeObserver = new ResizeObserver(() => {
                         if (this.terminalFitAddon) {
                             this.terminalFitAddon.fit();
@@ -6296,24 +6288,20 @@
                     });
                     this.terminalResizeObserver.observe(container);
                     
-                    // Focus terminal
                     this.terminalInstance.focus();
                 },
                 
                 closeTerminal() {
-                    // FIXED: Disconnect resizeObserver to prevent memory leaks
                     if (this.terminalResizeObserver) {
                         this.terminalResizeObserver.disconnect();
                         this.terminalResizeObserver = null;
                     }
                     
-                    // Close WebSocket
                     if (this.terminalSocket) {
                         this.terminalSocket.close();
                         this.terminalSocket = null;
                     }
                     
-                    // Dispose terminal
                     if (this.terminalInstance) {
                         this.terminalInstance.dispose();
                         this.terminalInstance = null;
