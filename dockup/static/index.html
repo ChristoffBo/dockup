@@ -1608,7 +1608,7 @@
                                         <i class="fas fa-terminal"></i> Shell
                                     </button>
                                 </div>
-                            </div>
+            </div>
                         </div>
 
                                 <i class="fas fa-sync"></i> Check
@@ -3751,6 +3751,7 @@
                 terminalInstance: null,
                 terminalSocket: null,
                 terminalFitAddon: null,
+                terminalResizeObserver: null,
                     logsStackName: '',
                     stackLogs: {},
                     showScheduleModal: false,
@@ -6180,17 +6181,7 @@
                         this.showToast('Error', `Failed to apply limits: ${error.response?.data?.error || error.message}`, 'error');
                     }
                 }
-            }
-        });
-        
-        // Store app instance globally for docker run import feature
-        window.vueApp = app.mount('#app');
-    </script>
-
-    <!-- JS-YAML for parsing YAML in split editor -->
-    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
-</body>
-</html>,
+,
                 
                 openTerminal(containerId, containerName) {
                     this.terminalContainerId = containerId;
@@ -6260,12 +6251,10 @@
                             if (data.type === 'output' || data.type === 'connected') {
                                 this.terminalInstance.write(data.data);
                             } else if (data.type === 'error') {
-                                this.terminalInstance.write(\`\r\n\x1b[1;31mError: \${data.data}\x1b[0m\r\n\`);
+                                this.terminalInstance.write(`\r\n\x1b[1;31mError: ${data.data}\x1b[0m\r\n`);
                             } else if (data.type === 'close') {
                                 this.terminalInstance.write('\r\n\r\n[Connection closed]\r\n');
-                                if (this.terminalSocket) {
-                                    this.terminalSocket.close();
-                                }
+                                // FIXED: Removed redundant socket.close() - onclose handler will fire
                             }
                         } catch (e) {
                             console.error('Error parsing terminal message:', e);
@@ -6291,8 +6280,8 @@
                         }
                     });
                     
-                    // Handle terminal resize
-                    const resizeObserver = new ResizeObserver(() => {
+                    // FIXED: Store resizeObserver for proper cleanup
+                    this.terminalResizeObserver = new ResizeObserver(() => {
                         if (this.terminalFitAddon) {
                             this.terminalFitAddon.fit();
                             
@@ -6305,13 +6294,19 @@
                             }
                         }
                     });
-                    resizeObserver.observe(container);
+                    this.terminalResizeObserver.observe(container);
                     
                     // Focus terminal
                     this.terminalInstance.focus();
                 },
                 
                 closeTerminal() {
+                    // FIXED: Disconnect resizeObserver to prevent memory leaks
+                    if (this.terminalResizeObserver) {
+                        this.terminalResizeObserver.disconnect();
+                        this.terminalResizeObserver = null;
+                    }
+                    
                     // Close WebSocket
                     if (this.terminalSocket) {
                         this.terminalSocket.close();
@@ -6329,3 +6324,14 @@
                     this.terminalContainerId = '';
                     this.terminalContainerName = '';
                 }
+            }
+        });
+        
+        // Store app instance globally for docker run import feature
+        window.vueApp = app.mount('#app');
+    </script>
+
+    <!-- JS-YAML for parsing YAML in split editor -->
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+</body>
+</html>
