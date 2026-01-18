@@ -5921,13 +5921,28 @@ def websocket_terminal(ws, container_id):
         sock = exec_socket._sock
         sock.settimeout(0.1)
         
-        # CRITICAL: Set initial terminal size
-        # Without this, shell may exit because it thinks size is 0x0
+        # CRITICAL: Race condition fix - delay to let frontend send resize first
+        import time
+        time.sleep(0.1)  # Give frontend time to send initial resize
+        
+        # Apply default size (frontend should override this immediately)
         try:
             docker_client.api.exec_resize(exec_id, height=24, width=80)
-            logger.info("Initial terminal resize: 80x24")
+            logger.info("Initial terminal resize: 80x24 (default)")
         except Exception as e:
             logger.warning(f"Initial resize failed: {e}")
+        
+        # Double-resize strategy: Some shells check dimensions after startup
+        def delayed_resize():
+            time.sleep(0.15)
+            try:
+                # Check if we got a resize from frontend
+                docker_client.api.exec_resize(exec_id, height=24, width=80)
+                logger.debug("Delayed resize applied")
+            except:
+                pass
+        
+        threading.Thread(target=delayed_resize, daemon=True).start()
         
         # Verify exec is actually running
         try:
