@@ -41,7 +41,7 @@ Rules:
 - Do NOT include commentary
 - If no fix is required, output exactly: NO_CHANGES
 
-Fix bugs, security issues, or correctness problems if present.
+
 
 Diff:
 """ + diff
