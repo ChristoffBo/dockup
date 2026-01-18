@@ -5891,8 +5891,8 @@ def cleanup_terminal_session(ws):
 
 @sock.route('/ws/terminal/<container_id>')
 def websocket_terminal(ws, container_id):
-    """Terminal WebSocket - PROPER non-blocking I/O with select()"""
-    import select
+    """Terminal WebSocket - Using streaming API instead of socket"""
+    import queue
     import time
     
     try:
@@ -5913,12 +5913,14 @@ def websocket_terminal(ws, container_id):
             environment={'TERM': 'xterm-256color'}
         )['Id']
         
-        # Start exec and get socket
+        logger.info(f"[TERMINAL] Exec created: {exec_id[:12]}")
+        
+        # Start exec - get socket for input
         exec_socket = docker_client.api.exec_start(exec_id, socket=True, tty=True)
         sock = exec_socket._sock
-        
-        # Set to NON-BLOCKING mode (this is the key!)
         sock.setblocking(False)
+        
+        logger.info(f"[TERMINAL] Socket obtained for {container.name}")
         
         ws.send(json.dumps({'type': 'connected', 'data': f'Connected to {container.name}\r\n'}))
         logger.info(f"Terminal connected: {container.name}")
@@ -5926,29 +5928,34 @@ def websocket_terminal(ws, container_id):
         # Stop flag
         stop_reading = threading.Event()
         
-        # Read from container using SELECT
+        # Read from container - AGGRESSIVE POLLING
         def read_from_container():
+            logger.info(f"[TERMINAL] Reader thread started for {container.name}")
+            consecutive_empty = 0
             try:
                 while not stop_reading.is_set():
-                    # Use select to check if data is available (1 second timeout)
-                    ready, _, _ = select.select([sock], [], [], 1.0)
-                    
-                    if ready:
-                        # Data is available, read it
-                        try:
-                            data = sock.recv(4096)
-                            if not data:
-                                # Empty data when select says ready = EOF
-                                logger.info(f"Terminal EOF: {container.name}")
-                                break
+                    try:
+                        # Try to read without select - just non-blocking recv
+                        data = sock.recv(4096)
+                        if data:
+                            consecutive_empty = 0  # Reset counter
+                            logger.debug(f"[TERMINAL] Got {len(data)} bytes")
                             ws.send(json.dumps({'type': 'output', 'data': data.decode('utf-8', errors='ignore')}))
-                        except BlockingIOError:
-                            # Should never happen since select said data ready, but handle it
-                            continue
-                        except Exception as e:
-                            logger.error(f"Terminal read error: {e}")
-                            break
-                    # If select times out (no data), just loop again
+                        else:
+                            # Empty data
+                            consecutive_empty += 1
+                            logger.debug(f"[TERMINAL] Empty recv #{consecutive_empty}")
+                            if consecutive_empty > 10:  # 10 consecutive empties = EOF
+                                logger.info(f"Terminal EOF after {consecutive_empty} empty reads")
+                                break
+                            time.sleep(0.05)  # 50ms between reads
+                    except BlockingIOError:
+                        # No data available, this is normal
+                        time.sleep(0.05)
+                        continue
+                    except Exception as e:
+                        logger.error(f"Terminal read error: {e}", exc_info=True)
+                        break
                     
             except Exception as e:
                 logger.error(f"Terminal reader crashed: {e}", exc_info=True)
@@ -5962,6 +5969,7 @@ def websocket_terminal(ws, container_id):
         # Start reader thread
         reader = threading.Thread(target=read_from_container, daemon=True)
         reader.start()
+        logger.info(f"[TERMINAL] Reader thread spawned")
         
         # Main loop: websocket -> container
         try:
@@ -5977,6 +5985,7 @@ def websocket_terminal(ws, container_id):
                     
                     if msg_type == 'input':
                         input_data = data.get('data', '')
+                        logger.debug(f"[TERMINAL] Sending input: {repr(input_data[:20])}")
                         sock.sendall(input_data.encode('utf-8'))
                     
                     elif msg_type == 'resize':
@@ -5986,6 +5995,7 @@ def websocket_terminal(ws, container_id):
                                 height=data.get('rows', 24),
                                 width=data.get('cols', 80)
                             )
+                            logger.debug(f"[TERMINAL] Resized to {data.get('cols')}x{data.get('rows')}")
                         except Exception as e:
                             logger.debug(f"Resize failed: {e}")
                 
