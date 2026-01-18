@@ -5913,34 +5913,44 @@ def websocket_terminal(ws, container_id):
         # Start exec and get socket
         exec_socket = docker_client.api.exec_start(exec_id, socket=True, tty=True)
         sock = exec_socket._sock
-        sock.settimeout(0.5)  # Half second timeout
+        sock.settimeout(1.0)  # 1 second timeout, shells can be slow to start
+        
+        # Give shell a moment to initialize
+        import time
+        time.sleep(0.1)
         
         ws.send(json.dumps({'type': 'connected', 'data': f'Connected to {container.name}\r\n'}))
-        logger.info(f"Terminal connected: {container.name}")
+        logger.info(f"Terminal connected: {container.name} (exec_id: {exec_id[:12]})")
         
         # Stop flag
         stop_reading = threading.Event()
         
         # Read from container
         def read_from_container():
-            first_read = True  # Track first read to avoid false EOF
+            startup_timeouts = 0  # Count timeouts during startup
+            got_data = False  # Have we received any data yet?
             try:
                 while not stop_reading.is_set():
                     try:
                         data = sock.recv(4096)
                         if not data:
-                            # On first read, empty data just means shell hasn't printed yet
-                            if first_read:
-                                first_read = False
-                                continue
-                            # After first read, empty data means EOF
-                            logger.info(f"Terminal EOF: {container.name}")
-                            break
-                        first_read = False  # Got data, no longer first read
+                            # Empty data = EOF, but only if we've seen data before
+                            # OR if startup grace period is over
+                            if got_data or startup_timeouts > 4:  # 4 timeouts = 2 seconds grace
+                                logger.info(f"Terminal EOF: {container.name} (got_data={got_data}, timeouts={startup_timeouts})")
+                                break
+                            # During startup, empty recv without timeout is weird but give it another chance
+                            logger.debug(f"Terminal empty recv during startup, continuing")
+                            startup_timeouts += 1
+                            continue
+                        # Got data, shell is alive
+                        got_data = True
                         ws.send(json.dumps({'type': 'output', 'data': data.decode('utf-8', errors='ignore')}))
                     except socket.timeout:
-                        first_read = False  # Timeout counts as "not first read"
-                        continue  # No data available, keep waiting
+                        # Timeout is normal, shell might be idle
+                        if not got_data:
+                            startup_timeouts += 1
+                        continue
                     except Exception as e:
                         logger.error(f"Terminal read error: {e}")
                         break
