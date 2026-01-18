@@ -5679,9 +5679,6 @@ def api_delete_network(network_id):
         return jsonify({'error': str(e)}), 500
 
 
-@sock.route('/ws')
-
-
 def cleanup_terminal_session(ws):
     """Clean up terminal session resources"""
     with terminal_sessions_lock:
