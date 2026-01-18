@@ -5923,15 +5923,23 @@ def websocket_terminal(ws, container_id):
         
         # Read from container
         def read_from_container():
+            first_read = True  # Track first read to avoid false EOF
             try:
                 while not stop_reading.is_set():
                     try:
                         data = sock.recv(4096)
                         if not data:
+                            # On first read, empty data just means shell hasn't printed yet
+                            if first_read:
+                                first_read = False
+                                continue
+                            # After first read, empty data means EOF
                             logger.info(f"Terminal EOF: {container.name}")
                             break
+                        first_read = False  # Got data, no longer first read
                         ws.send(json.dumps({'type': 'output', 'data': data.decode('utf-8', errors='ignore')}))
                     except socket.timeout:
+                        first_read = False  # Timeout counts as "not first read"
                         continue  # No data available, keep waiting
                     except Exception as e:
                         logger.error(f"Terminal read error: {e}")
