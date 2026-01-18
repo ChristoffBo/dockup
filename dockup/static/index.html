@@ -6349,6 +6349,12 @@
                         
                         this.terminalSocket.onopen = () => {
                             console.log('Terminal WebSocket connected');
+                            // CRITICAL: Send initial terminal size immediately after connection
+                            this.terminalSocket.send(JSON.stringify({
+                                type: 'resize',
+                                rows: this.terminalInstance.rows,
+                                cols: this.terminalInstance.cols
+                            }));
                         };
                         
                         this.terminalSocket.onmessage = (event) => {
@@ -6414,57 +6420,67 @@
                 closeTerminal() {
                     console.log('closeTerminal called');
                     
-                    try {
-                        // Close WebSocket first to stop any incoming messages
-                        if (this.terminalSocket) {
-                            try {
-                                this.terminalSocket.close();
-                                console.log('WebSocket closed');
-                            } catch (e) {
-                                console.error('Error closing WebSocket:', e);
+                    // CRITICAL FIX: Close modal FIRST before any cleanup
+                    // This ensures UI updates immediately when user clicks X
+                    this.showTerminalModal = false;
+                    console.log('showTerminalModal set to false (immediately)');
+                    
+                    // Use nextTick to ensure Vue updates the DOM before cleanup
+                    this.$nextTick(() => {
+                        try {
+                            // Close WebSocket first to stop any incoming messages
+                            if (this.terminalSocket) {
+                                try {
+                                    this.terminalSocket.close();
+                                    console.log('WebSocket closed');
+                                } catch (e) {
+                                    console.error('Error closing WebSocket:', e);
+                                }
+                                this.terminalSocket = null;
                             }
-                            this.terminalSocket = null;
-                        }
-                        
-                        // Disconnect resize observer
-                        if (this.terminalResizeObserver) {
-                            try {
-                                this.terminalResizeObserver.disconnect();
-                                console.log('ResizeObserver disconnected');
-                            } catch (e) {
-                                console.error('Error disconnecting resize observer:', e);
+                            
+                            // Disconnect resize observer
+                            if (this.terminalResizeObserver) {
+                                try {
+                                    this.terminalResizeObserver.disconnect();
+                                    console.log('ResizeObserver disconnected');
+                                } catch (e) {
+                                    console.error('Error disconnecting resize observer:', e);
+                                }
+                                this.terminalResizeObserver = null;
                             }
-                            this.terminalResizeObserver = null;
-                        }
-                        
-                        // Dispose terminal instance
-                        if (this.terminalInstance) {
-                            try {
-                                this.terminalInstance.dispose();
-                                console.log('Terminal instance disposed');
-                            } catch (e) {
-                                console.error('Error disposing terminal:', e);
+                            
+                            // Dispose terminal instance
+                            if (this.terminalInstance) {
+                                try {
+                                    this.terminalInstance.dispose();
+                                    console.log('Terminal instance disposed');
+                                } catch (e) {
+                                    console.error('Error disposing terminal:', e);
+                                }
+                                this.terminalInstance = null;
                             }
-                            this.terminalInstance = null;
+                            
+                            // Clear terminal container DOM
+                            const container = document.getElementById('terminal-container');
+                            if (container) {
+                                container.innerHTML = '';
+                                console.log('Terminal container cleared');
+                            }
+                            
+                            // Clear other references
+                            this.terminalFitAddon = null;
+                            this.terminalContainerId = '';
+                            this.terminalContainerName = '';
+                            
+                        } catch (error) {
+                            console.error('Error during terminal cleanup:', error);
+                        } finally {
+                            // Safety net: ensure modal is hidden even if errors occurred
+                            this.showTerminalModal = false;
+                            console.log('showTerminalModal set to false (in finally - safety net)');
                         }
-                        
-                        // Clear terminal container DOM
-                        const container = document.getElementById('terminal-container');
-                        if (container) {
-                            container.innerHTML = '';
-                            console.log('Terminal container cleared');
-                        }
-                        
-                        // Clear other references
-                        this.terminalFitAddon = null;
-                        this.terminalContainerId = '';
-                        this.terminalContainerName = '';
-                        
-                    } finally {
-                        // ALWAYS hide modal, even if errors occurred above
-                        this.showTerminalModal = false;
-                        console.log('showTerminalModal set to false (in finally)');
-                    }
+                    });
                 }
             }
         });
