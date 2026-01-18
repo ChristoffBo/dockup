@@ -3277,11 +3277,11 @@
         </div>
 
         <!-- Terminal Modal -->
-        <div class="modal" v-if="showTerminalModal" @click.self="closeTerminal">
+        <div class="modal" v-if="showOperationModal" @click.self="closeOperation">
             <div class="modal-content">
                 <div class="modal-header">
                     <h2>{{ terminalOperation }} - {{ terminalStack }}</h2>
-                    <button class="close-btn" @click="closeTerminal">&times;</button>
+                    <button class="close-btn" @click="closeOperation">&times;</button>
                 </div>
                 <div class="logs-container" style="max-height: 500px;">
                     <div v-for="(line, index) in terminalOutput" :key="index">{{ line }}</div>
@@ -3289,7 +3289,7 @@
                         <i class="fas fa-spinner fa-spin"></i> Starting operation...
                     </div>
                 </div>
-                <button class="btn btn-secondary" @click="closeTerminal" style="margin-top: 15px;">
+                <button class="btn btn-secondary" @click="closeOperation" style="margin-top: 15px;">
                     Close
                 </button>
             </div>
@@ -3767,7 +3767,7 @@
                         cron: '0 6 * * *',
                         enabled: true
                     },
-                    showTerminalModal: false,
+                    showOperationModal: false,
                     terminalStack: '',
                     terminalOperation: '',
                     terminalOutput: [],
@@ -4555,13 +4555,13 @@
                     this.terminalStack = stackName;
                     this.terminalOperation = operation.toUpperCase();
                     this.terminalOutput = [];
-                    this.showTerminalModal = true;
+                    this.showOperationModal = true;
                     
                     // Start the operation
                     this.stackOperation(stackName, operation);
                 },
-                closeTerminal() {
-                    this.showTerminalModal = false;
+                closeOperation() {
+                    this.showOperationModal = false;
                     this.loadStacks();
                 },
                 async updateStack(stackName) {
@@ -4571,7 +4571,7 @@
                     this.terminalStack = stackName;
                     this.terminalOperation = 'UPDATE';
                     this.terminalOutput = [];
-                    this.showTerminalModal = true;
+                    this.showOperationModal = true;
                     
                     try {
                         // Pull images first
@@ -6180,8 +6180,7 @@
                     } catch (error) {
                         this.showToast('Error', `Failed to apply limits: ${error.response?.data?.error || error.message}`, 'error');
                     }
-                }
-,
+                },
                 
                 openTerminal(containerId, containerName) {
                     this.terminalContainerId = containerId;
