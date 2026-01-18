@@ -5903,25 +5903,42 @@ def websocket_terminal(ws, container_id):
         logger.info(f"Terminal starting: {container.name}")
         
         # Create exec with /bin/sh and TTY
+        # CRITICAL: stdin=True and tty=True both required for interactive shell
         exec_create_res = docker_client.api.exec_create(
             container.id,
             cmd='/bin/sh',
             stdin=True,
             tty=True,
-            environment={'TERM': 'xterm-256color'}
+            environment={'TERM': 'xterm-256color'},
+            privileged=False,
+            user=''
         )
         exec_id = exec_create_res['Id']
         logger.info(f"Exec created: {exec_id[:12]}")
         
         # Start exec and get socket
-        exec_socket = docker_client.api.exec_start(exec_id, socket=True, tty=True)
+        exec_socket = docker_client.api.exec_start(exec_id, socket=True, tty=True, demux=False)
         sock = exec_socket._sock
         sock.settimeout(0.1)
+        
+        # CRITICAL: Set initial terminal size
+        # Without this, shell may exit because it thinks size is 0x0
+        try:
+            docker_client.api.exec_resize(exec_id, height=24, width=80)
+            logger.info("Initial terminal resize: 80x24")
+        except Exception as e:
+            logger.warning(f"Initial resize failed: {e}")
         
         # Verify exec is actually running
         try:
             exec_inspect = docker_client.api.exec_inspect(exec_id)
-            logger.info(f"Exec status: Running={exec_inspect.get('Running')}, ExitCode={exec_inspect.get('ExitCode')}")
+            is_running = exec_inspect.get('Running', False)
+            exit_code = exec_inspect.get('ExitCode')
+            logger.info(f"Exec status: Running={is_running}, ExitCode={exit_code}")
+            
+            if not is_running:
+                ws.send(json.dumps({'type': 'error', 'data': f'Shell exited with code {exit_code}'}))
+                return
         except Exception as e:
             logger.warning(f"Could not inspect exec: {e}")
         
