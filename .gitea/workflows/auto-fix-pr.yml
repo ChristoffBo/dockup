@@ -1,0 +1,130 @@
+name: AI Autofix (PR Only)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  ai-autofix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Generate diff
+        run: |
+          git diff HEAD^ HEAD > changes.diff
+          if [ ! -s changes.diff ]; then
+            echo "No changes"
+            exit 0
+          fi
+
+      - name: Build Gemini request
+        run: |
+          python3 << 'EOF'
+          import json, textwrap
+
+          diff = open("changes.diff").read()
+
+          prompt = textwrap.dedent("""\
+          You are an automated code-fixing system.
+
+          STRICT RULES:
+          - Output ONLY a valid unified diff
+          - NO markdown
+          - NO explanations
+          - NO extra text
+          - If no fix is needed, output exactly: NO_CHANGES
+
+          Diff to fix:
+          """) + diff
+
+          req = {
+            "contents": [{
+              "parts": [{"text": prompt}]
+            }]
+          }
+
+          with open("request.json", "w") as f:
+            json.dump(req, f)
+          EOF
+
+      - name: Call Gemini
+        run: |
+          curl -sS -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d @request.json > response.json
+
+      - name: Extract patch safely
+        run: |
+          python3 << 'EOF'
+          import json, sys
+
+          data = json.load(open("response.json"))
+
+          try:
+            text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+          except Exception:
+            print("Invalid Gemini response")
+            sys.exit(1)
+
+          if text == "NO_CHANGES":
+            open("ai.patch", "w").write("")
+            sys.exit(0)
+
+          # Hard validation: must look like a diff
+          if not text.startswith("diff --git"):
+            print("AI output is not a unified diff")
+            sys.exit(1)
+
+          open("ai.patch", "w").write(text)
+          EOF
+
+      - name: Validate patch
+        run: |
+          if [ ! -s ai.patch ]; then
+            echo "No AI changes"
+            exit 0
+          fi
+          git apply --check ai.patch
+
+      - name: Apply patch
+        run: |
+          BRANCH="ai-fix-${GITEA_SHA}"
+          git checkout -b "$BRANCH"
+          git apply ai.patch
+          git commit -am "AI autofix for ${GITEA_SHA}"
+          git push origin "$BRANCH"
+          echo "BRANCH=$BRANCH" >> $GITEA_ENV
+
+      - name: Create Gitea PR
+        run: |
+          OWNER=$(echo "$GITEA_REPOSITORY" | cut -d/ -f1)
+          REPO=$(echo "$GITEA_REPOSITORY" | cut -d/ -f2)
+
+          curl -sS -X POST \
+            "${{ secrets.GITEA_URL }}/api/v1/repos/${OWNER}/${REPO}/pulls" \
+            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"title\": \"AI Autofix\",
+              \"head\": \"${BRANCH}\",
+              \"base\": \"main\",
+              \"body\": \"AI-generated fix. Review required.\"
+            }"
+
+      - name: Gotify notify
+        if: always()
+        run: |
+          curl -X POST "http://10.0.0.100:2580/message?token=${{ secrets.GOTIFY_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"title\": \"AI Autofix executed\",
+              \"message\": \"Repo: ${GITEA_REPOSITORY}\nCommit: ${GITEA_SHA}\nBranch: ${BRANCH}\",
+              \"priority\": 5
+            }"
