@@ -6349,6 +6349,12 @@
                         
                         this.terminalSocket.onopen = () => {
                             console.log('Terminal WebSocket connected');
+                            // CRITICAL: Send initial terminal size immediately
+                            this.terminalSocket.send(JSON.stringify({
+                                type: 'resize',
+                                rows: this.terminalInstance.rows,
+                                cols: this.terminalInstance.cols
+                            }));
                         };
                         
                         this.terminalSocket.onmessage = (event) => {
