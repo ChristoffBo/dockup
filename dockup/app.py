@@ -5891,7 +5891,10 @@ def cleanup_terminal_session(ws):
 
 @sock.route('/ws/terminal/<container_id>')
 def websocket_terminal(ws, container_id):
-    """Terminal WebSocket - fixed for immediate close bug"""
+    """Terminal WebSocket - PROPER non-blocking I/O with select()"""
+    import select
+    import time
+    
     try:
         # Verify container
         container = docker_client.containers.get(container_id)
@@ -5913,47 +5916,40 @@ def websocket_terminal(ws, container_id):
         # Start exec and get socket
         exec_socket = docker_client.api.exec_start(exec_id, socket=True, tty=True)
         sock = exec_socket._sock
-        sock.settimeout(1.0)  # 1 second timeout, shells can be slow to start
         
-        # Give shell a moment to initialize
-        import time
-        time.sleep(0.1)
+        # Set to NON-BLOCKING mode (this is the key!)
+        sock.setblocking(False)
         
         ws.send(json.dumps({'type': 'connected', 'data': f'Connected to {container.name}\r\n'}))
-        logger.info(f"Terminal connected: {container.name} (exec_id: {exec_id[:12]})")
+        logger.info(f"Terminal connected: {container.name}")
         
         # Stop flag
         stop_reading = threading.Event()
         
-        # Read from container
+        # Read from container using SELECT
         def read_from_container():
-            startup_timeouts = 0  # Count timeouts during startup
-            got_data = False  # Have we received any data yet?
             try:
                 while not stop_reading.is_set():
-                    try:
-                        data = sock.recv(4096)
-                        if not data:
-                            # Empty data = EOF, but only if we've seen data before
-                            # OR if startup grace period is over
-                            if got_data or startup_timeouts > 4:  # 4 timeouts = 2 seconds grace
-                                logger.info(f"Terminal EOF: {container.name} (got_data={got_data}, timeouts={startup_timeouts})")
+                    # Use select to check if data is available (1 second timeout)
+                    ready, _, _ = select.select([sock], [], [], 1.0)
+                    
+                    if ready:
+                        # Data is available, read it
+                        try:
+                            data = sock.recv(4096)
+                            if not data:
+                                # Empty data when select says ready = EOF
+                                logger.info(f"Terminal EOF: {container.name}")
                                 break
-                            # During startup, empty recv without timeout is weird but give it another chance
-                            logger.debug(f"Terminal empty recv during startup, continuing")
-                            startup_timeouts += 1
+                            ws.send(json.dumps({'type': 'output', 'data': data.decode('utf-8', errors='ignore')}))
+                        except BlockingIOError:
+                            # Should never happen since select said data ready, but handle it
                             continue
-                        # Got data, shell is alive
-                        got_data = True
-                        ws.send(json.dumps({'type': 'output', 'data': data.decode('utf-8', errors='ignore')}))
-                    except socket.timeout:
-                        # Timeout is normal, shell might be idle
-                        if not got_data:
-                            startup_timeouts += 1
-                        continue
-                    except Exception as e:
-                        logger.error(f"Terminal read error: {e}")
-                        break
+                        except Exception as e:
+                            logger.error(f"Terminal read error: {e}")
+                            break
+                    # If select times out (no data), just loop again
+                    
             except Exception as e:
                 logger.error(f"Terminal reader crashed: {e}", exc_info=True)
             finally:
