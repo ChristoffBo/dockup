@@ -6349,12 +6349,6 @@
                         
                         this.terminalSocket.onopen = () => {
                             console.log('Terminal WebSocket connected');
-                            // CRITICAL: Send initial terminal size immediately
-                            this.terminalSocket.send(JSON.stringify({
-                                type: 'resize',
-                                rows: this.terminalInstance.rows,
-                                cols: this.terminalInstance.cols
-                            }));
                         };
                         
                         this.terminalSocket.onmessage = (event) => {
@@ -6375,11 +6369,14 @@
                         
                         this.terminalSocket.onerror = (error) => {
                             console.error('Terminal WebSocket error:', error);
-                            this.terminalInstance.write('\r\n\x1b[1;31m[WebSocket connection error]\x1b[0m\r\n');
+                            if (this.terminalInstance) {
+                                this.terminalInstance.write('\r\n\x1b[1;31m[WebSocket connection error]\x1b[0m\r\n');
+                            }
                         };
                     
                         this.terminalSocket.onclose = () => {
                             console.log('Terminal WebSocket closed');
+                            // Don't automatically close modal - let user close it manually
                         };
                         
                         this.terminalInstance.onData((data) => {
@@ -6415,25 +6412,59 @@
                 },
                 
                 closeTerminal() {
-                    if (this.terminalResizeObserver) {
-                        this.terminalResizeObserver.disconnect();
-                        this.terminalResizeObserver = null;
-                    }
+                    console.log('closeTerminal called');
                     
-                    if (this.terminalSocket) {
-                        this.terminalSocket.close();
-                        this.terminalSocket = null;
+                    try {
+                        // Close WebSocket first to stop any incoming messages
+                        if (this.terminalSocket) {
+                            try {
+                                this.terminalSocket.close();
+                                console.log('WebSocket closed');
+                            } catch (e) {
+                                console.error('Error closing WebSocket:', e);
+                            }
+                            this.terminalSocket = null;
+                        }
+                        
+                        // Disconnect resize observer
+                        if (this.terminalResizeObserver) {
+                            try {
+                                this.terminalResizeObserver.disconnect();
+                                console.log('ResizeObserver disconnected');
+                            } catch (e) {
+                                console.error('Error disconnecting resize observer:', e);
+                            }
+                            this.terminalResizeObserver = null;
+                        }
+                        
+                        // Dispose terminal instance
+                        if (this.terminalInstance) {
+                            try {
+                                this.terminalInstance.dispose();
+                                console.log('Terminal instance disposed');
+                            } catch (e) {
+                                console.error('Error disposing terminal:', e);
+                            }
+                            this.terminalInstance = null;
+                        }
+                        
+                        // Clear terminal container DOM
+                        const container = document.getElementById('terminal-container');
+                        if (container) {
+                            container.innerHTML = '';
+                            console.log('Terminal container cleared');
+                        }
+                        
+                        // Clear other references
+                        this.terminalFitAddon = null;
+                        this.terminalContainerId = '';
+                        this.terminalContainerName = '';
+                        
+                    } finally {
+                        // ALWAYS hide modal, even if errors occurred above
+                        this.showTerminalModal = false;
+                        console.log('showTerminalModal set to false (in finally)');
                     }
-                    
-                    if (this.terminalInstance) {
-                        this.terminalInstance.dispose();
-                        this.terminalInstance = null;
-                    }
-                    
-                    this.terminalFitAddon = null;
-                    this.showTerminalModal = false;
-                    this.terminalContainerId = '';
-                    this.terminalContainerName = '';
                 }
             }
         });
