@@ -1005,10 +1005,11 @@
 <style>
 </style>
 
-    <!-- xterm.js for terminal -->
+    <!-- xterm.js for interactive terminal -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+
 </head>
 <body>
 
@@ -1578,39 +1579,6 @@
                                 <i class="fas fa-arrow-up"></i> Update Now
                             </button>
                             <button class="btn btn-info" @click="checkUpdates(stack.name)">
-
-                        <!-- Containers Section (Collapsible) -->
-                        <div v-if="stack.containers && stack.containers.length > 0 && stack.status === 'running' && !collapsedStacks[stack.name]" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
-                            <h4 style="color: #94a3b8; margin-bottom: 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">
-                                <i class="fas fa-box"></i> Containers ({{ stack.containers.length }})
-                            </h4>
-                            <div v-for="container in stack.containers" :key="container.id" style="padding: 8px; background: rgba(30, 41, 59, 0.5); border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-                                <div style="flex: 1;">
-                                    <div style="font-weight: 500; color: #e2e8f0; font-size: 13px;">{{ container.name }}</div>
-                                    <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
-                                        <span :class="['status-badge', container.status === 'running' ? 'status-running' : 'status-stopped']" style="font-size: 10px; padding: 2px 6px;">
-                                            {{ container.status }}
-                                        </span>
-                                        <span v-if="container.health" :class="['health-badge', 
-                                            container.health === 'healthy' ? 'health-healthy' : 
-                                            container.health === 'unhealthy' ? 'health-unhealthy' : 'health-starting']" 
-                                            style="font-size: 10px; padding: 2px 6px; margin-left: 5px;">
-                                            {{ container.health }}
-                                        </span>
-                                    </div>
-                                </div>
-                                <div>
-                                    <button v-if="container.status === 'running'" 
-                                            class="btn btn-sm" 
-                                            @click="openTerminal(container.id, container.name)"
-                                            style="padding: 4px 10px; font-size: 11px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981;"
-                                            title="Open terminal">
-                                        <i class="fas fa-terminal"></i> Shell
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-
                                 <i class="fas fa-sync"></i> Check
                             </button>
                             <button class="btn btn-scan" @click="scanContainer(stack)" v-if="stack.containers.length > 0 && stack.is_local" title="Scan for vulnerabilities">
@@ -3111,26 +3079,9 @@
                     <h2>Logs - {{ logsStackName }}</h2>
                     <button class="close-btn" @click="showLogsModal = false">&times;</button>
                 </div>
-
                 <div v-for="(log, container) in stackLogs" :key="container">
                     <h3 style="margin: 20px 0 10px;">{{ container }}</h3>
                     <div class="logs-container">{{ log }}</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Terminal Modal -->
-        <div class="modal" v-if="showTerminalModal" @click.self="closeTerminal">
-            <div class="modal-content" style="max-width: 1000px; max-height: 80vh;">
-                <div class="modal-header">
-                    <h2><i class="fas fa-terminal"></i> Terminal - {{ terminalContainerName }}</h2>
-                    <button class="close-btn" @click="closeTerminal">&times;</button>
-                </div>
-                <div style="background: #000; padding: 10px; border-radius: 6px;">
-                    <div id="terminal-container" style="height: 500px;"></div>
-                </div>
-                <div style="margin-top: 15px; color: #64748b; font-size: 12px;">
-                    <i class="fas fa-info-circle"></i> Press Ctrl+C to interrupt, type 'exit' to close, or click the × button above
                 </div>
             </div>
         </div>
@@ -3276,7 +3227,7 @@
             </div>
         </div>
 
-        <!-- Terminal Modal -->
+        <!-- Operation Modal -->
         <div class="modal" v-if="showOperationModal" @click.self="closeOperation">
             <div class="modal-content">
                 <div class="modal-header">
@@ -3292,6 +3243,22 @@
                 <button class="btn btn-secondary" @click="closeOperation" style="margin-top: 15px;">
                     Close
                 </button>
+            </div>
+        </div>
+
+        <!-- Interactive Terminal Modal (xterm.js) -->
+        <div class="modal" v-if="showTerminalModal" @click.self="closeTerminal">
+            <div class="modal-content" style="max-width: 1000px; max-height: 80vh;">
+                <div class="modal-header">
+                    <h2><i class="fas fa-terminal"></i> Terminal - {{ terminalContainerName }}</h2>
+                    <button class="close-btn" @click="closeTerminal">&times;</button>
+                </div>
+                <div style="background: #000; padding: 10px; border-radius: 6px;">
+                    <div id="terminal-container" style="height: 500px;"></div>
+                </div>
+                <div style="margin-top: 15px; color: #64748b; font-size: 12px;">
+                    <i class="fas fa-info-circle"></i> Press Ctrl+C to interrupt, type 'exit' to close, or click the × button above
+                </div>
             </div>
         </div>
 
@@ -3745,13 +3712,6 @@
                     availableServices: [],
                     serviceSections: null,
                     showLogsModal: false,
-                showTerminalModal: false,
-                terminalContainerName: '',
-                terminalContainerId: '',
-                terminalInstance: null,
-                terminalSocket: null,
-                terminalFitAddon: null,
-                terminalResizeObserver: null,
                     logsStackName: '',
                     stackLogs: {},
                     showScheduleModal: false,
@@ -3771,6 +3731,13 @@
                     terminalStack: '',
                     terminalOperation: '',
                     terminalOutput: [],
+                    showTerminalModal: false,
+                    terminalContainerName: '',
+                    terminalContainerId: '',
+                    terminalInstance: null,
+                    terminalSocket: null,
+                    terminalFitAddon: null,
+                    terminalResizeObserver: null,
                     showDeleteModal: false,
                     deleteStackName: '',
                     deleteImages: false,
