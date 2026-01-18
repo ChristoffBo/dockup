@@ -5918,6 +5918,13 @@ def websocket_terminal(ws, container_id):
         sock = exec_socket._sock
         sock.settimeout(0.1)
         
+        # Verify exec is actually running
+        try:
+            exec_inspect = docker_client.api.exec_inspect(exec_id)
+            logger.info(f"Exec status: Running={exec_inspect.get('Running')}, ExitCode={exec_inspect.get('ExitCode')}")
+        except Exception as e:
+            logger.warning(f"Could not inspect exec: {e}")
+        
         ws.send(json.dumps({'type': 'connected', 'data': 'Connected\r\n'}))
         logger.info(f"Terminal connected: {container.name}")
         
@@ -5928,14 +5935,20 @@ def websocket_terminal(ws, container_id):
                     try:
                         data = sock.recv(4096)
                         if not data:
+                            logger.info("Socket closed by Docker")
                             break
-                        ws.send(json.dumps({'type': 'output', 'data': data.decode('utf-8', errors='replace')}))
-                    except socket.timeout:
+                        
+                        # Use 'ignore' to prevent crashing on binary TTY sequences
+                        msg = data.decode('utf-8', errors='ignore')
+                        ws.send(json.dumps({'type': 'output', 'data': msg}))
+                        
+                    except (socket.timeout, BlockingIOError):
                         continue
-                    except Exception:
+                    except Exception as e:
+                        logger.error(f"Reader error: {e}", exc_info=True)
                         break
             except Exception as e:
-                logger.error(f"Reader error: {e}")
+                logger.error(f"Reader thread crashed: {e}", exc_info=True)
             finally:
                 logger.info(f"Reader exiting")
                 try:
@@ -5949,34 +5962,40 @@ def websocket_terminal(ws, container_id):
         
         # Main loop: websocket input -> container stdin
         while True:
-            message = ws.receive(timeout=1.0)
-            if message is None:
-                break
-            
             try:
-                data = json.loads(message)
-                msg_type = data.get('type')
-                
-                if msg_type == 'input':
-                    sock.sendall(data.get('data', '').encode('utf-8'))
-                
-                elif msg_type == 'resize':
-                    try:
-                        docker_client.api.exec_resize(
-                            exec_id,
-                            height=data.get('rows', 24),
-                            width=data.get('cols', 80)
-                        )
-                    except:
-                        pass
-            
-            except json.JSONDecodeError:
-                # Ignore invalid JSON
-                pass
-            except Exception as e:
-                if 'timed out' not in str(e).lower():
-                    logger.error(f"Main loop error: {e}")
+                message = ws.receive(timeout=1.0)
+                if message is None:
+                    logger.info("WebSocket closed by client")
                     break
+                
+                try:
+                    data = json.loads(message)
+                    msg_type = data.get('type')
+                    
+                    if msg_type == 'input':
+                        input_data = data.get('data', '')
+                        if input_data:
+                            sock.sendall(input_data.encode('utf-8'))
+                    
+                    elif msg_type == 'resize':
+                        try:
+                            docker_client.api.exec_resize(
+                                exec_id,
+                                height=data.get('rows', 24),
+                                width=data.get('cols', 80)
+                            )
+                        except Exception as e:
+                            logger.debug(f"Resize failed: {e}")
+                
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid JSON from WebSocket: {message[:100]}")
+                    continue
+                    
+            except Exception as e:
+                if 'timed out' in str(e).lower():
+                    continue
+                logger.error(f"Main loop error: {e}", exc_info=True)
+                break
     
     except Exception as e:
         logger.error(f"Terminal setup error: {e}", exc_info=True)
