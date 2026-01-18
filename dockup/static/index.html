@@ -3112,6 +3112,13 @@
                     <button class="close-btn" @click="showLogsModal = false">&times;</button>
                 </div>
 
+                <div v-for="(log, container) in stackLogs" :key="container">
+                    <h3 style="margin: 20px 0 10px;">{{ container }}</h3>
+                    <div class="logs-container">{{ log }}</div>
+                </div>
+            </div>
+        </div>
+
         <!-- Terminal Modal -->
         <div class="modal" v-if="showTerminalModal" @click.self="closeTerminal">
             <div class="modal-content" style="max-width: 1000px; max-height: 80vh;">
@@ -3124,13 +3131,6 @@
                 </div>
                 <div style="margin-top: 15px; color: #64748b; font-size: 12px;">
                     <i class="fas fa-info-circle"></i> Press Ctrl+C to interrupt, type 'exit' to close, or click the × button above
-                </div>
-            </div>
-        </div>
-
-                <div v-for="(log, container) in stackLogs" :key="container">
-                    <h3 style="margin: 20px 0 10px;">{{ container }}</h3>
-                    <div class="logs-container">{{ log }}</div>
                 </div>
             </div>
         </div>
