@@ -5891,10 +5891,9 @@ def cleanup_terminal_session(ws):
 
 @sock.route('/ws/terminal/<container_id>')
 def websocket_terminal(ws, container_id):
-    """Terminal WebSocket - Clean bidirectional implementation"""
-    sock = None
+    """Terminal WebSocket - Exact working implementation"""
+    exec_sock = None
     try:
-        # Verify container
         container = docker_client.containers.get(container_id)
         if container.status != 'running':
             ws.send(json.dumps({'type': 'error', 'data': 'Container not running'}))
@@ -5902,144 +5901,93 @@ def websocket_terminal(ws, container_id):
         
         logger.info(f"Terminal starting: {container.name}")
         
-        # Create exec with /bin/sh and TTY
-        # CRITICAL: stdin=True and tty=True both required for interactive shell
-        exec_create_res = docker_client.api.exec_create(
+        # 1. Create Exec with TTY
+        exec_instance = docker_client.api.exec_create(
             container.id,
             cmd='/bin/sh',
             stdin=True,
             tty=True,
-            environment={'TERM': 'xterm-256color'},
-            privileged=False,
-            user=''
+            environment={'TERM': 'xterm-256color'}
         )
-        exec_id = exec_create_res['Id']
+        exec_id = exec_instance['Id']
         logger.info(f"Exec created: {exec_id[:12]}")
-        
-        # Start exec and get socket
-        exec_socket = docker_client.api.exec_start(exec_id, socket=True, tty=True, demux=False)
-        sock = exec_socket._sock
-        sock.settimeout(0.1)
-        
-        # CRITICAL: Race condition fix - delay to let frontend send resize first
+
+        # 2. Start and grab the raw socket
+        exec_start_res = docker_client.api.exec_start(exec_id, socket=True, tty=True, demux=False)
+        exec_sock = getattr(exec_start_res, '_sock', exec_start_res)
+        exec_sock.settimeout(0.1)
+
+        # 3. FIX: Immediate Double-Resize
         import time
-        time.sleep(0.1)  # Give frontend time to send initial resize
-        
-        # Apply default size (frontend should override this immediately)
+        time.sleep(0.05)
         try:
             docker_client.api.exec_resize(exec_id, height=24, width=80)
-            logger.info("Initial terminal resize: 80x24 (default)")
-        except Exception as e:
-            logger.warning(f"Initial resize failed: {e}")
-        
-        # Double-resize strategy: Some shells check dimensions after startup
-        def delayed_resize():
-            time.sleep(0.15)
-            try:
-                # Check if we got a resize from frontend
-                docker_client.api.exec_resize(exec_id, height=24, width=80)
-                logger.debug("Delayed resize applied")
-            except:
-                pass
-        
-        threading.Thread(target=delayed_resize, daemon=True).start()
-        
-        # Verify exec is actually running
-        try:
-            exec_inspect = docker_client.api.exec_inspect(exec_id)
-            is_running = exec_inspect.get('Running', False)
-            exit_code = exec_inspect.get('ExitCode')
-            logger.info(f"Exec status: Running={is_running}, ExitCode={exit_code}")
-            
-            if not is_running:
-                ws.send(json.dumps({'type': 'error', 'data': f'Shell exited with code {exit_code}'}))
-                return
-        except Exception as e:
-            logger.warning(f"Could not inspect exec: {e}")
-        
-        ws.send(json.dumps({'type': 'connected', 'data': 'Connected\r\n'}))
-        logger.info(f"Terminal connected: {container.name}")
-        
-        # Reader thread: container output -> websocket
+        except:
+            pass
+
+        # 4. Reader Thread: Container -> Browser
         def receive_from_container():
             try:
                 while True:
                     try:
-                        data = sock.recv(4096)
+                        data = exec_sock.recv(4096)
                         if not data:
-                            logger.info("Socket closed by Docker")
+                            logger.info(f"Terminal socket closed by container")
                             break
-                        
-                        # Use 'ignore' to prevent crashing on binary TTY sequences
-                        msg = data.decode('utf-8', errors='ignore')
-                        ws.send(json.dumps({'type': 'output', 'data': msg}))
-                        
+                        # Wrap in JSON
+                        ws.send(json.dumps({
+                            'type': 'output',
+                            'data': data.decode('utf-8', errors='replace')
+                        }))
                     except (socket.timeout, BlockingIOError):
                         continue
                     except Exception as e:
-                        logger.error(f"Reader error: {e}", exc_info=True)
+                        logger.error(f"Terminal reader error: {e}")
                         break
-            except Exception as e:
-                logger.error(f"Reader thread crashed: {e}", exc_info=True)
             finally:
-                logger.info(f"Reader exiting")
                 try:
                     ws.send(json.dumps({'type': 'close'}))
                 except:
                     pass
-        
-        # Start reader thread
-        reader_thread = threading.Thread(target=receive_from_container, daemon=True)
-        reader_thread.start()
-        
-        # Main loop: websocket input -> container stdin
+
+        threading.Thread(target=receive_from_container, daemon=True).start()
+
+        # 5. Main Loop: Browser -> Container (JSON PARSING)
         while True:
-            try:
-                message = ws.receive(timeout=1.0)
-                if message is None:
-                    logger.info("WebSocket closed by client")
-                    break
-                
-                try:
-                    data = json.loads(message)
-                    msg_type = data.get('type')
-                    
-                    if msg_type == 'input':
-                        input_data = data.get('data', '')
-                        if input_data:
-                            sock.sendall(input_data.encode('utf-8'))
-                    
-                    elif msg_type == 'resize':
-                        try:
-                            docker_client.api.exec_resize(
-                                exec_id,
-                                height=data.get('rows', 24),
-                                width=data.get('cols', 80)
-                            )
-                        except Exception as e:
-                            logger.debug(f"Resize failed: {e}")
-                
-                except json.JSONDecodeError:
-                    logger.warning(f"Invalid JSON from WebSocket: {message[:100]}")
-                    continue
-                    
-            except Exception as e:
-                if 'timed out' in str(e).lower():
-                    continue
-                logger.error(f"Main loop error: {e}", exc_info=True)
+            message = ws.receive()
+            if message is None:
                 break
-    
+            
+            try:
+                msg_json = json.loads(message)
+                msg_type = msg_json.get('type')
+
+                if msg_type == 'input':
+                    # Extract ONLY the character
+                    raw_data = msg_json.get('data', '')
+                    exec_sock.sendall(raw_data.encode('utf-8'))
+                
+                elif msg_type == 'resize':
+                    # Update terminal size
+                    docker_client.api.exec_resize(
+                        exec_id, 
+                        height=msg_json.get('rows', 24), 
+                        width=msg_json.get('cols', 80)
+                    )
+            except json.JSONDecodeError:
+                # Fallback if raw text is sent
+                exec_sock.sendall(message.encode('utf-8'))
+
     except Exception as e:
         logger.error(f"Terminal setup error: {e}", exc_info=True)
         try:
             ws.send(json.dumps({'type': 'error', 'data': str(e)}))
         except:
             pass
-    
     finally:
-        if sock:
+        if exec_sock:
             try:
-                sock.close()
+                exec_sock.close()
             except:
                 pass
         logger.info(f"Terminal closed: {container_id[:12]}")
