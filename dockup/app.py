@@ -5891,10 +5891,7 @@ def cleanup_terminal_session(ws):
 
 @sock.route('/ws/terminal/<container_id>')
 def websocket_terminal(ws, container_id):
-    """Terminal WebSocket - Using streaming API instead of socket"""
-    import queue
-    import time
-    
+    """Terminal WebSocket - Simplified"""
     try:
         # Verify container
         container = docker_client.containers.get(container_id)
@@ -5904,13 +5901,13 @@ def websocket_terminal(ws, container_id):
         
         logger.info(f"Terminal starting: {container.name} ({container_id[:12]})")
         
-        # Create exec
+        # Create exec - use sh (every container has it)
         exec_id = docker_client.api.exec_create(
             container.id,
-            ['/bin/sh', '-c', 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'],
+            '/bin/sh',
             stdin=True,
             tty=True,
-            environment={'TERM': 'xterm-256color'}
+            environment={'TERM': 'xterm-256color', 'PS1': '# '}
         )['Id']
         
         logger.info(f"[TERMINAL] Exec created: {exec_id[:12]}")
@@ -5918,45 +5915,28 @@ def websocket_terminal(ws, container_id):
         # Start exec - get socket for input
         exec_socket = docker_client.api.exec_start(exec_id, socket=True, tty=True)
         sock = exec_socket._sock
-        sock.setblocking(False)
+        sock.settimeout(0.1)  # 100ms blocking timeout
         
-        logger.info(f"[TERMINAL] Socket obtained for {container.name}")
-        
-        ws.send(json.dumps({'type': 'connected', 'data': f'Connected to {container.name}\r\n'}))
+        ws.send(json.dumps({'type': 'connected', 'data': 'Connected\r\n'}))
         logger.info(f"Terminal connected: {container.name}")
         
         # Stop flag
         stop_reading = threading.Event()
         
-        # Read from container - AGGRESSIVE POLLING
+        # Read from container - SIMPLE blocking read
         def read_from_container():
-            logger.info(f"[TERMINAL] Reader thread started for {container.name}")
-            consecutive_empty = 0
+            logger.info(f"[TERMINAL] Reader started for {container.name}")
             try:
                 while not stop_reading.is_set():
                     try:
-                        # Try to read without select - just non-blocking recv
                         data = sock.recv(4096)
                         if data:
-                            consecutive_empty = 0  # Reset counter
-                            logger.debug(f"[TERMINAL] Got {len(data)} bytes")
                             ws.send(json.dumps({'type': 'output', 'data': data.decode('utf-8', errors='ignore')}))
-                        else:
-                            # Empty data
-                            consecutive_empty += 1
-                            logger.debug(f"[TERMINAL] Empty recv #{consecutive_empty}")
-                            if consecutive_empty > 10:  # 10 consecutive empties = EOF
-                                logger.info(f"Terminal EOF after {consecutive_empty} empty reads")
-                                break
-                            time.sleep(0.05)  # 50ms between reads
-                    except BlockingIOError:
-                        # No data available, this is normal
-                        time.sleep(0.05)
+                    except socket.timeout:
                         continue
                     except Exception as e:
-                        logger.error(f"Terminal read error: {e}", exc_info=True)
+                        logger.error(f"Terminal read error: {e}")
                         break
-                    
             except Exception as e:
                 logger.error(f"Terminal reader crashed: {e}", exc_info=True)
             finally:
