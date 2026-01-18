@@ -8,6 +8,10 @@ on:
 jobs:
   ai-autofix:
     runs-on: ubuntu-latest
+    # Required for pushing code and creating PRs
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout
@@ -28,14 +32,18 @@ jobs:
           python3 << 'EOF'
           import json, textwrap
 
-          diff = open("changes.diff").read()
+          try:
+              with open("changes.diff", "r") as f:
+                  diff = f.read()
+          except FileNotFoundError:
+              diff = ""
 
           prompt = textwrap.dedent("""\
           You are an automated code-fixing system.
 
           STRICT RULES:
           - Output ONLY a valid unified diff
-          - NO markdown
+          - NO markdown (do not use ```diff blocks)
           - NO explanations
           - NO commentary
           - NO surrounding text
@@ -58,8 +66,9 @@ jobs:
 
       - name: Call Gemini API
         run: |
+          # Changed to gemini-2.0-flash (stable)
           curl -sS -X POST \
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
+            "[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$){{ secrets.GEMINI_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d @request.json > response.json
 
@@ -68,28 +77,27 @@ jobs:
           python3 << 'EOF'
           import json, sys
 
-          with open("response.json") as f:
-              data = json.load(f)
-
           try:
+              with open("response.json") as f:
+                  data = json.load(f)
               text = data["candidates"][0]["content"]["parts"][0]["text"]
-          except Exception:
-              print("Invalid Gemini response structure")
-              sys.exit(1)
-
-          if not text:
-              print("Empty AI output")
+          except Exception as e:
+              print(f"Error parsing Gemini response: {e}")
               sys.exit(1)
 
           text = text.strip()
 
-          if text == "NO_CHANGES":
+          if text == "NO_CHANGES" or not text:
               open("ai.patch", "w").write("")
               sys.exit(0)
 
+          # Remove markdown code fences if Gemini ignores the prompt rules
           lines = text.splitlines()
+          if lines[0].startswith("```"):
+              lines = lines[1:]
+          if lines and lines[-1].startswith("```"):
+              lines = lines[:-1]
 
-          # Strip any Gemini preamble
           start = None
           for i, line in enumerate(lines):
               if line.startswith("diff --git") or line.startswith("--- "):
@@ -101,12 +109,6 @@ jobs:
               sys.exit(1)
 
           patch = "\n".join(lines[start:])
-
-          # Minimal unified diff sanity check
-          if "--- " not in patch or "+++" not in patch or "@@" not in patch:
-              print("AI output is not a valid unified diff")
-              sys.exit(1)
-
           with open("ai.patch", "w") as f:
               f.write(patch)
           EOF
@@ -114,46 +116,57 @@ jobs:
       - name: Validate patch with git
         run: |
           if [ ! -s ai.patch ]; then
-            echo "No AI changes"
+            echo "No AI changes to apply."
             exit 0
           fi
-
           git apply --check ai.patch
 
       - name: Apply patch and commit
+        if: hashFiles('ai.patch') != ''
         run: |
-          BRANCH="ai-fix-${GITEA_SHA}"
+          # Use GITEA_SHA if available, otherwise fallback to GITHUB_SHA
+          SHA="${GITEA_SHA:-$GITHUB_SHA}"
+          BRANCH="ai-fix-${SHA:0:7}"
+          
+          # Configure Git Identity
+          git config --global user.name "AI Autofix Bot"
+          git config --global user.email "ai-bot@noreply.gitea.io"
 
           git checkout -b "$BRANCH"
           git apply ai.patch
-          git commit -am "AI autofix for ${GITEA_SHA}"
+          git commit -am "AI autofix for ${SHA:0:7}"
           git push origin "$BRANCH"
 
-          echo "BRANCH=$BRANCH" >> $GITEA_ENV
+          # Export branch for next step
+          echo "AI_BRANCH=$BRANCH" >> $GITHUB_ENV
 
       - name: Create Gitea pull request
+        if: env.AI_BRANCH != ''
         run: |
-          OWNER=$(echo "$GITEA_REPOSITORY" | cut -d/ -f1)
-          REPO=$(echo "$GITEA_REPOSITORY" | cut -d/ -f2)
+          # Detect Repo/Owner for Gitea/GitHub compatibility
+          REPO_PATH="${GITEA_REPOSITORY:-$GITHUB_REPOSITORY}"
+          OWNER=$(echo "$REPO_PATH" | cut -d/ -f1)
+          REPO=$(echo "$REPO_PATH" | cut -d/ -f2)
+          API_URL="${GITEA_URL:-$GITHUB_API_URL}"
 
           curl -sS -X POST \
-            "${{ secrets.GITEA_URL }}/api/v1/repos/${OWNER}/${REPO}/pulls" \
+            "${API_URL}/api/v1/repos/${OWNER}/${REPO}/pulls" \
             -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d "{
               \"title\": \"AI Autofix\",
-              \"head\": \"${BRANCH}\",
+              \"head\": \"${AI_BRANCH}\",
               \"base\": \"main\",
-              \"body\": \"Automated AI-generated fix. Manual review required.\"
+              \"body\": \"Automated AI-generated fix for commit ${GITEA_SHA}. Please review carefully.\"
             }"
 
       - name: Notify Gotify
         if: always()
         run: |
-          curl -X POST "http://10.0.0.100:2580/message?token=${{ secrets.GOTIFY_TOKEN }}" \
+          curl -X POST "${{ secrets.GOTIFY_URL }}/message?token=${{ secrets.GOTIFY_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d "{
-              \"title\": \"AI Autofix executed\",
-              \"message\": \"Repo: ${GITEA_REPOSITORY}\nCommit: ${GITEA_SHA}\nBranch: ${BRANCH}\",
+              \"title\": \"AI Autofix Job Finished\",
+              \"message\": \"Repo: ${GITEA_REPOSITORY:-$GITHUB_REPOSITORY}\nBranch: ${AI_BRANCH:-none}\",
               \"priority\": 5
             }"
