@@ -6246,13 +6246,16 @@
                 
                 quickSetModeWithSelector(stack, mode) {
                     if (!stack.containers || stack.containers.length === 0) {
-                        this.quickSetMode(stack.name, mode);
+                        this.showToast('Error', 'No containers found in stack', 'error');
                         return;
                     }
                     
                     if (stack.containers.length === 1) {
-                        this.quickSetMode(stack.name, mode);
+                        // Single container - apply directly without modal
+                        const container = stack.containers[0];
+                        this.quickSetModeForContainer(stack.name, container.name, mode);
                     } else {
+                        // Multiple containers - open selector modal
                         this.containerSelectorStack = stack.name;
                         this.containerSelectorContainers = stack.containers;
                         this.containerSelectorMode = mode;
@@ -6264,7 +6267,15 @@
                 },
                 
                 quickSetModeForContainer(stackName, containerName, mode) {
-                    this.showToast('Info', `Setting ${mode === 'check' ? 'Check Only' : 'Auto Update'} mode for ${containerName} in ${stackName}`, 'info');
+                    const cron = this.settings.default_cron || '0 2 * * *';
+                    axios.post(`/api/stack/${stackName}/container/${containerName}/schedule`, { mode, cron })
+                        .then(() => {
+                            this.showToast('Success', `${containerName} in ${stackName} set to ${mode === 'check' ? 'Check Only' : 'Auto Update'}`, 'success');
+                            this.loadStacks();
+                        })
+                        .catch(error => {
+                            this.showToast('Error', `Failed to set mode: ${error.response?.data?.error || error.message}`, 'error');
+                        });
                 },
                 
                 openTerminal(containerId, containerName) {
