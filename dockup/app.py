@@ -3383,6 +3383,115 @@ def auto_update_stack(stack_name):
             })
 
 
+def auto_update_container(stack_name, container_name, mode):
+    """
+    Container-specific update handler
+    Checks and optionally updates a single container in a stack
+    """
+    # Check global auto-update toggle
+    if not config.get('auto_update_enabled', True):
+        logger.debug(f"[{stack_name}/{container_name}] Auto-updates globally disabled, skipping")
+        return
+    
+    logger.info(f"=" * 50)
+    logger.info(f"[{datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S %Z')}] Scheduled check for: {stack_name}/{container_name}")
+    logger.info(f"Mode: {mode}")
+    logger.info(f"=" * 50)
+    
+    try:
+        # Find the container
+        containers = docker_client.containers.list(
+            all=True,
+            filters={
+                'label': [
+                    f'com.docker.compose.project={stack_name}',
+                    f'com.docker.compose.service={container_name}'
+                ]
+            }
+        )
+        
+        if not containers:
+            logger.info(f"[{stack_name}/{container_name}] Container not found or not deployed")
+            return
+        
+        container = containers[0]
+        current_image_id = container.image.id
+        image_name = container.image.tags[0] if container.image.tags else None
+        
+        if not image_name:
+            logger.error(f"[{stack_name}/{container_name}] No image name found")
+            return
+        
+        logger.info(f"  Current: {image_name} ({current_image_id[:12]})")
+        
+        # Pull latest image
+        logger.info(f"  → Pulling latest image...")
+        try:
+            docker_client.images.pull(image_name)
+        except Exception as e:
+            logger.error(f"  ✗ Pull failed: {e}")
+            return
+        
+        # Get new image ID
+        new_image = docker_client.images.get(image_name)
+        new_image_id = new_image.id
+        
+        if current_image_id == new_image_id:
+            logger.info(f"  ✓ Already up to date")
+            return
+        
+        logger.info(f"  ✓ Update available: {new_image_id[:12]}")
+        
+        if mode == 'check':
+            logger.info(f"  → Check-only mode, skipping update")
+            send_notification(
+                stack_name,
+                f"✅ Update available for {container_name}\n{image_name}",
+                'info'
+            )
+        elif mode == 'auto':
+            logger.info(f"  → Auto-update mode, recreating container...")
+            
+            # Get compose file
+            stack_path = os.path.join(STACKS_DIR, stack_name)
+            compose_file = None
+            for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
+                potential_file = os.path.join(stack_path, filename)
+                if os.path.exists(potential_file):
+                    compose_file = potential_file
+                    break
+            
+            if not compose_file:
+                logger.error(f"[{stack_name}] No compose file found")
+                return
+            
+            # Recreate just this container
+            result = subprocess.run(
+                ['docker', 'compose', '-f', compose_file, 'up', '-d', '--no-deps', '--force-recreate', container_name],
+                cwd=stack_path,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            
+            if result.returncode == 0:
+                logger.info(f"  ✓ Successfully updated {container_name}")
+                send_notification(
+                    stack_name,
+                    f"✅ Auto-updated {container_name} in {stack_name}",
+                    'info'
+                )
+            else:
+                logger.error(f"  ✗ Update failed: {result.stderr}")
+                send_notification(
+                    stack_name,
+                    f"❌ Failed to auto-update {container_name}: {result.stderr}",
+                    'error'
+                )
+    
+    except Exception as e:
+        logger.error(f"[{stack_name}/{container_name}] Error in auto_update_container: {e}")
+
 
 def check_stack_updates(stack_name):
     """
@@ -3537,8 +3646,10 @@ def setup_scheduler():
     
     for stack_name, schedule_info in schedules_snapshot.items():
         mode = schedule_info.get("mode", "off")
+        cron_expr = schedule_info.get("cron", config.get("default_cron", "0 2 * * *"))
+        
+        # Add stack-level job if mode is not off
         if mode != "off":
-            cron_expr = schedule_info.get("cron", config.get("default_cron", "0 2 * * *"))
             try:
                 trigger = CronTrigger.from_crontab(cron_expr, timezone=user_tz)
                 scheduler.add_job(
@@ -3551,6 +3662,25 @@ def setup_scheduler():
                 logger.info(f"[Scheduler] Added update job for {stack_name}: {cron_expr}")
             except Exception as e:
                 logger.info(f"[Scheduler] Error scheduling {stack_name}: {e}")
+        
+        # Add container-specific jobs
+        containers = schedule_info.get("containers", {})
+        for container_name, container_schedule in containers.items():
+            container_mode = container_schedule.get("mode", "off")
+            if container_mode != "off":
+                container_cron = container_schedule.get("cron", cron_expr)
+                try:
+                    trigger = CronTrigger.from_crontab(container_cron, timezone=user_tz)
+                    scheduler.add_job(
+                        auto_update_container,
+                        trigger,
+                        args=[stack_name, container_name, container_mode],
+                        id=f"update_{stack_name}_{container_name}",
+                        replace_existing=True
+                    )
+                    logger.info(f"[Scheduler] Added container update job for {stack_name}/{container_name}: {container_cron}")
+                except Exception as e:
+                    logger.error(f"[Scheduler] Error scheduling container {stack_name}/{container_name}: {e}")
     
     # Add stack action schedules (start/stop/restart) from metadata
     try:
@@ -4769,6 +4899,69 @@ def api_stack_schedule_set(stack_name):
             'mode': mode,
             'cron': cron
         }
+    save_schedules()
+    
+    # Trigger scheduler update
+    setup_scheduler()
+    
+    return jsonify({'success': True})
+
+
+@app.route('/api/stack/<stack_name>/container/<container_name>/schedule', methods=['GET'])
+@require_auth
+def api_container_schedule_get(stack_name, container_name):
+    """Get container-specific schedule configuration"""
+    with schedules_lock:
+        stack_schedule = schedules.get(stack_name, {})
+        containers = stack_schedule.get('containers', {})
+        container_schedule = containers.get(container_name, {})
+        
+        # Return container schedule if exists, otherwise return stack default
+        return jsonify({
+            'mode': container_schedule.get('mode', stack_schedule.get('mode', 'off')),
+            'cron': container_schedule.get('cron', stack_schedule.get('cron', config.get('default_cron', '0 2 * * *')))
+        })
+
+
+@app.route('/api/stack/<stack_name>/container/<container_name>/schedule', methods=['POST'])
+@require_auth
+def api_container_schedule_set(stack_name, container_name):
+    """Set container-specific schedule configuration"""
+    data = request.json
+    mode = data.get('mode', 'off')
+    cron = data.get('cron')
+    
+    # Validate cron if provided
+    if cron:
+        try:
+            croniter(cron)
+        except:
+            return jsonify({'error': 'Invalid cron expression'}), 400
+    
+    with schedules_lock:
+        # Initialize stack schedule if doesn't exist
+        if stack_name not in schedules:
+            schedules[stack_name] = {
+                'mode': 'off',
+                'cron': config.get('default_cron', '0 2 * * *'),
+                'containers': {}
+            }
+        
+        # Initialize containers dict if doesn't exist
+        if 'containers' not in schedules[stack_name]:
+            schedules[stack_name]['containers'] = {}
+        
+        # Set container-specific schedule
+        if mode == 'off':
+            # Remove container override if setting to off
+            if container_name in schedules[stack_name]['containers']:
+                del schedules[stack_name]['containers'][container_name]
+        else:
+            schedules[stack_name]['containers'][container_name] = {
+                'mode': mode,
+                'cron': cron if cron else schedules[stack_name].get('cron', config.get('default_cron', '0 2 * * *'))
+            }
+    
     save_schedules()
     
     # Trigger scheduler update
