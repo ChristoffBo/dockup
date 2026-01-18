@@ -1,3 +1,6 @@
+## latest (2026-01-18)
+added shell to the ui, you can now shell into your containers, also added the ability to set per container in the stack's updates, be it auto update or check only.
+
 ## latest (2026-01-16)
 Updated Dependencies and changed a spilt editor parsing issue with using local docker registries. it will now support ip addressea if you wish to go the http route.
 ## latest (2026-01-12)
