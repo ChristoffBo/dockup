@@ -65,9 +65,10 @@ jobs:
 
       - name: Call Gemini API
         run: |
-          # -g disables globbing to prevent "bad range" error with curly braces
+          # Use double quotes to allow secret expansion
+          # Use -g to prevent curl from misinterpreting braces in the secret
           curl -g -sS -X POST \
-            '[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$){{ secrets.GEMINI_API_KEY }}' \
+            "[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$){{ secrets.GEMINI_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d @request.json > response.json
 
@@ -79,10 +80,15 @@ jobs:
           try:
               with open("response.json") as f:
                   data = json.load(f)
+              
+              if "candidates" not in data:
+                  print("Error: API response does not contain candidates.")
+                  print(json.dumps(data, indent=2))
+                  sys.exit(1)
+                  
               text = data["candidates"][0]["content"]["parts"][0]["text"]
           except Exception as e:
               print(f"Error parsing Gemini response: {e}")
-              # Print response to logs for debugging
               with open("response.json") as f:
                   print(f.read())
               sys.exit(1)
@@ -90,4 +96,94 @@ jobs:
           text = text.strip()
 
           if text == "NO_CHANGES" or not text:
-              open("ai.patch
+              open("ai.patch", "w").write("")
+              sys.exit(0)
+
+          # Strip markdown code fences if Gemini ignores the prompt rules
+          lines = text.splitlines()
+          if lines and lines[0].startswith("```"):
+              lines = lines[1:]
+          if lines and lines[-1].startswith("```"):
+              lines = lines[:-1]
+
+          start = None
+          for i, line in enumerate(lines):
+              if line.startswith("diff --git") or line.startswith("--- "):
+                  start = i
+                  break
+
+          if start is None:
+              print("No unified diff found in AI output")
+              sys.exit(1)
+
+          patch = "\n".join(lines[start:])
+          with open("ai.patch", "w") as f:
+              f.write(patch)
+          EOF
+
+      - name: Validate patch with git
+        run: |
+          if [ ! -s ai.patch ]; then
+            echo "No AI changes."
+            exit 0
+          fi
+          git apply --check ai.patch
+
+      - name: Apply patch and commit
+        run: |
+          if [ ! -s ai.patch ]; then
+            exit 0
+          fi
+          
+          SHA="${GITEA_SHA:-$GITHUB_SHA}"
+          BRANCH="ai-fix-${SHA:0:7}"
+          
+          git config --global user.name "AI Autofix Bot"
+          git config --global user.email "ai-bot@noreply.gitea.io"
+
+          git checkout -b "$BRANCH"
+          git apply ai.patch
+          git commit -am "AI autofix for ${SHA:0:7}"
+          git push origin "$BRANCH"
+
+          # Use GITEA_ENV or GITHUB_ENV depending on your runner
+          if [ -n "$GITEA_ENV" ]; then
+            echo "AI_BRANCH=$BRANCH" >> "$GITEA_ENV"
+          else
+            echo "AI_BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          fi
+
+      - name: Create Gitea pull request
+        if: success()
+        run: |
+          # Only run if a branch was actually created
+          if [ -z "$AI_BRANCH" ]; then echo "No branch to PR"; exit 0; fi
+
+          REPO_PATH="${GITEA_REPOSITORY:-$GITHUB_REPOSITORY}"
+          OWNER=$(echo "$REPO_PATH" | cut -d/ -f1)
+          REPO=$(echo "$REPO_PATH" | cut -d/ -f2)
+          API_BASE="${GITEA_URL:-$GITHUB_API_URL}"
+
+          curl -g -sS -X POST \
+            "${API_BASE}/api/v1/repos/${OWNER}/${REPO}/pulls" \
+            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"title\": \"AI Autofix\",
+              \"head\": \"${AI_BRANCH}\",
+              \"base\": \"main\",
+              \"body\": \"Automated AI-generated fix for commit ${GITEA_SHA}.\"
+            }"
+
+      - name: Notify Gotify
+        if: always()
+        run: |
+          if [ -n "${{ secrets.GOTIFY_TOKEN }}" ]; then
+            curl -g -X POST "${{ secrets.GOTIFY_URL }}/message?token=${{ secrets.GOTIFY_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"title\": \"AI Autofix Job Finished\",
+                \"message\": \"Repo: ${GITEA_REPOSITORY:-$GITHUB_REPOSITORY}\",
+                \"priority\": 5
+              }"
+          fi
