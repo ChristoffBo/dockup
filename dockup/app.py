@@ -5891,7 +5891,8 @@ def cleanup_terminal_session(ws):
 
 @sock.route('/ws/terminal/<container_id>')
 def websocket_terminal(ws, container_id):
-    """Terminal WebSocket - Single exec, single socket"""
+    """Terminal WebSocket - Clean bidirectional implementation"""
+    sock = None
     try:
         # Verify container
         container = docker_client.containers.get(container_id)
@@ -5901,42 +5902,40 @@ def websocket_terminal(ws, container_id):
         
         logger.info(f"Terminal starting: {container.name}")
         
-        # Create exec with /bin/sh (every container has this)
-        exec_id = docker_client.api.exec_create(
+        # Create exec with /bin/sh and TTY
+        exec_create_res = docker_client.api.exec_create(
             container.id,
-            '/bin/sh',
+            cmd='/bin/sh',
             stdin=True,
             tty=True,
             environment={'TERM': 'xterm-256color'}
-        )['Id']
-        
+        )
+        exec_id = exec_create_res['Id']
         logger.info(f"Exec created: {exec_id[:12]}")
         
-        # Start exec and get the socket (bidirectional)
+        # Start exec and get socket
         exec_socket = docker_client.api.exec_start(exec_id, socket=True, tty=True)
         sock = exec_socket._sock
-        sock.settimeout(0.1)  # Small timeout for non-blocking behavior
+        sock.settimeout(0.1)
         
         ws.send(json.dumps({'type': 'connected', 'data': 'Connected\r\n'}))
         logger.info(f"Terminal connected: {container.name}")
         
-        stop = threading.Event()
-        
-        # Reader thread - socket to websocket
-        def reader():
+        # Reader thread: container output -> websocket
+        def receive_from_container():
             try:
-                while not stop.is_set():
+                while True:
                     try:
                         data = sock.recv(4096)
-                        if data:
-                            ws.send(json.dumps({'type': 'output', 'data': data.decode('utf-8', errors='ignore')}))
+                        if not data:
+                            break
+                        ws.send(json.dumps({'type': 'output', 'data': data.decode('utf-8', errors='replace')}))
                     except socket.timeout:
                         continue
-                    except Exception as e:
-                        logger.error(f"Read error: {e}")
+                    except Exception:
                         break
             except Exception as e:
-                logger.error(f"Reader crashed: {e}", exc_info=True)
+                logger.error(f"Reader error: {e}")
             finally:
                 logger.info(f"Reader exiting")
                 try:
@@ -5944,43 +5943,40 @@ def websocket_terminal(ws, container_id):
                 except:
                     pass
         
-        # Start reader
-        threading.Thread(target=reader, daemon=True).start()
+        # Start reader thread
+        reader_thread = threading.Thread(target=receive_from_container, daemon=True)
+        reader_thread.start()
         
-        # Main loop - websocket to socket
-        try:
-            while not stop.is_set():
-                try:
-                    msg = ws.receive(timeout=1.0)
-                    if msg is None:
-                        break
-                    
-                    data = json.loads(msg)
-                    
-                    if data.get('type') == 'input':
-                        sock.sendall(data.get('data', '').encode('utf-8'))
-                    
-                    elif data.get('type') == 'resize':
-                        try:
-                            docker_client.api.exec_resize(
-                                exec_id,
-                                height=data.get('rows', 24),
-                                width=data.get('cols', 80)
-                            )
-                        except:
-                            pass
-                
-                except Exception as e:
-                    if 'timed out' not in str(e).lower():
-                        logger.error(f"Receive error: {e}")
-                        break
-        finally:
-            stop.set()
+        # Main loop: websocket input -> container stdin
+        while True:
+            message = ws.receive(timeout=1.0)
+            if message is None:
+                break
+            
             try:
-                exec_socket.close()
-            except:
+                data = json.loads(message)
+                msg_type = data.get('type')
+                
+                if msg_type == 'input':
+                    sock.sendall(data.get('data', '').encode('utf-8'))
+                
+                elif msg_type == 'resize':
+                    try:
+                        docker_client.api.exec_resize(
+                            exec_id,
+                            height=data.get('rows', 24),
+                            width=data.get('cols', 80)
+                        )
+                    except:
+                        pass
+            
+            except json.JSONDecodeError:
+                # Ignore invalid JSON
                 pass
-            logger.info(f"Terminal closed: {container_id[:12]}")
+            except Exception as e:
+                if 'timed out' not in str(e).lower():
+                    logger.error(f"Main loop error: {e}")
+                    break
     
     except Exception as e:
         logger.error(f"Terminal setup error: {e}", exc_info=True)
@@ -5988,6 +5984,15 @@ def websocket_terminal(ws, container_id):
             ws.send(json.dumps({'type': 'error', 'data': str(e)}))
         except:
             pass
+    
+    finally:
+        if sock:
+            try:
+                sock.close()
+            except:
+                pass
+        logger.info(f"Terminal closed: {container_id[:12]}")
+
 
 
 def websocket(ws):
