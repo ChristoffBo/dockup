@@ -1547,10 +1547,30 @@
                             </div>
                             <!-- End Collapsible Stats -->
                             
+                            <!-- Container update modes (shown when expanded and per-container schedules exist) -->
+                            <div v-if="!collapsedStacks[stack.name] && stack.update_mode === 'mixed'" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(148, 163, 184, 0.1);">
+                                <div class="stack-info-row" v-for="container in stack.containers" :key="container.id" style="font-size: 13px;">
+                                    <span class="stack-info-label" style="display: flex; align-items: center; gap: 5px;">
+                                        <i class="fas fa-cube"></i> {{ container.name }}:
+                                    </span>
+                                    <span class="stack-info-value" :style="{
+                                        color: container.update_mode === 'auto' ? '#22c55e' : 
+                                               container.update_mode === 'check' ? '#3b82f6' : '#94a3b8'
+                                    }">
+                                        {{ container.update_mode === 'off' ? 'Off' : 
+                                           container.update_mode === 'check' ? 'Check Only' : 
+                                           container.update_mode === 'auto' ? 'Auto Update' : 'Off' }}
+                                    </span>
+                                </div>
+                            </div>
+                            
                             <div class="stack-info-row">
                                 <span class="stack-info-label">Update Mode:</span>
                                 <span class="stack-info-value">
-                                    {{ stack.update_mode === 'off' ? 'Off' : stack.update_mode === 'check' ? 'Check Only' : 'Auto Update' }}
+                                    {{ stack.update_mode === 'off' ? 'Off' : 
+                                       stack.update_mode === 'check' ? 'Check Only' : 
+                                       stack.update_mode === 'auto' ? 'Auto Update' :
+                                       stack.update_mode === 'mixed' ? 'Mixed (Per-Container)' : 'Off' }}
                                 </span>
                             </div>
                             <div class="stack-info-row" v-if="stack.last_check">
