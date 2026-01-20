@@ -2793,6 +2793,27 @@ def get_stacks():
                     'mode': 'off',
                     'cron': config.get('default_cron', '0 2 * * *')
                 })
+                
+                # Add container-specific schedule info to each container
+                container_schedules = schedule_info.get('containers', {})
+                container_modes = []
+                for container in containers:
+                    container_name = container['name']
+                    container_schedule = container_schedules.get(container_name, {})
+                    # Use container-specific mode if set, otherwise fall back to stack-level mode
+                    container_mode = container_schedule.get('mode', schedule_info.get('mode', 'off'))
+                    container['update_mode'] = container_mode
+                    container_modes.append(container_mode)
+                
+                # Determine display mode: if containers have individual schedules and modes differ, show "mixed"
+                if container_schedules and len(set(container_modes)) > 1:
+                    display_update_mode = 'mixed'
+                elif container_schedules and container_modes:
+                    # All containers have same mode (even if different from stack default)
+                    display_update_mode = container_modes[0]
+                else:
+                    # No container-specific schedules, use stack default
+                    display_update_mode = schedule_info.get('mode', 'off')
             
             # Determine if stack is running (any container with status 'running')
             is_running = any(c['status'] == 'running' for c in containers)
@@ -2863,7 +2884,7 @@ def get_stacks():
                 'status': status,
                 'health': 'healthy' if all(c['health'] in ['healthy', 'none'] for c in containers) else 'unhealthy' if any(c['health'] == 'unhealthy' for c in containers) else 'starting',
                 'running': is_running,
-                'update_mode': schedule_info.get('mode', 'off'),
+                'update_mode': display_update_mode,
                 'cron': schedule_info.get('cron', config.get('default_cron', '0 2 * * *')),
                 'last_check': format_timestamp(update_status.get(stack_name, {}).get('last_check')),
                 'update_available': update_status.get(stack_name, {}).get('update_available', False),
