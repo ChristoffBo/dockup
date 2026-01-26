@@ -731,6 +731,29 @@
             background: rgba(59, 130, 246, 0.4);
         }
 
+        /* Edit Tabs */
+        .edit-tab {
+            padding: 10px 20px;
+            background: none;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.3s;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .edit-tab:hover {
+            color: #e2e8f0;
+            background: rgba(148, 163, 184, 0.1);
+        }
+
+        .edit-tab.active {
+            color: #3b82f6;
+            border-bottom-color: #3b82f6;
+        }
+
         /* ZimaOS-Style Split Fields */
         .split-field-row {
             display: grid;
@@ -2623,11 +2646,33 @@
                     </div>
                 </div>
 
-                <!-- Split Editor Mode -->
-                <div v-if="!showRawYaml">
-                    <button class="raw-yaml-toggle" @click="toggleRawYaml">
-                        <i class="fas fa-code"></i> Show Raw YAML
+                <!-- Tab Navigation -->
+                <div class="edit-tabs" style="display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid rgba(255,255,255,0.1);">
+                    <button 
+                        class="edit-tab" 
+                        :class="{active: editTab === 'compose'}"
+                        @click="editTab = 'compose'"
+                        style="padding: 10px 20px; background: none; border: none; color: #94a3b8; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.3s;">
+                        <i class="fas fa-th-large"></i> Compose
                     </button>
+                    <button 
+                        class="edit-tab" 
+                        :class="{active: editTab === 'raw'}"
+                        @click="editTab = 'raw'"
+                        style="padding: 10px 20px; background: none; border: none; color: #94a3b8; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.3s;">
+                        <i class="fas fa-code"></i> Raw
+                    </button>
+                    <button 
+                        class="edit-tab" 
+                        :class="{active: editTab === 'env'}"
+                        @click="editTab = 'env'"
+                        style="padding: 10px 20px; background: none; border: none; color: #94a3b8; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.3s;">
+                        <i class="fas fa-list"></i> Environment
+                    </button>
+                </div>
+
+                <!-- Compose Tab (Split Editor) -->
+                <div v-if="editTab === 'compose'">
 
                     <!-- Service Selector -->
                     <div class="form-group" v-if="editingStack">
@@ -3070,17 +3115,62 @@
                     </div>
                 </div>
 
-                <!-- Raw YAML Mode -->
-                <div v-if="showRawYaml">
-                    <button class="raw-yaml-toggle" @click="toggleRawYaml">
-                        <i class="fas fa-th-large"></i> Show Split Editor
-                    </button>
+                <!-- Raw Tab -->
+                <div v-if="editTab === 'raw'">
                     <div class="form-group">
                         <label class="form-label">Docker Compose YAML</label>
                         <textarea class="form-input" v-model="editStackContent" placeholder="Paste your docker-compose.yml here or write from scratch..." style="min-height: 450px; font-family: 'Courier New', monospace;"></textarea>
                         <small style="color: #94a3b8; display: block; margin-top: 5px;">
                             {{ editingStack ? 'Edit your compose file' : 'Will be saved as: compose.yaml' }}
                         </small>
+                    </div>
+                </div>
+
+                <!-- Environment Tab -->
+                <div v-if="editTab === 'env'">
+                    <div style="margin-bottom: 15px; padding: 12px; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 6px; color: #93c5fd;">
+                        <i class="fas fa-info-circle"></i> Environment variables are stored in <code style="background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 3px;">stack.env</code> and can be referenced in your compose file using <code style="background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 3px;">${VAR_NAME}</code>
+                    </div>
+
+                    <div class="env-editor">
+                        <div class="env-header" style="display: grid; grid-template-columns: 1fr 1fr 50px; gap: 10px; margin-bottom: 10px; padding: 0 5px;">
+                            <div style="color: #94a3b8; font-size: 13px; font-weight: 600;">Variable Name</div>
+                            <div style="color: #94a3b8; font-size: 13px; font-weight: 600;">Value</div>
+                            <div></div>
+                        </div>
+
+                        <div class="env-vars-list">
+                            <div v-for="(envVar, index) in envVars" :key="index" class="env-var-row" style="display: grid; grid-template-columns: 1fr 1fr 50px; gap: 10px; margin-bottom: 10px; align-items: center;">
+                                <input 
+                                    type="text" 
+                                    class="form-input" 
+                                    v-model="envVar.key" 
+                                    placeholder="VAR_NAME"
+                                    style="margin: 0;">
+                                <input 
+                                    type="text" 
+                                    class="form-input" 
+                                    v-model="envVar.value" 
+                                    placeholder="value"
+                                    style="margin: 0;">
+                                <button 
+                                    @click="removeEnvVar(index)" 
+                                    class="btn-icon btn-danger" 
+                                    style="padding: 8px 12px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px; color: #ef4444; cursor: pointer;">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+
+                            <div v-if="envVars.length === 0" style="padding: 40px; text-align: center; color: #64748b; background: rgba(30, 41, 59, 0.5); border-radius: 8px; border: 1px dashed rgba(100, 116, 139, 0.3);">
+                                <i class="fas fa-list" style="font-size: 32px; margin-bottom: 10px; opacity: 0.5;"></i>
+                                <p>No environment variables defined</p>
+                                <p style="font-size: 13px; margin-top: 5px;">Click "Add Variable" to create one</p>
+                            </div>
+                        </div>
+
+                        <button @click="addEnvVar" class="btn btn-secondary" style="margin-top: 15px;">
+                            <i class="fas fa-plus"></i> Add Variable
+                        </button>
                     </div>
                 </div>
 
@@ -3776,6 +3866,8 @@
                     showDockerRunImport: false,
                     dockerRunCommand: '',
                     showRawYaml: false,
+                    editTab: 'compose',  // Current edit modal tab: 'compose', 'raw', 'env'
+                    envVars: [],  // Environment variables for current stack
                     showDnsSection: false,
                     showSecuritySection: false,
                     showConsoleSection: false,
@@ -4588,6 +4680,13 @@
                 async stackOperation(stackName, operation) {
                     try {
                         const response = await axios.post(`/api/stack/${stackName}/operation`, { operation });
+                        
+                        // If output is returned and modal is open, display it
+                        if (response.data.output && this.showOperationModal && this.terminalStack === stackName) {
+                            const lines = response.data.output.split('\n').filter(line => line.trim());
+                            this.terminalOutput.push(...lines);
+                        }
+                        
                         this.showToast('Success', `Stack ${operation} completed`, 'success');
                         await this.loadStacks();
                     } catch (error) {
@@ -4618,9 +4717,19 @@
                     
                     try {
                         // Pull images first
-                        await axios.post(`/api/stack/${stackName}/operation`, { operation: 'pull' });
+                        const pullResponse = await axios.post(`/api/stack/${stackName}/operation`, { operation: 'pull' });
+                        if (pullResponse.data.output) {
+                            const pullLines = pullResponse.data.output.split('\n').filter(line => line.trim());
+                            this.terminalOutput.push(...pullLines);
+                        }
+                        
                         // Then restart
-                        await axios.post(`/api/stack/${stackName}/operation`, { operation: 'up' });
+                        const upResponse = await axios.post(`/api/stack/${stackName}/operation`, { operation: 'up' });
+                        if (upResponse.data.output) {
+                            const upLines = upResponse.data.output.split('\n').filter(line => line.trim());
+                            this.terminalOutput.push(...upLines);
+                        }
+                        
                         this.showToast('Success', `${stackName} updated successfully`, 'success');
                     } catch (error) {
                         this.showToast('Error', `Failed to update: ${error.response?.data?.error || error.message}`, 'error');
@@ -5027,6 +5136,8 @@
                     // Initialize with a default "app" service for split editor
                     this.selectedService = 'app';
                     this.availableServices = ['app'];
+                    this.envVars = [];  // Initialize empty env vars
+                    this.editTab = 'compose';  // Start on compose tab
                     this.serviceSections = {
                         name_image: {
                             name: 'app',
@@ -5135,6 +5246,14 @@
                             this.stackTags = '';
                         }
                         
+                        // Load environment variables
+                        try {
+                            const envResponse = await axios.get(`/api/stack/${stackName}/env`);
+                            this.envVars = envResponse.data.env_vars || [];
+                        } catch (error) {
+                            this.envVars = [];
+                        }
+                        
                         // Auto-select service if only one exists
                         if (this.availableServices.length === 1) {
                             this.selectedService = this.availableServices[0];
@@ -5145,6 +5264,7 @@
                             this.serviceSections = null;
                         }
                         
+                        this.editTab = 'compose';  // Start on compose tab
                         this.showRawYaml = false;
                         this.showEditModal = true;
                     } catch (error) {
@@ -5242,12 +5362,23 @@
                         // Save all metadata in one call
                         await axios.post(`/api/stack/${this.editStackName}/metadata`, metadataToSave);
                         
+                        // Save environment variables
+                        await axios.put(`/api/stack/${this.editStackName}/env`, {
+                            env_vars: this.envVars
+                        });
+                        
                         this.showToast('Success', `Stack ${action} successfully at ${path}`, 'success');
                         this.showEditModal = false;
                         await this.loadStacks();
                     } catch (error) {
                         this.showToast('Error', `Failed to save stack: ${error.response?.data?.error || error.message}`, 'error');
                     }
+                },
+                addEnvVar() {
+                    this.envVars.push({ key: '', value: '' });
+                },
+                removeEnvVar(index) {
+                    this.envVars.splice(index, 1);
                 },
                 async loadServiceSections() {
                     if (!this.selectedService) return;
