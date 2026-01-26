@@ -13,7 +13,7 @@ PERFORMANCE OPTIMIZATIONS:
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.3.8"
+DOCKUP_VERSION = "1.3.9"
 
 import os
 import json
@@ -3047,6 +3047,51 @@ def load_env_file(stack_name):
     return env_vars
 
 
+def parse_env_file(content):
+    """
+    Parse environment file content into list of key-value pairs for UI
+    
+    Args:
+        content: Raw env file content
+        
+    Returns:
+        list: List of dicts with 'key' and 'value' fields
+    """
+    env_vars = []
+    lines = content.split('\n') if content else []
+    
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith('#') and '=' in line:
+            key, value = line.split('=', 1)
+            env_vars.append({
+                'key': key.strip(),
+                'value': value.strip()
+            })
+    
+    return env_vars
+
+
+def build_env_file(env_vars):
+    """
+    Build environment file content from list of key-value pairs
+    
+    Args:
+        env_vars: List of dicts with 'key' and 'value' fields
+        
+    Returns:
+        str: Env file content
+    """
+    lines = []
+    for var in env_vars:
+        key = var.get('key', '').strip()
+        value = var.get('value', '').strip()
+        if key:  # Only add non-empty keys
+            lines.append(f"{key}={value}")
+    
+    return '\n'.join(lines)
+
+
 def expand_env_vars(content, stack_name=None):
     """
     Expand environment variables in compose file content
@@ -4510,6 +4555,67 @@ def api_validate_compose():
             
     except Exception as e:
         return jsonify({'success': False, 'error': f'Unexpected error: {str(e)}'}), 500
+
+
+@app.route('/api/stack/<stack_name>/env')
+def api_get_env(stack_name):
+    """Get environment variables for a stack"""
+    try:
+        stack_path = os.path.join(STACKS_DIR, stack_name)
+        env_path = os.path.join(stack_path, 'stack.env')
+        
+        if os.path.exists(env_path):
+            with open(env_path, 'r') as f:
+                content = f.read()
+                env_vars = parse_env_file(content)
+                return jsonify({
+                    'exists': True,
+                    'env_vars': env_vars,
+                    'raw_content': content
+                })
+        else:
+            return jsonify({
+                'exists': False,
+                'env_vars': [],
+                'raw_content': ''
+            })
+    except Exception as e:
+        logger.error(f"Error reading env file for {stack_name}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/stack/<stack_name>/env', methods=['PUT'])
+def api_update_env(stack_name):
+    """Update environment variables for a stack"""
+    try:
+        data = request.json
+        env_vars = data.get('env_vars', [])
+        
+        # Build env file content
+        content = build_env_file(env_vars)
+        
+        # Write to file
+        stack_path = os.path.join(STACKS_DIR, stack_name)
+        env_path = os.path.join(stack_path, 'stack.env')
+        
+        if content.strip():
+            # Write non-empty env file
+            with open(env_path, 'w') as f:
+                f.write(content)
+            logger.info(f"Updated env file for {stack_name}")
+        else:
+            # Remove empty env file if it exists
+            if os.path.exists(env_path):
+                os.remove(env_path)
+                logger.info(f"Removed empty env file for {stack_name}")
+        
+        # Invalidate compose cache since env vars affect expansion
+        invalidate_compose_cache(stack_name)
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Error updating env file for {stack_name}: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/stack/<stack_name>/port-conflicts', methods=['POST'])
