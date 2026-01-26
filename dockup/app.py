@@ -13,7 +13,7 @@ PERFORMANCE OPTIMIZATIONS:
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.3.9"
+DOCKUP_VERSION = "1.4.0"
 
 import os
 import json
