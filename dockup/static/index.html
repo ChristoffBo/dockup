@@ -3154,7 +3154,7 @@
                                     placeholder="value"
                                     style="margin: 0;">
                                 <button 
-                                    @click="removeEnvVar(index)" 
+                                    @click="removeStackEnvVar(index)" 
                                     class="btn-icon btn-danger" 
                                     style="padding: 8px 12px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px; color: #ef4444; cursor: pointer;">
                                     <i class="fas fa-trash"></i>
@@ -3168,7 +3168,7 @@
                             </div>
                         </div>
 
-                        <button @click="addEnvVar" class="btn btn-secondary" style="margin-top: 15px;">
+                        <button @click="addStackEnvVar" class="btn btn-secondary" style="margin-top: 15px;">
                             <i class="fas fa-plus"></i> Add Variable
                         </button>
                     </div>
@@ -5374,10 +5374,10 @@
                         this.showToast('Error', `Failed to save stack: ${error.response?.data?.error || error.message}`, 'error');
                     }
                 },
-                addEnvVar() {
+                addStackEnvVar() {
                     this.envVars.push({ key: '', value: '' });
                 },
-                removeEnvVar(index) {
+                removeStackEnvVar(index) {
                     this.envVars.splice(index, 1);
                 },
                 async loadServiceSections() {
