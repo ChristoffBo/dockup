@@ -13,7 +13,7 @@ PERFORMANCE OPTIMIZATIONS:
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.3.6"
+DOCKUP_VERSION = "1.3.8"
 
 import os
 import json
@@ -209,7 +209,9 @@ def get_compose_services_cached(stack_name, compose_file_path):
         # Cache miss or expired - read from file
         try:
             with open(compose_file_path, 'r') as f:
-                compose_data = yaml.safe_load(f)
+                content = f.read()
+            expanded = expand_env_vars(content, stack_name)
+            compose_data = yaml.safe_load(expanded)
             
             services = list(compose_data.get('services', {}).keys()) if compose_data else []
             file_mtime = os.path.getmtime(compose_file_path)
@@ -806,8 +808,9 @@ def apply_app_data_root_to_compose(compose_content: str, app_data_root: str, sta
         return compose_content, warnings
     
     try:
-        # Parse YAML
-        compose_data = yaml.safe_load(compose_content)
+        # Parse YAML with env expansion
+        expanded = expand_env_vars(compose_content, stack_name)
+        compose_data = yaml.safe_load(expanded)
         
         if not compose_data or 'services' not in compose_data:
             return compose_content, warnings
@@ -895,7 +898,8 @@ def analyze_app_data_root_changes(compose_content: str, app_data_root: str, stac
         return result
     
     try:
-        compose_data = yaml.safe_load(compose_content)
+        expanded = expand_env_vars(compose_content, stack_name)
+        compose_data = yaml.safe_load(expanded)
         if not compose_data or 'services' not in compose_data:
             return result
         
@@ -2076,7 +2080,9 @@ def calculate_appdata_sizes():
                 
                 # Parse compose file
                 with open(compose_file, 'r') as f:
-                    compose_data = yaml.safe_load(f)
+                    content = f.read()
+                expanded = expand_env_vars(content, stack_name)
+                compose_data = yaml.safe_load(expanded)
                 
                 services = compose_data.get('services', {})
                 total_size_bytes = 0
@@ -2329,8 +2335,9 @@ def check_port_conflicts(stack_name, compose_content):
     """Check if any ports in compose file conflict with running containers"""
     conflicts = []
     try:
-        # Parse compose file
-        compose_data = yaml.safe_load(compose_content)
+        # Parse compose file with env expansion
+        expanded = expand_env_vars(compose_content, stack_name)
+        compose_data = yaml.safe_load(expanded)
         services = compose_data.get('services', {})
         
         # Get currently used ports
@@ -2927,7 +2934,7 @@ def get_stacks_cached():
 
 
 def get_stack_compose(stack_name):
-    """Get compose file content for a stack"""
+    """Get compose file content for a stack with environment variable expansion"""
     stack_path = os.path.join(STACKS_DIR, stack_name)
     compose_file = os.path.join(stack_path, 'compose.yaml')
     if not os.path.exists(compose_file):
@@ -2935,7 +2942,9 @@ def get_stack_compose(stack_name):
     
     if os.path.exists(compose_file):
         with open(compose_file, 'r') as f:
-            return f.read()
+            content = f.read()
+            # Expand environment variables before returning
+            return expand_env_vars(content, stack_name)
     return None
 
 
@@ -2994,6 +3003,96 @@ def save_stack_compose(stack_name, content, apply_app_data_root=None):
     
     return warnings
 
+
+def load_env_file(stack_name):
+    """
+    Load environment variables from .env or stack.env file
+    
+    Args:
+        stack_name: Name of the stack
+        
+    Returns:
+        dict: Environment variables from .env file
+    """
+    stack_path = os.path.join(STACKS_DIR, stack_name)
+    env_vars = {}
+    
+    # Try both stack.env and .env (stack.env takes priority)
+    env_files = ['stack.env', '.env']
+    
+    for env_file in env_files:
+        env_path = os.path.join(stack_path, env_file)
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        # Skip comments and empty lines
+                        if not line or line.startswith('#'):
+                            continue
+                        # Parse KEY=VALUE
+                        if '=' in line:
+                            key, value = line.split('=', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            # Remove quotes if present
+                            if value.startswith('"') and value.endswith('"'):
+                                value = value[1:-1]
+                            elif value.startswith("'") and value.endswith("'"):
+                                value = value[1:-1]
+                            env_vars[key] = value
+            except Exception as e:
+                logger.warning(f"Failed to load {env_file} for {stack_name}: {e}")
+    
+    return env_vars
+
+
+def expand_env_vars(content, stack_name=None):
+    """
+    Expand environment variables in compose file content
+    Supports ${VAR}, ${VAR:-default}, ${VAR-default} syntax
+    
+    Args:
+        content: Compose file content
+        stack_name: Stack name to load .env file from (optional)
+        
+    Returns:
+        str: Content with expanded variables
+    """
+    # Safety check for None content
+    if content is None:
+        return None
+    
+    # Load stack-specific env vars if stack_name provided
+    env_vars = {}
+    if stack_name:
+        env_vars = load_env_file(stack_name)
+    
+    # Merge with system environment variables (stack vars take priority)
+    all_env = {**os.environ, **env_vars}
+    
+    def replace_var(match):
+        var_expr = match.group(1)
+        
+        # Handle ${VAR:-default} syntax (use default if var is unset or empty)
+        if ':-' in var_expr:
+            var_name, default = var_expr.split(':-', 1)
+            return all_env.get(var_name, default)
+        
+        # Handle ${VAR-default} syntax (use default only if var is unset)
+        elif '-' in var_expr and not var_expr.startswith('-'):
+            var_name, default = var_expr.split('-', 1)
+            return all_env.get(var_name, default)
+        
+        # Handle ${VAR} syntax
+        else:
+            return all_env.get(var_expr, '')
+    
+    # Regex to match ${...} patterns
+    pattern = r'\$\{([^}]+)\}'
+    expanded = re.sub(pattern, replace_var, content)
+    
+    return expanded
 
 
 def stack_operation(stack_name, operation):
@@ -3148,7 +3247,9 @@ def auto_update_stack(stack_name):
         
         # Parse compose file to get image names
         with open(compose_file, 'r') as f:
-            compose_data = yaml.safe_load(f)
+            content = f.read()
+        expanded = expand_env_vars(content, stack_name)
+        compose_data = yaml.safe_load(expanded)
         
         services = compose_data.get('services', {})
         if not services:
@@ -3539,7 +3640,9 @@ def check_stack_updates(stack_name):
         
         # Parse compose file to get image names from COMPOSE FILE (not running containers)
         with open(compose_file, 'r') as f:
-            compose_data = yaml.safe_load(f)
+            content = f.read()
+        expanded = expand_env_vars(content, stack_name)
+        compose_data = yaml.safe_load(expanded)
         
         services = compose_data.get('services', {})
         if not services:
@@ -4275,8 +4378,9 @@ def api_stack_compose_save(stack_name):
     apply_app_data_root = data.get('apply_app_data_root', None)  # True/False/None
     
     try:
-        # Validate YAML syntax
-        compose_data = yaml.safe_load(content)
+        # Validate YAML syntax (expand vars for validation)
+        expanded = expand_env_vars(content, stack_name)
+        compose_data = yaml.safe_load(expanded)
         
         # Validate compose structure
         warnings = []
@@ -4366,6 +4470,8 @@ def api_validate_compose():
     try:
         # Step 1: Validate YAML syntax
         try:
+            # Note: Can't expand env vars here - no stack context
+            # Variables will be validated when docker compose config runs
             compose_data = yaml.safe_load(content)
         except yaml.YAMLError as e:
             return jsonify({'success': False, 'error': f'YAML syntax error: {str(e)}'}), 200
@@ -5165,8 +5271,10 @@ def get_service_sections(stack_name, service_name):
         if not compose_file:
             return jsonify({'error': 'Compose file not found'}), 404
         
+        # SPLIT EDITOR: Load ORIGINAL compose WITHOUT expansion so users see/edit ${VAR} syntax
         with open(compose_file, 'r') as f:
-            compose_data = yaml.safe_load(f)
+            content = f.read()
+        compose_data = yaml.safe_load(content)  # NO EXPANSION - shows ${VAR} in UI
         
         services = compose_data.get('services', {})
         if service_name not in services:
@@ -5250,8 +5358,10 @@ def save_service_sections(stack_name, service_name):
         if not compose_file:
             return jsonify({'error': 'Compose file not found'}), 404
         
+        # CRITICAL: Load ORIGINAL compose WITHOUT env expansion to preserve ${VAR} syntax
         with open(compose_file, 'r') as f:
-            compose_data = yaml.safe_load(f)
+            content = f.read()
+        compose_data = yaml.safe_load(content)  # NO EXPANSION - preserves ${VAR}
         
         services = compose_data.get('services', {})
         if service_name not in services:
@@ -5409,7 +5519,9 @@ def api_get_stack_resources(stack_name):
             return jsonify({'cpu_limit': 0, 'mem_limit': 0})
         
         with open(compose_file, 'r') as f:
-            compose_data = yaml.safe_load(f)
+            content = f.read()
+        expanded = expand_env_vars(content, stack_name)
+        compose_data = yaml.safe_load(expanded)
         
         services = compose_data.get('services', {})
         if not services:
@@ -5477,7 +5589,9 @@ def api_set_stack_resources(stack_name):
             return jsonify({'error': 'Compose file not found'}), 404
         
         with open(compose_file, 'r') as f:
-            compose_data = yaml.safe_load(f)
+            content = f.read()
+        expanded = expand_env_vars(content, stack_name)
+        compose_data = yaml.safe_load(expanded)
         
         services = compose_data.get('services', {})
         
@@ -6059,7 +6173,9 @@ def api_stack_webui(stack_name):
                 
                 if compose_file:
                     with open(compose_file, 'r') as f:
-                        compose_data = yaml.safe_load(f)
+                        content = f.read()
+                    expanded = expand_env_vars(content, stack_name)
+                    compose_data = yaml.safe_load(expanded)
                     
                     # Get first service with exposed ports
                     services = compose_data.get('services', {})
@@ -6612,6 +6728,7 @@ def clean_casaos_compose(compose_content):
         
         # Validate YAML first
         try:
+            # Note: No stack context for env expansion here - generic helper function
             data = yaml.safe_load(compose_content)
             if not data or 'services' not in data or not data['services']:
                 return None
@@ -6658,6 +6775,7 @@ def clean_casaos_compose(compose_content):
         
         # Verify still valid
         try:
+            # Note: No stack context for env expansion here
             data = yaml.safe_load(result)
             if data and 'services' in data and data['services']:
                 return result
@@ -6702,6 +6820,7 @@ def fetch_casaos_source(source_key, source_config):
                     # Extract IMAGE from compose for frontend
                     image_name = 'unknown:latest'
                     try:
+                        # Note: No stack context - this is format detection/template import
                         compose_data = yaml.safe_load(compose_clean)
                         if compose_data and 'services' in compose_data:
                             first_service = list(compose_data['services'].values())[0]
