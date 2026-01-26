@@ -5542,10 +5542,32 @@
                     }
                     
                     // Split image into name and tag
+                    // Handle env vars like ${VERSION:-latest} that contain colons
                     const image = this.serviceSections.name_image.image || '';
-                    const parts = image.split(':');
-                    this.imageBaseName = parts[0] || '';
-                    this.imageTag = parts[1] || 'latest';
+                    
+                    // Find the last : that's not inside ${...}
+                    let inVar = false;
+                    let lastColon = -1;
+                    
+                    for (let i = 0; i < image.length; i++) {
+                        if (image[i] === '$' && image[i+1] === '{') {
+                            inVar = true;
+                        } else if (image[i] === '}' && inVar) {
+                            inVar = false;
+                        } else if (image[i] === ':' && !inVar) {
+                            lastColon = i;
+                        }
+                    }
+                    
+                    if (lastColon === -1) {
+                        // No tag separator found
+                        this.imageBaseName = image;
+                        this.imageTag = 'latest';
+                    } else {
+                        // Split at the last colon outside of ${...}
+                        this.imageBaseName = image.substring(0, lastColon);
+                        this.imageTag = image.substring(lastColon + 1);
+                    }
                 },
                 async loadDockerNetworks() {
                     try {
