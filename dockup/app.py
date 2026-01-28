@@ -13,7 +13,7 @@ PERFORMANCE OPTIMIZATIONS:
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.4.1"
+DOCKUP_VERSION = "1.4.0-hotfix2"
 
 import os
 import json
@@ -1769,11 +1769,7 @@ def update_stack_action_jobs(stack_name, schedules_list):
     
     user_tz = pytz.timezone(config.get('timezone', 'UTC'))
     
-    logger.info(f"[Action Jobs] Updating action schedules for {stack_name}")
-    logger.info(f"[Action Jobs] Received {len(schedules_list)} schedule(s)")
-    
     # Remove old action jobs for this stack
-    removed_count = 0
     for job in list(scheduler.get_jobs()):
         if (job.id.startswith(f"start_{stack_name}_") or 
             job.id.startswith(f"stop_{stack_name}_") or 
@@ -1781,37 +1777,23 @@ def update_stack_action_jobs(stack_name, schedules_list):
             try:
                 scheduler.remove_job(job.id)
                 logger.info(f"[Action Jobs] Removed old job: {job.id}")
-                removed_count += 1
             except Exception as e:
                 logger.error(f"[Action Jobs] Could not remove job {job.id}: {e}")
     
-    logger.info(f"[Action Jobs] Removed {removed_count} old job(s)")
-    
     # Add new action jobs for this stack
-    added_count = 0
     for schedule in schedules_list:
-        enabled = schedule.get('enabled', True)
+        if not schedule.get('enabled', True):
+            continue
+        
         action = schedule.get('action')
         cron_expr = schedule.get('cron')
         
-        logger.info(f"[Action Jobs] Processing schedule - Action: {action}, Cron: {cron_expr}, Enabled: {enabled}")
-        
-        if not enabled:
-            logger.info(f"[Action Jobs] Skipping disabled schedule")
-            continue
-        
         if not action or not cron_expr:
-            logger.warning(f"[Action Jobs] Skipping incomplete schedule - action:{action}, cron:{cron_expr}")
             continue
         
         try:
-            # Use deterministic job ID based on stack name, action, and cron expression
-            # This ensures same schedule gets same ID across restarts
-            job_id_input = f"{action}_{stack_name}_{cron_expr}"
-            job_id_hash = hashlib.md5(job_id_input.encode()).hexdigest()[:8]
-            job_id = f"{action}_{stack_name}_{job_id_hash}"
-            
             trigger = CronTrigger.from_crontab(cron_expr, timezone=user_tz)
+            job_id = f"{action}_{stack_name}_{schedule.get('id', hashlib.md5(cron_expr.encode()).hexdigest()[:8])}"
             
             scheduler.add_job(
                 scheduled_stack_action,
@@ -1821,21 +1803,13 @@ def update_stack_action_jobs(stack_name, schedules_list):
                 replace_existing=True
             )
             
-            # Verify job was actually added
             job = scheduler.get_job(job_id)
             if job:
-                logger.info(f"[Action Jobs] ✓ Successfully added: {job_id}")
-                logger.info(f"[Action Jobs]   Next run: {job.next_run_time}")
-                added_count += 1
+                logger.info(f"[Action Jobs] ✓ Added {action} for {stack_name} @ {cron_expr} | Next: {job.next_run_time}")
             else:
-                logger.error(f"[Action Jobs] ✗ Failed to verify job addition: {job_id}")
+                logger.error(f"[Action Jobs] ✗ Failed to add {action} for {stack_name}")
         except Exception as e:
-            logger.error(f"[Action Jobs] ✗ Error adding {action} for {stack_name}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-    
-    logger.info(f"[Action Jobs] Summary: Added {added_count}/{len(schedules_list)} schedule(s) for {stack_name}")
-
+            logger.error(f"[Action Jobs] Error adding {action} for {stack_name}: {e}")
 
 
 def scheduled_stack_action(stack_name, action):
@@ -3879,45 +3853,31 @@ def setup_scheduler():
                     logger.error(f"[Scheduler] Error scheduling container {stack_name}/{container_name}: {e}")
     
     # Add stack action schedules (start/stop/restart) from metadata
-    logger.info("[Scheduler] Loading stack action schedules...")
-    action_jobs_loaded = 0
     try:
         stacks_data = get_stacks_cached()
-        stack_names = [s['name'] for s in stacks_data]
-        logger.info(f"[Scheduler] Processing {len(stack_names)} stack(s) for action schedules")
-        
-        for stack_name in stack_names:
-            # CRITICAL: Invalidate cache to ensure we read latest metadata
-            invalidate_metadata_cache(stack_name)
+        stacks = [s['name'] for s in stacks_data]
+        for stack_name in stacks:
             metadata = get_metadata_cached(stack_name)
             action_schedules = metadata.get('action_schedules', [])
             
-            if action_schedules:
-                logger.info(f"[Scheduler] {stack_name}: Found {len(action_schedules)} action schedule(s)")
-            
             for schedule in action_schedules:
-                enabled = schedule.get('enabled', True)
+                if not schedule.get('enabled', True):
+                    continue
+                
                 action = schedule.get('action')  # 'start', 'stop', 'restart'
                 cron_expr = schedule.get('cron')
                 
-                logger.info(f"[Scheduler]   {stack_name}: {action} @ {cron_expr} (enabled: {enabled})")
-                
-                if not enabled:
-                    logger.info(f"[Scheduler]   Skipping disabled schedule")
-                    continue
-                
                 if not action or not cron_expr:
-                    logger.warning(f"[Scheduler]   Skipping incomplete schedule - action:{action}, cron:{cron_expr}")
                     continue
                 
                 try:
-                    # Use deterministic job ID based on stack name, action, and cron expression
-                    # This ensures same schedule gets same ID across restarts
-                    job_id_input = f"{action}_{stack_name}_{cron_expr}"
-                    job_id_hash = hashlib.md5(job_id_input.encode()).hexdigest()[:8]
-                    job_id = f"{action}_{stack_name}_{job_id_hash}"
-                    
                     trigger = CronTrigger.from_crontab(cron_expr, timezone=user_tz)
+                    
+                    # DETERMINISTIC ID: Based on action + stack + cron
+                    # Different action or cron = different ID
+                    job_id_base = f"{action}_{stack_name}_{cron_expr}"
+                    job_id_hash = hashlib.md5(job_id_base.encode()).hexdigest()[:8]
+                    job_id = f"{action}_{stack_name}_{job_id_hash}"
                     
                     scheduler.add_job(
                         scheduled_stack_action,
@@ -3926,25 +3886,11 @@ def setup_scheduler():
                         id=job_id,
                         replace_existing=True
                     )
-                    
-                    # Verify job was added
-                    job = scheduler.get_job(job_id)
-                    if job:
-                        logger.info(f"[Scheduler]   ✓ Job created: {job_id}")
-                        logger.info(f"[Scheduler]   ✓ Next run: {job.next_run_time}")
-                        action_jobs_loaded += 1
-                    else:
-                        logger.error(f"[Scheduler]   ✗ Failed to verify job: {job_id}")
+                    logger.info(f"[Scheduler] Added {action} job for {stack_name}: {cron_expr}")
                 except Exception as e:
-                    logger.error(f"[Scheduler]   ✗ Error scheduling {action} for {stack_name}: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-        
-        logger.info(f"[Scheduler] ✓ Loaded {action_jobs_loaded} action schedule(s) total")
+                    logger.error(f"[Scheduler] Error scheduling {action} for {stack_name}: {e}")
     except Exception as e:
         logger.error(f"[Scheduler] Error loading action schedules: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
 
     # Auto-prune job
     if config.get("auto_prune", False):
@@ -5280,94 +5226,35 @@ def api_stack_action_schedules_set(stack_name):
     data = request.json
     schedules_list = data.get('schedules', [])
     
-    logger.info(f"[API] Updating action schedules for {stack_name}")
-    logger.info(f"[API] Received {len(schedules_list)} schedule(s)")
-    
     # Validate each schedule
-    for idx, schedule in enumerate(schedules_list):
+    for schedule in schedules_list:
         action = schedule.get('action')
         cron = schedule.get('cron')
         
-        logger.info(f"[API]   Schedule {idx+1}: action={action}, cron={cron}, enabled={schedule.get('enabled', True)}")
-        
         if action not in ['start', 'stop', 'restart']:
-            logger.error(f"[API]   Invalid action: {action}")
             return jsonify({'error': f'Invalid action: {action}'}), 400
         
         if not cron:
-            logger.error(f"[API]   Missing cron expression")
             return jsonify({'error': 'Cron expression required'}), 400
         
         try:
             croniter(cron)
-        except Exception as e:
-            logger.error(f"[API]   Invalid cron expression: {cron} - {e}")
+        except:
             return jsonify({'error': f'Invalid cron expression: {cron}'}), 400
         
-        # Ensure each schedule has a deterministic ID based on action and cron
-        # This prevents duplicate IDs across restarts
+        # Ensure each schedule has a unique ID
         if 'id' not in schedule:
-            id_input = f"{action}{cron}"
-            schedule['id'] = hashlib.md5(id_input.encode()).hexdigest()[:8]
-            logger.info(f"[API]   Generated ID: {schedule['id']}")
-    
-    # CRITICAL: Invalidate cache BEFORE saving to ensure we don't have stale data
-    invalidate_metadata_cache(stack_name)
+            schedule['id'] = hashlib.md5(f"{action}{cron}{time.time()}".encode()).hexdigest()[:8]
     
     # Save to metadata
     metadata = get_metadata_cached(stack_name)
     metadata['action_schedules'] = schedules_list
     save_metadata_cached(stack_name, metadata)
     
-    logger.info(f"[API] ✓ Saved {len(schedules_list)} schedule(s) to metadata")
-    
-    # CRITICAL: Invalidate cache AGAIN before reading in update function
-    invalidate_metadata_cache(stack_name)
-    
     # Update ONLY this stack's action jobs (don't recreate entire scheduler)
     update_stack_action_jobs(stack_name, schedules_list)
     
-    logger.info(f"[API] ✓ Update complete for {stack_name}")
-    
     return jsonify({'success': True})
-
-
-@app.route('/api/scheduler/jobs', methods=['GET'])
-@require_auth
-def api_scheduler_jobs():
-    """Get all scheduled jobs for diagnostics"""
-    global scheduler
-    
-    if scheduler is None:
-        return jsonify({'error': 'Scheduler not initialized'}), 500
-    
-    jobs_info = []
-    user_tz = pytz.timezone(config.get('timezone', 'UTC'))
-    
-    for job in scheduler.get_jobs():
-        job_info = {
-            'id': job.id,
-            'name': job.name,
-            'next_run': job.next_run_time.astimezone(user_tz).strftime('%Y-%m-%d %H:%M:%S %Z') if job.next_run_time else None,
-            'next_run_utc': job.next_run_time.strftime('%Y-%m-%d %H:%M:%S UTC') if job.next_run_time else None,
-        }
-        
-        # Extract stack name and action from job ID if it's an action job
-        if job.id.startswith('start_') or job.id.startswith('stop_') or job.id.startswith('restart_'):
-            parts = job.id.split('_')
-            if len(parts) >= 3:
-                job_info['action'] = parts[0]
-                job_info['stack'] = '_'.join(parts[1:-1])  # Handle stack names with underscores
-        
-        jobs_info.append(job_info)
-    
-    return jsonify({
-        'jobs': jobs_info,
-        'total': len(jobs_info),
-        'timezone': str(user_tz),
-        'current_time_utc': datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC'),
-        'current_time_local': datetime.now(user_tz).strftime('%Y-%m-%d %H:%M:%S %Z')
-    })
 
 
 @app.route('/api/stack/<stack_name>/check-updates', methods=['POST'])
@@ -9051,8 +8938,8 @@ if __name__ == '__main__':
         
         # Setup scheduler
         logger.info("Setting up scheduler...")
-        setup_scheduler()
-        logger.info("✓ Scheduler configured with user timezone and jobs loaded")
+        scheduler = setup_scheduler()
+        logger.info("✓ Scheduler started")
         
         # Run orphan import on startup
         logger.info("Scanning for orphan containers to import...")
