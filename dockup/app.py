@@ -3882,10 +3882,11 @@ def setup_scheduler():
     logger.info("[Scheduler] Loading stack action schedules...")
     action_jobs_loaded = 0
     try:
-        stacks = get_stack_list_cached()
-        logger.info(f"[Scheduler] Processing {len(stacks)} stack(s) for action schedules")
+        stacks_data = get_stacks_cached()
+        stack_names = [s['name'] for s in stacks_data]
+        logger.info(f"[Scheduler] Processing {len(stack_names)} stack(s) for action schedules")
         
-        for stack_name in stacks:
+        for stack_name in stack_names:
             # CRITICAL: Invalidate cache to ensure we read latest metadata
             invalidate_metadata_cache(stack_name)
             metadata = get_metadata_cached(stack_name)
