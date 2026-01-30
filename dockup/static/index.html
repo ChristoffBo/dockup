@@ -1,4 +1,4 @@
-<!DOCTYP<button @click="scheduleTab = 'backup'" :class="{active: scheduleTab === 'backup'}" style="padding:10px 20px;background:none;border:none;color:#94a3b8;cursor:pointer;"><i class="fas fa-save"></i> Backup</button>E html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -2473,14 +2473,26 @@
                     <div class="form-group"><label>Destination</label><select v-model="backupConfig.type" class="form-select"><option value="local">Local</option><option value="smb">SMB/CIFS</option></select></div>
                     <div v-if="backupConfig.type === 'local'"><div class="form-group"><label>Local Path</label><input v-model="backupConfig.local_path" class="form-control" placeholder="/app/backups"></div></div>
                     <div v-if="backupConfig.type === 'smb'">
-                        <div class="form-group"><label>Host</label><input v-model="backupConfig.smb_host" class="form-control" placeholder="192.168.1.100" required></div>
-                        <div class="form-group"><label>Share</label><input v-model="backupConfig.smb_share" class="form-control" placeholder="backups" required></div>
+                        <div class="form-group"><label>Host</label><input v-model="backupConfig.smb_host" class="form-control" required></div>
+                        <div class="form-group"><label>Share</label><input v-model="backupConfig.smb_share" class="form-control" required></div>
                         <div class="form-group"><label>Username</label><input v-model="backupConfig.smb_username" class="form-control" required></div>
                         <div class="form-group"><label>Password</label><input type="password" v-model="backupConfig.smb_password" class="form-control" required></div>
                         <div class="form-group"><button @click="testBackupConnection" class="btn btn-secondary">Test</button></div>
-                        <div v-if="backupConfig.mount_status === 'connected'" style="color:#10b981;margin-top:10px;">✓ Connected - {{backupAvailableSpace}} GB</div>
+                        <div v-if="backupConfig.mount_status === 'connected'" style="color:#10b981;">✓ Connected - {{backupAvailableSpace}} GB</div>
                     </div>
                     <div class="form-group"><button @click="saveBackupConfig" class="btn btn-primary">Save</button><button @click="scanBackupDirectory" class="btn btn-secondary" style="margin-left:10px;">Scan</button></div>
+                    
+                    <hr style="margin: 30px 0; border-color: #334155;">
+                    <h4 style="margin-bottom: 15px;">Quick Backup (Selected Stack)</h4>
+                    <div v-if="selectedStack" style="background: rgba(16, 185, 129, 0.1); padding: 15px; border-radius: 8px; border-left: 3px solid #10b981;">
+                        <p style="margin-bottom: 15px;"><strong>Stack:</strong> {{selectedStack}}</p>
+                        <div style="margin-bottom: 10px;"><label><input type="checkbox" v-model="stackBackupConfig.stop_before_backup"> Stop containers before backup</label></div>
+                        <div style="margin-bottom: 10px;"><label>Keep last <input type="number" v-model.number="stackBackupConfig.retention_count" style="width: 60px; padding: 4px;" min="1"> backups</label></div>
+                        <div><button @click="saveStackBackupConfig(); backupStackNow();" :disabled="backupInProgress" class="btn btn-success">{{backupInProgress ? 'Backing up...' : 'Backup Now'}}</button></div>
+                    </div>
+                    <div v-else style="color: #94a3b8; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 8px;">
+                        Click on a stack from the dashboard to enable quick backup.
+                    </div>
                 </div>
 
                 </div>
@@ -3805,7 +3817,6 @@
                                 <div v-if="resourceHogsType === 'memory'" style="font-size: 12px; color: #64748b; margin-top: 4px;">
                                     {{ Math.round(item.memory) }} MB
                                 </div>
-                        <div v-if="scheduleTab === 'backup'" style="padding:20px;"><div style="margin-bottom:15px;"><label><input type="checkbox" v-model="stackBackupConfig.enabled"> Enable Backups</label></div><div v-if="stackBackupConfig.enabled"><div style="margin-bottom:10px;"><label>Schedule</label><select v-model="stackBackupConfig.schedule" class="form-select" style="width:100%;"><option value="manual">Manual</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></div><div v-if="stackBackupConfig.schedule !== 'manual'" style="margin-bottom:10px;"><label>Time</label><input type="time" v-model="stackBackupConfig.schedule_time" class="form-control"></div><div v-if="stackBackupConfig.schedule === 'weekly'" style="margin-bottom:10px;"><label>Day</label><select v-model.number="stackBackupConfig.schedule_day" class="form-select" style="width:100%;"><option :value="0">Sun</option><option :value="1">Mon</option><option :value="2">Tue</option><option :value="3">Wed</option><option :value="4">Thu</option><option :value="5">Fri</option><option :value="6">Sat</option></select></div><div style="margin-bottom:10px;"><label>Keep Last</label><input type="number" v-model.number="stackBackupConfig.retention_count" class="form-control" min="1" style="width:100px;"></div></div><div style="display:flex;gap:10px;margin-top:15px;"><button @click="saveStackBackupConfig()" class="btn btn-primary">Save</button><button @click="backupStackNow(); scheduleModal = false;" :disabled="backupInProgress" class="btn btn-success">{{backupInProgress ? "Backing up..." : "Backup Now"}}</button></div></div>
                             </div>
                         </div>
                     </div>
@@ -6684,10 +6695,10 @@
 ,
                 async loadBackupConfig() { try { const r = await fetch('/api/backup/config'); if (r.ok) this.backupConfig = await r.json(); } catch(e) {} },
                 async saveBackupConfig() { try { const r = await fetch('/api/backup/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.backupConfig)}); if (r.ok) { this.showToast('Saved', 'success'); await this.loadBackupConfig(); } else { const e = await r.json(); this.showToast(`Failed: ${e.error}`, 'error'); } } catch(e) { this.showToast(`Error: ${e.message}`, 'error'); } },
-                async testBackupConnection() { try { this.showToast('Saving...', 'info'); const s = await fetch('/api/backup/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.backupConfig)}); if (!s.ok) { this.showToast('Failed', 'error'); return; } await new Promise(r => setTimeout(r, 1000)); this.showToast('Testing...', 'info'); const r = await fetch('/api/backup/test-connection', {method: 'POST'}); const d = await r.json(); if (d.success) { this.backupAvailableSpace = d.available_gb; this.backupConfig.mount_status = 'connected'; this.showToast(`Connected! ${d.available_gb} GB`, 'success'); } else { this.showToast(`Failed: ${d.message}`, 'error'); } } catch(e) { this.showToast('Error', 'error'); } },
+                async testBackupConnection() { try { this.showToast('Saving...', 'info'); const s = await fetch('/api/backup/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.backupConfig)}); if (!s.ok) return this.showToast('Failed', 'error'); await new Promise(r => setTimeout(r, 1000)); this.showToast('Testing...', 'info'); const r = await fetch('/api/backup/test-connection', {method: 'POST'}); const d = await r.json(); if (d.success) { this.backupAvailableSpace = d.available_gb; this.backupConfig.mount_status = 'connected'; this.showToast(`Connected! ${d.available_gb} GB`, 'success'); } else this.showToast(`Failed: ${d.message}`, 'error'); } catch(e) { this.showToast('Error', 'error'); } },
                 async saveStackBackupConfig() { if (!this.selectedStack) return; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/config`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...this.stackBackupConfig, volumes: this.stackBackupVolumes})}); if (r.ok) this.showToast('Saved', 'success'); } catch(e) { this.showToast('Error', 'error'); } },
                 async backupStackNow() { if (!this.selectedStack) return; this.backupInProgress = true; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/backup-now`, {method: 'POST'}); if (r.ok) { const d = await r.json(); this.showToast(`Queued (ID: ${d.queue_id})`, 'success'); } } catch(e) { this.showToast('Error', 'error'); } finally { this.backupInProgress = false; } },
-                async scanBackupDirectory() { try { this.showToast('Scanning...', 'info'); const r = await fetch('/api/backup/scan', {method: 'POST'}); if (r.ok) { const d = await r.json(); if (d.count > 0) { this.discoveredBackups = d.backups; this.showDiscoveredBackupsModal = true; } else { this.showToast('None found', 'info'); } } } catch(e) { this.showToast('Error', 'error'); } },
+                async scanBackupDirectory() { try { this.showToast('Scanning...', 'info'); const r = await fetch('/api/backup/scan', {method: 'POST'}); if (r.ok) { const d = await r.json(); if (d.count > 0) { this.discoveredBackups = d.backups; this.showDiscoveredBackupsModal = true; } else this.showToast('None found', 'info'); } } catch(e) { this.showToast('Error', 'error'); } },
                 async importDiscoveredBackups() { if (!confirm('Import?')) return; try { const r = await fetch('/api/backup/import', {method: 'POST'}); if (r.ok) { const d = await r.json(); this.showToast(d.message, 'success'); this.showDiscoveredBackupsModal = false; } } catch(e) { this.showToast('Error', 'error'); } }
             }
         });
@@ -6698,7 +6709,5 @@
 
     <!-- JS-YAML for parsing YAML in split editor -->
     <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
-
-    <div v-if="showDiscoveredBackupsModal" class="modal-backdrop" @click.self="showDiscoveredBackupsModal = false"><div class="modal-content" style="max-width:600px;"><div class="modal-header"><h2>Discovered Backups</h2><button class="close-btn" @click="showDiscoveredBackupsModal = false">×</button></div><div class="modal-body"><p v-if="discoveredBackups.length > 0">Found {{discoveredBackups.length}} backups</p><p v-else>No backups found</p><div v-if="discoveredBackups.length > 0"><button @click="importDiscoveredBackups" class="btn btn-primary">Import All</button></div></div></div></div>
 </body>
 </html>
