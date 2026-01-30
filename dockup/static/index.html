@@ -6902,22 +6902,36 @@
                 },
                 async testBackupConnection() {
                     try {
-                        // Save config first, then test
-                        await this.saveBackupConfig();
+                        // Save config first
+                        this.showToast('Saving configuration...', 'info');
+                        const saveResponse = await fetch('/api/backup/config', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(this.backupConfig)
+                        });
                         
-                        // Small delay to let backend process
-                        await new Promise(resolve => setTimeout(resolve, 500));
+                        if (!saveResponse.ok) {
+                            this.showToast('Failed to save configuration', 'error');
+                            return;
+                        }
                         
+                        // Wait a bit for database write
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        
+                        // Now test
+                        this.showToast('Testing connection...', 'info');
                         const response = await fetch('/api/backup/test-connection', {method: 'POST'});
                         const result = await response.json();
+                        
                         if (result.success) {
                             this.backupAvailableSpace = result.available_gb;
+                            this.backupConfig.mount_status = 'connected';
                             this.showToast(`Connected! ${result.available_gb} GB available`, 'success');
                         } else {
                             this.showToast(`Connection failed: ${result.message || 'Unknown error'}`, 'error');
                         }
                     } catch (error) {
-                        this.showToast(`Error testing connection: ${error.message}`, 'error');
+                        this.showToast(`Error: ${error.message}`, 'error');
                     }
                 },
                 async mountBackupShare() {
