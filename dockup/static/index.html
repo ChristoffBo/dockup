@@ -4169,10 +4169,13 @@
                         this.loadStackBackupHistory(newStack);
                     }
                 },
-                editTab(newTab) {
-                    if (newTab === 'backup' && this.selectedStack && this.stackBackupVolumes.length === 0) {
-                        this.parseStackVolumes();
-                    }
+                editTab: {
+                    handler(newTab) {
+                        if (newTab === 'backup' && this.selectedStack && this.stackBackupVolumes.length === 0) {
+                            this.parseStackVolumes();
+                        }
+                    },
+                    immediate: true
                 },
                 'stackBackupConfig': { handler() { this.backupConfigDirty = true; }, deep: true },
                 'stackBackupVolumes': { handler() { this.backupConfigDirty = true; }, deep: true }
