@@ -2466,6 +2466,79 @@
                                 </div>
                             </div>
                         </div>
+
+                    <!-- Backup Configuration Section -->
+                    <div class="settings-section">
+                        <h3><i class="fas fa-hdd"></i> Backup Configuration</h3>
+                        
+                        <div class="form-group">
+                            <label class="form-label">Backup Destination</label>
+                            <select v-model="backupConfig.type" class="form-select">
+                                <option value="local">Local Storage</option>
+                                <option value="smb">SMB/CIFS Network Share</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Local Storage Settings -->
+                        <div v-if="backupConfig.type === 'local'">
+                            <div class="form-group">
+                                <label class="form-label">Local Path</label>
+                                <input type="text" v-model="backupConfig.local_path" class="form-control" placeholder="/app/backups">
+                                <small style="color: #94a3b8;">Path inside container. Map ./backups:/app/backups in docker-compose.yml</small>
+                            </div>
+                        </div>
+                        
+                        <!-- SMB/CIFS Settings -->
+                        <div v-if="backupConfig.type === 'smb'">
+                            <div class="form-group">
+                                <label class="form-label">SMB Host</label>
+                                <input type="text" v-model="backupConfig.smb_host" class="form-control" placeholder="192.168.1.100">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Share Name</label>
+                                <input type="text" v-model="backupConfig.smb_share" class="form-control" placeholder="backups">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Username</label>
+                                <input type="text" v-model="backupConfig.smb_username" class="form-control">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Password</label>
+                                <input type="password" v-model="backupConfig.smb_password" class="form-control">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Mount Path (optional)</label>
+                                <input type="text" v-model="backupConfig.smb_mount_path" class="form-control" placeholder="dockup/">
+                                <small style="color: #94a3b8;">Optional subdirectory within the share</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">
+                                    <input type="checkbox" v-model="backupConfig.auto_mount"> Auto-mount on startup
+                                </label>
+                            </div>
+                            
+                            <div class="form-group">
+                                <button @click="testBackupConnection" class="btn btn-secondary">Test Connection</button>
+                                <button @click="mountBackupShare" class="btn btn-secondary" v-if="backupConfig.mount_status !== 'mounted'">Mount Now</button>
+                                <button @click="unmountBackupShare" class="btn btn-secondary" v-if="backupConfig.mount_status === 'mounted'">Unmount</button>
+                            </div>
+                            
+                            <div v-if="backupConfig.mount_status && backupConfig.mount_status !== 'disconnected'" style="margin-top: 10px; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 5px;">
+                                <strong>Status:</strong> {{ backupConfig.mount_status }}
+                                <span v-if="backupAvailableSpace"> - {{ backupAvailableSpace }} GB available</span>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group" style="margin-top: 20px;">
+                            <button @click="saveBackupConfig" class="btn btn-primary">Save Backup Configuration</button>
+                        </div>
+                    </div>
+
                     </div>
                 </div>
             </div>
@@ -4065,7 +4138,18 @@
                     // Polling intervals
                     hostStatsInterval: null,
                     stackRefreshInterval: null,
-                    backupConfig: {},
+                    backupConfig: {
+                        type: 'local',
+                        local_path: '/app/backups',
+                        smb_host: '',
+                        smb_share: '',
+                        smb_username: '',
+                        smb_password: '',
+                        smb_mount_path: '',
+                        auto_mount: true,
+                        mount_status: 'disconnected'
+                    },
+                    backupAvailableSpace: 0,
                     stackBackupConfig: {enabled: false, schedule: 'manual', schedule_time: '03:00', retention_count: 7, stop_before_backup: true},
                     stackBackupVolumes: [],
                     stackBackupHistory: [],
@@ -4235,6 +4319,7 @@
                         async mounted() {
                 // Load settings first, then conditionally load templates
                 await this.loadSettings();
+                await this.loadBackupConfig();
                 if (this.settings.templates_enabled) {
                     this.loadTemplates();  // Load template library
                 }
@@ -6788,6 +6873,70 @@
                         }
                     } catch (error) {
                         console.error('Error loading backup config:', error);
+                    }
+                },
+                async loadBackupConfig() {
+                    try {
+                        const response = await fetch('/api/backup/config');
+                        if (response.ok) {
+                            this.backupConfig = await response.json();
+                        }
+                    } catch (error) {
+                        console.error('Error loading backup config:', error);
+                    }
+                },
+                async saveBackupConfig() {
+                    try {
+                        const response = await fetch('/api/backup/config', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(this.backupConfig)
+                        });
+                        if (response.ok) {
+                            this.showToast('Backup configuration saved', 'success');
+                            await this.loadBackupConfig();
+                        }
+                    } catch (error) {
+                        this.showToast('Error saving backup config', 'error');
+                    }
+                },
+                async testBackupConnection() {
+                    try {
+                        const response = await fetch('/api/backup/test-connection', {method: 'POST'});
+                        const result = await response.json();
+                        if (result.success) {
+                            this.backupAvailableSpace = result.available_gb;
+                            this.showToast(`Connected! ${result.available_gb} GB available`, 'success');
+                        } else {
+                            this.showToast('Connection failed', 'error');
+                        }
+                    } catch (error) {
+                        this.showToast('Error testing connection', 'error');
+                    }
+                },
+                async mountBackupShare() {
+                    try {
+                        const response = await fetch('/api/backup/mount', {method: 'POST'});
+                        const result = await response.json();
+                        if (result.success) {
+                            this.showToast('Share mounted successfully', 'success');
+                            await this.loadBackupConfig();
+                        } else {
+                            this.showToast('Failed to mount share', 'error');
+                        }
+                    } catch (error) {
+                        this.showToast('Error mounting share', 'error');
+                    }
+                },
+                async unmountBackupShare() {
+                    try {
+                        const response = await fetch('/api/backup/unmount', {method: 'POST'});
+                        if (response.ok) {
+                            this.showToast('Share unmounted', 'success');
+                            await this.loadBackupConfig();
+                        }
+                    } catch (error) {
+                        this.showToast('Error unmounting share', 'error');
                     }
                 },
                 async loadStackBackupConfig(stackName) {
