@@ -4069,7 +4069,8 @@
                     stackBackupConfig: {enabled: false, schedule: 'manual', schedule_time: '03:00', retention_count: 7, stop_before_backup: true},
                     stackBackupVolumes: [],
                     stackBackupHistory: [],
-                    backupInProgress: false
+                    backupInProgress: false,
+                    backupConfigDirty: false
                 };
             },
             computed: {
@@ -4202,11 +4203,33 @@
                 }
             },
             watch: {
-                selectedStack(newStack) {
+                selectedStack(newStack, oldStack) {
+                    if (oldStack && this.backupConfigDirty) {
+                        if (!confirm('You have unsaved backup configuration changes. Discard them?')) {
+                            // Prevent stack change by reverting
+                            this.$nextTick(() => {
+                                this.selectedStack = oldStack;
+                            });
+                            return;
+                        }
+                    }
                     if (newStack) {
+                        this.backupConfigDirty = false;
                         this.loadStackBackupConfig(newStack);
                         this.loadStackBackupHistory(newStack);
                     }
+                },
+                'stackBackupConfig': {
+                    handler() {
+                        this.backupConfigDirty = true;
+                    },
+                    deep: true
+                },
+                'stackBackupVolumes': {
+                    handler() {
+                        this.backupConfigDirty = true;
+                    },
+                    deep: true
                 }
             },
                         async mounted() {
@@ -6786,7 +6809,10 @@
                             method: 'POST', headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({...this.stackBackupConfig, volumes: this.stackBackupVolumes})
                         });
-                        if (response.ok) { this.showToast('Backup configuration saved', 'success'); }
+                        if (response.ok) {
+                            this.showToast('Backup configuration saved', 'success');
+                            this.backupConfigDirty = false;
+                        }
                     } catch (error) {
                         this.showToast('Error saving backup config', 'error');
                     }
@@ -6798,6 +6824,13 @@
                         if (response.ok) {
                             const data = await response.json();
                             this.stackBackupVolumes = data.volumes;
+                            if (data.volumes.length === 0) {
+                                this.showToast('No volumes found in stack', 'info');
+                            } else {
+                                this.showToast(`Found ${data.volumes.length} volumes`, 'success');
+                            }
+                        } else {
+                            this.showToast('Error parsing stack volumes', 'error');
                         }
                     } catch (error) {
                         this.showToast('Error parsing volumes', 'error');
@@ -6810,12 +6843,15 @@
                         const response = await fetch(`/api/backup/stack/${this.selectedStack}/backup-now`, {method: 'POST'});
                         if (response.ok) {
                             const result = await response.json();
-                            this.showToast(`Backup queued`, 'success');
+                            this.showToast(`Backup queued (ID: ${result.queue_id})`, 'success');
+                        } else {
+                            this.showToast('Failed to queue backup', 'error');
                         }
                     } catch (error) {
                         this.showToast('Error queuing backup', 'error');
                     } finally {
-                        setTimeout(() => { this.backupInProgress = false; }, 2000);
+                        // Reset immediately after API call - the actual backup runs in background
+                        this.backupInProgress = false;
                     }
                 },
                 async loadStackBackupHistory(stackName) {
