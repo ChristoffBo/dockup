@@ -2692,6 +2692,7 @@
                         style="padding: 10px 20px; background: none; border: none; color: #94a3b8; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.3s;">
                         <i class="fas fa-list"></i> Environment
                     </button>
+                    <button class="edit-tab" :class="{active: editTab === 'backup'}" @click="editTab = 'backup'" style="padding:10px 20px;background:none;border:none;color:#94a3b8;cursor:pointer;border-bottom:2px solid transparent;"><i class="fas fa-save"></i> Backup</button>
                 </div>
 
                 <!-- Compose Tab (Split Editor) -->
@@ -3195,6 +3196,20 @@
                             <i class="fas fa-plus"></i> Add Variable
                         </button>
                     </div>
+                </div>
+
+                <!-- Backup Tab -->
+                <div v-if="editTab === 'backup'">
+                    <div class="form-group"><label><input type="checkbox" v-model="stackBackupConfig.enabled"> Enable Automatic Backups</label></div>
+                    <div v-if="stackBackupConfig.enabled" class="form-group"><label>Schedule</label><select v-model="stackBackupConfig.schedule" class="form-select"><option value="manual">Manual Only</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></div>
+                    <div v-if="stackBackupConfig.enabled && stackBackupConfig.schedule !== 'manual'" class="form-group"><label>Time</label><input type="time" v-model="stackBackupConfig.schedule_time" class="form-control"></div>
+                    <div v-if="stackBackupConfig.enabled && stackBackupConfig.schedule === 'weekly'" class="form-group"><label>Day</label><select v-model.number="stackBackupConfig.schedule_day" class="form-select"><option :value="0">Sunday</option><option :value="1">Monday</option><option :value="2">Tuesday</option><option :value="3">Wednesday</option><option :value="4">Thursday</option><option :value="5">Friday</option><option :value="6">Saturday</option></select></div>
+                    <div class="form-group"><label>Keep Last N Backups</label><input type="number" v-model.number="stackBackupConfig.retention_count" class="form-control" min="1"></div>
+                    <div class="form-group"><label><input type="checkbox" v-model="stackBackupConfig.stop_before_backup"> Stop container before backup</label></div>
+                    <div class="form-group"><button @click="parseStackVolumes" class="btn btn-secondary">Scan for Volumes</button><button @click="saveStackBackupConfig" class="btn btn-primary">Save Config</button></div>
+                    <div v-if="stackBackupVolumes.length > 0" style="margin-top:20px;"><h4>Volumes</h4><div v-for="vol in stackBackupVolumes" :key="vol.host_path" style="margin:5px 0;"><label><input type="checkbox" v-model="vol.backup_enabled"> {{vol.host_path}} ({{formatSize(vol.estimated_size_mb)}})</label></div></div>
+                    <div class="form-group" style="margin-top:20px;"><button @click="backupStackNow" :disabled="backupInProgress" class="btn btn-success">{{backupInProgress ? 'Backing up...' : 'Backup Now'}}</button></div>
+                    <div v-if="stackBackupHistory.length > 0" style="margin-top:30px;"><h4>Backup History</h4><table style="width:100%;border-collapse:collapse;"><thead><tr style="background:rgba(255,255,255,0.05);"><th style="padding:8px;text-align:left;">Date</th><th style="padding:8px;text-align:left;">Size</th><th style="padding:8px;text-align:left;">Duration</th><th style="padding:8px;text-align:left;">Actions</th></tr></thead><tbody><tr v-for="backup in stackBackupHistory" :key="backup.id" style="border-bottom:1px solid rgba(255,255,255,0.1);"><td style="padding:8px;">{{new Date(backup.backup_date).toLocaleString()}}</td><td style="padding:8px;">{{formatSize(backup.backup_size_mb)}}</td><td style="padding:8px;">{{formatDuration(backup.duration_seconds)}}</td><td style="padding:8px;"><button @click="restoreFromBackup(backup.id)" class="btn btn-sm btn-primary" style="margin-right:5px;">Restore</button><button @click="deleteBackup(backup.id)" class="btn btn-sm btn-danger">Delete</button></td></tr></tbody></table></div>
                 </div>
 
                 <div class="btn-group">
@@ -6733,5 +6748,16 @@
 
     <!-- JS-YAML for parsing YAML in split editor -->
     <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+
+
+    <!-- Discovered Backups Modal -->
+    <div v-if="showDiscoveredBackupsModal" class="modal-backdrop" @click.self="showDiscoveredBackupsModal = false">
+        <div class="modal-content" style="max-width:800px;">
+            <div class="modal-header"><h2>Discovered Backups</h2><button class="close-btn" @click="showDiscoveredBackupsModal = false">×</button></div>
+            <div class="modal-body"><p>Found {{discoveredBackups.length}} existing backup(s).</p><table style="width:100%;border-collapse:collapse;margin-top:20px;"><thead><tr style="background:rgba(255,255,255,0.05);"><th style="padding:8px;text-align:left;">Filename</th><th style="padding:8px;text-align:left;">Stack</th><th style="padding:8px;text-align:left;">Date</th><th style="padding:8px;text-align:left;">Size</th></tr></thead><tbody><tr v-for="backup in discoveredBackups" :key="backup.filename" style="border-bottom:1px solid rgba(255,255,255,0.1);"><td style="padding:8px;">{{backup.filename}}</td><td style="padding:8px;">{{backup.stack_name}}</td><td style="padding:8px;">{{new Date(backup.backup_date).toLocaleString()}}</td><td style="padding:8px;">{{formatSize(backup.size_mb)}}</td></tr></tbody></table></div>
+            <div class="modal-footer"><button @click="importDiscoveredBackups" class="btn btn-primary">Import All</button><button @click="showDiscoveredBackupsModal = false" class="btn btn-secondary">Cancel</button></div>
+        </div>
+    </div>
+
 </body>
 </html>
