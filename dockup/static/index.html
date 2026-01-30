@@ -2467,52 +2467,6 @@
                             </div>
                         </div>
                     </div>
-
-                <div class="settings-section">
-                    <h3><i class="fas fa-hdd"></i> Backup Configuration</h3>
-                    <div class="form-group"><label>Destination</label><select v-model="backupConfig.type" class="form-select"><option value="local">Local</option><option value="smb">SMB/CIFS</option></select></div>
-                    <div v-if="backupConfig.type === 'local'"><div class="form-group"><label>Local Path</label><input v-model="backupConfig.local_path" class="form-control" placeholder="/app/backups"></div></div>
-                    <div v-if="backupConfig.type === 'smb'">
-                        <div class="form-group"><label>Host</label><input v-model="backupConfig.smb_host" class="form-control" required></div>
-                        <div class="form-group"><label>Share</label><input v-model="backupConfig.smb_share" class="form-control" required></div>
-                        <div class="form-group"><label>Username</label><input v-model="backupConfig.smb_username" class="form-control" required></div>
-                        <div class="form-group"><label>Password</label><input type="password" v-model="backupConfig.smb_password" class="form-control" required></div>
-                        <div class="form-group"><button @click="testBackupConnection" class="btn btn-secondary">Test</button></div>
-                        <div v-if="backupConfig.mount_status === 'connected'" style="color:#10b981;">✓ Connected - {{backupAvailableSpace}} GB</div>
-                    </div>
-                    <div class="form-group"><button @click="saveBackupConfig" class="btn btn-primary">Save</button><button @click="scanBackupDirectory" class="btn btn-secondary" style="margin-left:10px;">Scan</button></div>
-                    
-                    <hr style="margin: 30px 0; border-color: #334155;">
-                    <h4 style="margin-bottom: 15px;">Quick Backup (Selected Stack)</h4>
-                    <div v-if="selectedStack" style="background: rgba(16, 185, 129, 0.1); padding: 15px; border-radius: 8px; border-left: 3px solid #10b981;">
-                        <p style="margin-bottom: 15px;"><strong>Stack:</strong> {{selectedStack}}</p>
-                        <div style="margin-bottom: 10px;"><label><input type="checkbox" v-model="stackBackupConfig.stop_before_backup"> Stop containers before backup</label></div>
-                        <div style="margin-bottom: 10px;"><label>Keep last <input type="number" v-model.number="stackBackupConfig.retention_count" style="width: 60px; padding: 4px;" min="1"> backups</label></div>
-                        <div><button @click="saveStackBackupConfig(); backupStackNow();" :disabled="backupInProgress" class="btn btn-success">{{backupInProgress ? 'Backing up...' : 'Backup Now'}}</button></div>
-                        
-                        <div v-if="stackBackupHistory.length > 0" style="margin-top: 20px;">
-                            <h5 style="margin-bottom: 10px;">Backup History</h5>
-                            <table style="width: 100%; border-collapse: collapse; font-size: 0.9em;">
-                                <thead><tr style="border-bottom: 1px solid #334155;"><th style="padding: 8px; text-align: left;">Date</th><th style="padding: 8px; text-align: left;">Size</th><th style="padding: 8px; text-align: right;">Actions</th></tr></thead>
-                                <tbody>
-                                    <tr v-for="backup in stackBackupHistory.slice(0, 5)" :key="backup.id" style="border-bottom: 1px solid #1e293b;">
-                                        <td style="padding: 8px;">{{new Date(backup.backup_date).toLocaleString()}}</td>
-                                        <td style="padding: 8px;">{{(backup.backup_size_mb / 1024).toFixed(2)}} GB</td>
-                                        <td style="padding: 8px; text-align: right;">
-                                            <button @click="restoreFromBackup(backup.id)" class="btn btn-sm" style="background: #3b82f6; color: white; padding: 4px 8px; margin-right: 5px;">Restore</button>
-                                            <button @click="deleteBackup(backup.id)" class="btn btn-sm" style="background: #ef4444; color: white; padding: 4px 8px;">Delete</button>
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                            <p v-if="stackBackupHistory.length > 5" style="margin-top: 10px; color: #94a3b8; font-size: 0.85em;">Showing 5 of {{stackBackupHistory.length}} backups</p>
-                        </div>
-                    </div>
-                    <div v-else style="color: #94a3b8; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 8px;">
-                        Click on a stack from the dashboard to enable quick backup.
-                    </div>
-                </div>
-
                 </div>
             </div>
 
@@ -4022,15 +3976,7 @@
                     testingPeer: null,
                     // Polling intervals
                     hostStatsInterval: null,
-                    stackRefreshInterval: null,
-                    backupConfig: {type: 'local', local_path: '/app/backups', smb_host: '', smb_share: '', smb_username: '', smb_password: '', smb_mount_path: '', auto_mount: true, mount_status: 'disconnected'},
-                    backupAvailableSpace: 0,
-                    stackBackupConfig: {enabled: false, schedule: 'manual', schedule_time: '03:00', schedule_day: 0, retention_count: 7, stop_before_backup: true},
-                    stackBackupVolumes: [],
-                    stackBackupHistory: [],
-                    backupInProgress: false,
-                    discoveredBackups: [],
-                    showDiscoveredBackupsModal: false
+                    stackRefreshInterval: null
                 };
             },
             computed: {
@@ -4162,19 +4108,9 @@
                     return this.stacks.length > 0 && this.stacks.every(s => this.collapsedStacks[s.name]);
                 }
             },
-            
-            watch: {
-                selectedStack(newStack) {
-                    if (newStack) {
-                        this.loadStackBackupConfig(newStack);
-                        this.loadStackBackupHistory(newStack);
-                    }
-                }
-            },
             async mounted() {
                 // Load settings first, then conditionally load templates
                 await this.loadSettings();
-                await this.loadBackupConfig();
                 if (this.settings.templates_enabled) {
                     this.loadTemplates();  // Load template library
                 }
@@ -6719,19 +6655,6 @@
                         }
                     });
                 }
-,
-                async loadBackupConfig() { try { const r = await fetch('/api/backup/config'); if (r.ok) this.backupConfig = await r.json(); } catch(e) {} },
-                async saveBackupConfig() { try { const r = await fetch('/api/backup/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.backupConfig)}); if (r.ok) { this.showToast('Saved', 'success'); await this.loadBackupConfig(); } else { const e = await r.json(); this.showToast(`Failed: ${e.error}`, 'error'); } } catch(e) { this.showToast(`Error: ${e.message}`, 'error'); } },
-                async testBackupConnection() { try { this.showToast('Saving...', 'info'); const s = await fetch('/api/backup/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.backupConfig)}); if (!s.ok) return this.showToast('Failed', 'error'); await new Promise(r => setTimeout(r, 1000)); this.showToast('Testing...', 'info'); const r = await fetch('/api/backup/test-connection', {method: 'POST'}); const d = await r.json(); if (d.success) { this.backupAvailableSpace = d.available_gb; this.backupConfig.mount_status = 'connected'; this.showToast(`Connected! ${d.available_gb} GB`, 'success'); } else this.showToast(`Failed: ${d.message}`, 'error'); } catch(e) { this.showToast('Error', 'error'); } },
-                async saveStackBackupConfig() { if (!this.selectedStack) return; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/config`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...this.stackBackupConfig, volumes: this.stackBackupVolumes})}); if (r.ok) this.showToast('Saved', 'success'); } catch(e) { this.showToast('Error', 'error'); } },
-                async backupStackNow() { if (!this.selectedStack) return; this.backupInProgress = true; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/backup-now`, {method: 'POST'}); if (r.ok) { const d = await r.json(); this.showToast(`Queued (ID: ${d.queue_id})`, 'success'); } } catch(e) { this.showToast('Error', 'error'); } finally { this.backupInProgress = false; } },
-                async scanBackupDirectory() { try { this.showToast('Scanning...', 'info'); const r = await fetch('/api/backup/scan', {method: 'POST'}); if (r.ok) { const d = await r.json(); if (d.count > 0) { this.discoveredBackups = d.backups; this.showDiscoveredBackupsModal = true; } else this.showToast('None found', 'info'); } } catch(e) { this.showToast('Error', 'error'); } },
-                async loadStackBackupHistory(s) { try { const r = await fetch(`/api/backup/stack/${s}/history`); if (r.ok) { const d = await r.json(); this.stackBackupHistory = d.backups || []; } } catch(e) { console.error('Error loading history:', e); } },
-                async restoreFromBackup(id) { if (!confirm('Restore from this backup? This will stop the stack and overwrite current data.')) return; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/restore/${id}`, {method: 'POST'}); if (r.ok) { this.showToast('Restored successfully', 'success'); await this.refreshStacks(); } else { const e = await r.json(); this.showToast(`Restore failed: ${e.error}`, 'error'); } } catch(e) { this.showToast('Error restoring', 'error'); } },
-                async deleteBackup(id) { if (!confirm('Delete this backup?')) return; try { const r = await fetch(`/api/backup/history/${id}`, {method: 'DELETE'}); if (r.ok) { this.showToast('Deleted', 'success'); await this.loadStackBackupHistory(this.selectedStack); } } catch(e) { this.showToast('Error deleting', 'error'); } },
-                async parseStackVolumes() { if (!this.selectedStack) return; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/parse-volumes`); if (r.ok) { const d = await r.json(); this.stackBackupVolumes = d.volumes || []; this.showToast(d.volumes.length ? `Found ${d.volumes.length} volumes` : 'No volumes found', d.volumes.length ? 'success' : 'info'); } } catch(e) { this.showToast('Error parsing volumes', 'error'); } },
-                async loadStackBackupConfig(s) { try { const r = await fetch(`/api/backup/stack/${s}/config`); if (r.ok) { const d = await r.json(); this.stackBackupConfig = d.config || {enabled: false, schedule: 'manual', schedule_time: '03:00', schedule_day: 0, retention_count: 7, stop_before_backup: true}; this.stackBackupVolumes = d.volumes || []; } } catch(e) {} },
-                async importDiscoveredBackups() { if (!confirm('Import?')) return; try { const r = await fetch('/api/backup/import', {method: 'POST'}); if (r.ok) { const d = await r.json(); this.showToast(d.message, 'success'); this.showDiscoveredBackupsModal = false; } } catch(e) { this.showToast('Error', 'error'); } }
             }
         });
         
