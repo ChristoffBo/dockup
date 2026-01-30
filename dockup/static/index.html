@@ -2479,10 +2479,10 @@
                     </div>
                     <div v-if="backupConfig.type === 'smb'">
                         <div class="form-group"><label>SMB Host</label><input type="text" v-model="backupConfig.smb_host" class="form-control" placeholder="192.168.1.100"></div>
-                        <div class="form-group"><label>Share Name</label><input type="text" v-model="backupConfig.smb_share" class="form-control" placeholder="backups"></div>
-                        <div class="form-group"><label>Username</label><input type="text" v-model="backupConfig.smb_username" class="form-control"></div>
-                        <div class="form-group"><label>Password</label><input type="password" v-model="backupConfig.smb_password" class="form-control"></div>
-                        <div class="form-group"><label>Mount Path (optional)</label><input type="text" v-model="backupConfig.smb_mount_path" class="form-control" placeholder="dockup/"><small style="color:#94a3b8;">Optional subdirectory</small></div>
+                        <div class="form-group"><label for="smb-share">Share Name</label><input id="smb-share" type="text" v-model="backupConfig.smb_share" class="form-control" placeholder="backups" required></div>
+                        <div class="form-group"><label for="smb-user">Username</label><input id="smb-user" type="text" v-model="backupConfig.smb_username" class="form-control" required></div>
+                        <div class="form-group"><label for="smb-pass">Password</label><input id="smb-pass" type="password" v-model="backupConfig.smb_password" class="form-control" required></div>
+                        <div class="form-group"><label for="smb-mount">Mount Path (optional)</label><input id="smb-mount" type="text" v-model="backupConfig.smb_mount_path" class="form-control" placeholder="dockup/"><small style="color:#94a3b8;">Optional subdirectory</small></div>
                         <div class="form-group"><label><input type="checkbox" v-model="backupConfig.auto_mount"> Auto-mount on startup</label></div>
                         <div class="form-group"><button @click="testBackupConnection" class="btn btn-secondary">Test Connection</button><button @click="mountBackupShare" class="btn btn-secondary" v-if="backupConfig.mount_status !== 'connected'">Mount Now</button><button @click="unmountBackupShare" class="btn btn-secondary" v-if="backupConfig.mount_status === 'connected'">Unmount</button></div>
                         <div v-if="backupConfig.mount_status && backupConfig.mount_status !== 'disconnected'" style="margin-top:10px;padding:10px;background:rgba(255,255,255,0.05);border-radius:5px;"><strong>Status:</strong> {{backupConfig.mount_status}} <span v-if="backupAvailableSpace">- {{backupAvailableSpace}} GB</span></div>
@@ -3201,10 +3201,10 @@
                 <!-- Backup Tab -->
                 <div v-if="editTab === 'backup'">
                     <div class="form-group"><label><input type="checkbox" v-model="stackBackupConfig.enabled"> Enable Automatic Backups</label></div>
-                    <div v-if="stackBackupConfig.enabled" class="form-group"><label>Schedule</label><select v-model="stackBackupConfig.schedule" class="form-select"><option value="manual">Manual Only</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></div>
-                    <div v-if="stackBackupConfig.enabled && stackBackupConfig.schedule !== 'manual'" class="form-group"><label>Time</label><input type="time" v-model="stackBackupConfig.schedule_time" class="form-control"></div>
-                    <div v-if="stackBackupConfig.enabled && stackBackupConfig.schedule === 'weekly'" class="form-group"><label>Day</label><select v-model.number="stackBackupConfig.schedule_day" class="form-select"><option :value="0">Sunday</option><option :value="1">Monday</option><option :value="2">Tuesday</option><option :value="3">Wednesday</option><option :value="4">Thursday</option><option :value="5">Friday</option><option :value="6">Saturday</option></select></div>
-                    <div class="form-group"><label>Keep Last N Backups</label><input type="number" v-model.number="stackBackupConfig.retention_count" class="form-control" min="1"></div>
+                    <div v-if="stackBackupConfig.enabled" class="form-group"><label for="backup-schedule">Schedule</label><select id="backup-schedule" v-model="stackBackupConfig.schedule" class="form-select"><option value="manual">Manual Only</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></div>
+                    <div v-if="stackBackupConfig.enabled && stackBackupConfig.schedule !== 'manual'" class="form-group"><label for="backup-time">Time</label><input id="backup-time" type="time" v-model="stackBackupConfig.schedule_time" class="form-control" required></div>
+                    <div v-if="stackBackupConfig.enabled && stackBackupConfig.schedule === 'weekly'" class="form-group"><label for="backup-day">Day</label><select id="backup-day" v-model.number="stackBackupConfig.schedule_day" class="form-select"><option :value="0">Sunday</option><option :value="1">Monday</option><option :value="2">Tuesday</option><option :value="3">Wednesday</option><option :value="4">Thursday</option><option :value="5">Friday</option><option :value="6">Saturday</option></select></div>
+                    <div class="form-group"><label for="backup-retention">Keep Last N Backups</label><input id="backup-retention" type="number" v-model.number="stackBackupConfig.retention_count" class="form-control" min="1" max="100" required></div>
                     <div class="form-group"><label><input type="checkbox" v-model="stackBackupConfig.stop_before_backup"> Stop container before backup</label></div>
                     <div class="form-group"><button @click="parseStackVolumes" class="btn btn-secondary">Scan for Volumes</button><button @click="saveStackBackupConfig" class="btn btn-primary">Save Config</button></div>
                     <div v-if="stackBackupVolumes.length > 0" style="margin-top:20px;"><h4>Volumes</h4><div v-for="vol in stackBackupVolumes" :key="vol.host_path" style="margin:5px 0;"><label><input type="checkbox" v-model="vol.backup_enabled"> {{vol.host_path}} ({{formatSize(vol.estimated_size_mb)}})</label></div></div>
@@ -4167,6 +4167,11 @@
                         this.backupConfigDirty = false;
                         this.loadStackBackupConfig(newStack);
                         this.loadStackBackupHistory(newStack);
+                    }
+                },
+                editTab(newTab) {
+                    if (newTab === 'backup' && this.selectedStack && this.stackBackupVolumes.length === 0) {
+                        this.parseStackVolumes();
                     }
                 },
                 'stackBackupConfig': { handler() { this.backupConfigDirty = true; }, deep: true },
