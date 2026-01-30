@@ -8984,18 +8984,11 @@ def update_backup_config():
             """, (data.get('local_path', '/app/backups'),))
         
         elif data.get('type') == 'smb':
-            # Build params list
-            params = [
-                data.get('smb_host', ''),
-                data.get('smb_share', ''),
-                data.get('smb_username', ''),
-                data.get('smb_mount_path', ''),
-                1 if data.get('auto_mount') else 0
-            ]
-            
-            # Only update password if it's not the masked value
+            # Only update password if it's provided and not the masked value
             password = data.get('smb_password', '')
-            if password and password != '***':
+            
+            if password and password != '***' and password != '':
+                # Password provided - update everything including password
                 cursor.execute("""
                     UPDATE global_backup_config 
                     SET type = 'smb',
@@ -9005,10 +8998,19 @@ def update_backup_config():
                         smb_password = ?,
                         smb_mount_path = ?,
                         auto_mount = ?,
+                        mount_status = 'disconnected',
                         last_mount_check = CURRENT_TIMESTAMP
                     WHERE id = 1
-                """, params[:3] + [password] + params[3:])
+                """, (
+                    data.get('smb_host', ''),
+                    data.get('smb_share', ''),
+                    data.get('smb_username', ''),
+                    password,
+                    data.get('smb_mount_path', ''),
+                    1 if data.get('auto_mount') else 0
+                ))
             else:
+                # Password is masked or empty - keep existing password
                 cursor.execute("""
                     UPDATE global_backup_config 
                     SET type = 'smb',
@@ -9017,9 +9019,16 @@ def update_backup_config():
                         smb_username = ?,
                         smb_mount_path = ?,
                         auto_mount = ?,
+                        mount_status = 'disconnected',
                         last_mount_check = CURRENT_TIMESTAMP
                     WHERE id = 1
-                """, params)
+                """, (
+                    data.get('smb_host', ''),
+                    data.get('smb_share', ''),
+                    data.get('smb_username', ''),
+                    data.get('smb_mount_path', ''),
+                    1 if data.get('auto_mount') else 0
+                ))
         
         conn.commit()
         conn.close()
@@ -9062,6 +9071,9 @@ def mount_backup_share():
         if not config or config['type'] != 'smb':
             return jsonify({'success': False, 'message': 'SMB not configured'}), 400
         
+        # Log what we're trying to mount (without password)
+        logger.info(f"Attempting mount: //{config['smb_host']}/{config['smb_share']} as user {config['smb_username']}")
+        
         success, error = backup_manager.mount_smb_share(
             config['smb_host'],
             config['smb_share'],
@@ -9069,6 +9081,9 @@ def mount_backup_share():
             config['smb_password'],
             config['smb_mount_path'] or ''
         )
+        
+        if not success:
+            logger.error(f"Mount failed: {error}")
         
         return jsonify({'success': success, 'message': error if not success else 'Mounted successfully'})
         
