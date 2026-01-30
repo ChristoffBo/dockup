@@ -9049,13 +9049,19 @@ def update_backup_config():
             """, (data.get('local_path', backup_manager.BACKUP_LOCAL_DIR),))
         
         elif data.get('type') == 'smb':
-            # Handle password - only update if changed
-            password_update = ""
-            params = [data.get('smb_host'), data.get('smb_share'), data.get('smb_username')]
+            # Build params and query dynamically
+            params = [
+                data.get('smb_host'),
+                data.get('smb_share'),
+                data.get('smb_username')
+            ]
             
+            # Add password to params if provided
             if data.get('smb_password') and data.get('smb_password') != '***':
-                password_update = "smb_password = ?,"
                 params.append(data.get('smb_password'))
+                password_field = 'smb_password = ?,'
+            else:
+                password_field = ''
             
             params.extend([
                 data.get('smb_mount_path', ''),
@@ -9068,7 +9074,7 @@ def update_backup_config():
                     smb_host = ?,
                     smb_share = ?,
                     smb_username = ?,
-                    {password_update}
+                    {password_field}
                     smb_mount_path = ?,
                     auto_mount = ?,
                     last_mount_check = CURRENT_TIMESTAMP
