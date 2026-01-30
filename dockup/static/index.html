@@ -6902,16 +6902,22 @@
                 },
                 async testBackupConnection() {
                     try {
+                        // Save config first, then test
+                        await this.saveBackupConfig();
+                        
+                        // Small delay to let backend process
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        
                         const response = await fetch('/api/backup/test-connection', {method: 'POST'});
                         const result = await response.json();
                         if (result.success) {
                             this.backupAvailableSpace = result.available_gb;
                             this.showToast(`Connected! ${result.available_gb} GB available`, 'success');
                         } else {
-                            this.showToast('Connection failed', 'error');
+                            this.showToast(`Connection failed: ${result.message || 'Unknown error'}`, 'error');
                         }
                     } catch (error) {
-                        this.showToast('Error testing connection', 'error');
+                        this.showToast(`Error testing connection: ${error.message}`, 'error');
                     }
                 },
                 async mountBackupShare() {
