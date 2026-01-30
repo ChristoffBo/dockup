@@ -2470,7 +2470,71 @@
                 </div>
             </div>
 
-        <!-- Networks Page -->
+        
+
+                <!-- Backup Configuration Section -->
+                <div class="settings-section">
+                    <h3><i class="fas fa-hdd"></i> Backup Configuration</h3>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Backup Destination</label>
+                        <select v-model="backupConfig.type" class="form-select">
+                            <option value="local">Local Storage</option>
+                            <option value="smb">SMB/CIFS Network Share</option>
+                        </select>
+                    </div>
+                    
+                    <div v-if="backupConfig.type === 'local'">
+                        <div class="form-group">
+                            <label class="form-label">Local Path</label>
+                            <input type="text" v-model="backupConfig.local_path" class="form-control" placeholder="/app/backups">
+                            <small style="color: #94a3b8;">Map ./backups:/app/backups in docker-compose.yml</small>
+                        </div>
+                    </div>
+                    
+                    <div v-if="backupConfig.type === 'smb'">
+                        <div class="form-group">
+                            <label class="form-label">SMB Host</label>
+                            <input type="text" v-model="backupConfig.smb_host" class="form-control" placeholder="192.168.1.100">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Share Name</label>
+                            <input type="text" v-model="backupConfig.smb_share" class="form-control" placeholder="backups">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Username</label>
+                            <input type="text" v-model="backupConfig.smb_username" class="form-control">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Password</label>
+                            <input type="password" v-model="backupConfig.smb_password" class="form-control">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Mount Path (optional)</label>
+                            <input type="text" v-model="backupConfig.smb_mount_path" class="form-control" placeholder="dockup/">
+                            <small style="color: #94a3b8;">Optional subdirectory within share</small>
+                        </div>
+                        <div class="form-group">
+                            <label><input type="checkbox" v-model="backupConfig.auto_mount"> Auto-mount on startup</label>
+                        </div>
+                        <div class="form-group">
+                            <button @click="testBackupConnection" class="btn btn-secondary">Test Connection</button>
+                            <button @click="mountBackupShare" class="btn btn-secondary" v-if="backupConfig.mount_status !== 'connected'">Mount Now</button>
+                            <button @click="unmountBackupShare" class="btn btn-secondary" v-if="backupConfig.mount_status === 'connected'">Unmount</button>
+                        </div>
+                        <div v-if="backupConfig.mount_status && backupConfig.mount_status !== 'disconnected'" style="margin-top: 10px; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 5px;">
+                            <strong>Status:</strong> {{ backupConfig.mount_status }}
+                            <span v-if="backupAvailableSpace"> - {{ backupAvailableSpace }} GB available</span>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group" style="margin-top: 20px;">
+                        <button @click="saveBackupConfig" class="btn btn-primary">Save Backup Configuration</button>
+                        <button @click="scanBackupDirectory" class="btn btn-secondary" style="margin-left: 10px;">Scan for Existing Backups</button>
+                    </div>
+                </div>
+
+<!-- Networks Page -->
         <div v-if="currentView === 'networks'">
             <div class="header">
                 <h1><i class="fas fa-network-wired"></i> Docker Networks</h1>
@@ -6867,7 +6931,7 @@
                         });
                         if (!saveResp.ok) {
                             const e = await saveResp.json();
-                            this.showToast(`Failed: ${e.error || 'Unknown'}', 'error');
+                            this.showToast(`Failed: ${e.error || 'Unknown error'}`, 'error');
                             return;
                         }
                         await new Promise(r => setTimeout(r, 1000));
@@ -7006,14 +7070,21 @@
                     } catch (error) { this.showToast('Error importing', 'error'); }
                 },
                 formatSize(mb) {
-                    if (!mb) return 'Unknown';
+                    if (mb === 0) return '0 MB';
+                    if (mb === null || mb === undefined) return 'Unknown';
                     return mb < 1024 ? `${mb.toFixed(1)} MB` : `${(mb / 1024).toFixed(2)} GB`;
                 },
                 formatDuration(seconds) {
-                    if (!seconds) return '-';
+                    if (seconds === 0) return '0s';
+                    if (seconds === null || seconds === undefined) return '-';
                     if (seconds < 60) return `${seconds}s`;
                     const m = Math.floor(seconds / 60);
                     const s = seconds % 60;
                     return `${m}m ${s}s`;
                 }
->
+
+            }
+        });
+    </script>
+</body>
+</html>
