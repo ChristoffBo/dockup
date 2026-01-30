@@ -2481,6 +2481,33 @@
                         <div v-if="backupConfig.mount_status === 'connected'" style="color:#10b981;margin-top:10px;">✓ Connected - {{backupAvailableSpace}} GB available</div>
                     </div>
                     <div class="form-group"><button @click="saveBackupConfig" class="btn btn-primary">Save Backup Configuration</button></div>
+                    
+                    <hr style="margin: 30px 0; border-color: #334155;">
+                    <h4 style="margin-bottom: 15px;"><i class="fas fa-history"></i> Restore from Backup</h4>
+                    <div v-if="selectedStack" style="background: rgba(59, 130, 246, 0.1); padding: 15px; border-radius: 8px; border-left: 3px solid #3b82f6;">
+                        <p style="margin-bottom: 15px;"><strong>Selected Stack:</strong> {{selectedStack}}</p>
+                        <button @click="loadStackBackupHistory(selectedStack)" class="btn btn-secondary" style="margin-bottom: 15px;">Load Backup History</button>
+                        
+                        <div v-if="stackBackupHistory.length > 0" style="margin-top: 15px;">
+                            <table style="width: 100%; border-collapse: collapse; font-size: 0.9em;">
+                                <thead><tr style="border-bottom: 1px solid #334155;"><th style="padding: 8px; text-align: left;">Date</th><th style="padding: 8px; text-align: left;">Size</th><th style="padding: 8px; text-align: right;">Actions</th></tr></thead>
+                                <tbody>
+                                    <tr v-for="backup in stackBackupHistory" :key="backup.id" style="border-bottom: 1px solid #1e293b;">
+                                        <td style="padding: 8px;">{{new Date(backup.backup_date).toLocaleString()}}</td>
+                                        <td style="padding: 8px;">{{(backup.backup_size_mb / 1024).toFixed(2)}} GB</td>
+                                        <td style="padding: 8px; text-align: right;">
+                                            <button @click="restoreFromBackup(backup.id)" class="btn btn-sm" style="background: #3b82f6; color: white; padding: 4px 12px; margin-right: 5px;">Restore</button>
+                                            <button @click="deleteBackup(backup.id)" class="btn btn-sm" style="background: #ef4444; color: white; padding: 4px 12px;">Delete</button>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div v-else-if="stackBackupHistory.length === 0" style="margin-top: 15px; color: #94a3b8;">No backups found for this stack.</div>
+                    </div>
+                    <div v-else style="color: #94a3b8; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 8px;">
+                        Select a stack from the dashboard to view and restore backups.
+                    </div>
                 </div>
                 </div>
             </div>
@@ -3364,9 +3391,58 @@
 
 
                 <div v-if="scheduleTab === 'backup'" style="padding: 20px;">
-                    <div style="margin-bottom: 15px;"><label><input type="checkbox" v-model="stackBackupConfig.stop_before_backup" style="margin-right: 8px;">Stop containers before backup</label></div>
-                    <div style="margin-bottom: 15px;"><label>Keep last <input type="number" v-model.number="stackBackupConfig.retention_count" min="1" style="width: 60px; padding: 4px; margin: 0 8px;"> backups</label></div>
-                    <div style="display:flex;gap:10px;"><button @click="saveStackBackupConfig()" class="btn btn-primary">Save Config</button><button @click="backupStackNow(); scheduleModal = false;" :disabled="backupInProgress" class="btn btn-success">{{backupInProgress ? "Backing up..." : "Backup Now"}}</button></div>
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: flex; align-items: center; gap: 10px;">
+                            <input type="checkbox" v-model="stackBackupConfig.enabled" style="width: 20px; height: 20px;">
+                            <span style="font-weight: bold;">Enable Automatic Backups</span>
+                        </label>
+                    </div>
+                    
+                    <div v-if="stackBackupConfig.enabled" style="background: rgba(16, 185, 129, 0.1); padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Schedule</label>
+                            <select v-model="stackBackupConfig.schedule" class="form-select" style="width: 100%; padding: 8px;">
+                                <option value="manual">Manual Only</option>
+                                <option value="daily">Daily</option>
+                                <option value="weekly">Weekly</option>
+                            </select>
+                        </div>
+                        
+                        <div v-if="stackBackupConfig.schedule !== 'manual'" style="margin-bottom: 15px;">
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Time</label>
+                            <input type="time" v-model="stackBackupConfig.schedule_time" class="form-control" style="width: 150px; padding: 8px;">
+                        </div>
+                        
+                        <div v-if="stackBackupConfig.schedule === 'weekly'" style="margin-bottom: 15px;">
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Day of Week</label>
+                            <select v-model.number="stackBackupConfig.schedule_day" class="form-select" style="width: 100%; padding: 8px;">
+                                <option :value="0">Sunday</option>
+                                <option :value="1">Monday</option>
+                                <option :value="2">Tuesday</option>
+                                <option :value="3">Wednesday</option>
+                                <option :value="4">Thursday</option>
+                                <option :value="5">Friday</option>
+                                <option :value="6">Saturday</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: flex; align-items: center; gap: 10px;">
+                            <input type="checkbox" v-model="stackBackupConfig.stop_before_backup" style="width: 20px; height: 20px;">
+                            <span>Stop containers before backup</span>
+                        </label>
+                    </div>
+                    
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">Keep Last N Backups</label>
+                        <input type="number" v-model.number="stackBackupConfig.retention_count" min="1" max="50" class="form-control" style="width: 100px; padding: 8px;">
+                    </div>
+                    
+                    <div style="display:flex;gap:10px;">
+                        <button @click="saveStackBackupConfig(); scheduleModal = false;" class="btn btn-primary">Save All Changes</button>
+                        <button @click="backupStackNow(); scheduleModal = false;" :disabled="backupInProgress" class="btn btn-success">{{backupInProgress ? "Backing up..." : "Backup Now"}}</button>
+                    </div>
                 </div>
 
         <!-- Operation Modal -->
@@ -4009,6 +4085,7 @@
                     backupConfig: {type: 'local', local_path: '/app/backups', smb_host: '', smb_share: '', smb_username: '', smb_password: '', smb_mount_path: '', auto_mount: true, mount_status: 'disconnected'},
                     backupAvailableSpace: 0,
                     stackBackupConfig: {enabled: false, schedule: 'manual', schedule_time: '03:00', schedule_day: 0, retention_count: 7, stop_before_backup: true},
+                    stackBackupHistory: [],
                     backupInProgress: false
                 };
             },
@@ -6690,13 +6767,16 @@
                     });
                 }
 ,
-                async loadBackupConfig() { try { const r = await fetch('/api/backup/config'); if (r.ok) this.backupConfig = await r.json(); } catch(e) {} },
-                async saveBackupConfig() { try { const r = await fetch('/api/backup/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.backupConfig)}); if (r.ok) { this.showToast('Saved', 'success'); await this.loadBackupConfig(); } else this.showToast('Failed', 'error'); } catch(e) { this.showToast('Error', 'error'); } },
-                async testBackupConnection() { try { const r = await fetch('/api/backup/test-connection', {method: 'POST'}); const d = await r.json(); if (d.success) { this.backupAvailableSpace = d.available_gb; this.backupConfig.mount_status = 'connected'; this.showToast(`Connected! ${d.available_gb} GB`, 'success'); } else this.showToast(`Failed: ${d.message}`, 'error'); } catch(e) { this.showToast('Error', 'error'); } },
-                async mountBackupShare() { try { const r = await fetch('/api/backup/mount', {method: 'POST'}); if (r.ok) { this.showToast('Mounted', 'success'); await this.loadBackupConfig(); } } catch(e) { this.showToast('Error', 'error'); } },
-                async unmountBackupShare() { try { const r = await fetch('/api/backup/unmount', {method: 'POST'}); if (r.ok) { this.showToast('Unmounted', 'success'); await this.loadBackupConfig(); } } catch(e) { this.showToast('Error', 'error'); } },
-                async saveStackBackupConfig() { if (!this.selectedStack) return; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/config`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.stackBackupConfig)}); if (r.ok) this.showToast('Saved', 'success'); } catch(e) { this.showToast('Error', 'error'); } },
-                async backupStackNow() { if (!this.selectedStack) return; this.backupInProgress = true; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/backup-now`, {method: 'POST'}); if (r.ok) { const d = await r.json(); this.showToast(`Queued (ID: ${d.queue_id})`, 'success'); } } catch(e) { this.showToast('Error', 'error'); } finally { this.backupInProgress = false; } }
+                async loadBackupConfig() { try { const r = await fetch('/api/backup/config'); if (r.ok) this.backupConfig = await r.json(); } catch(e) { console.error(e); } },
+                async saveBackupConfig() { try { const r = await fetch('/api/backup/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.backupConfig)}); if (r.ok) { this.showToast('Saved', 'success'); await this.loadBackupConfig(); } else this.showToast('Failed', 'error'); } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
+                async testBackupConnection() { try { const r = await fetch('/api/backup/test-connection', {method: 'POST'}); const d = await r.json(); if (d.success) { this.backupAvailableSpace = d.available_gb; this.backupConfig.mount_status = 'connected'; this.showToast(`Connected! ${d.available_gb} GB`, 'success'); } else this.showToast(`Failed: ${d.message}`, 'error'); } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
+                async mountBackupShare() { try { const r = await fetch('/api/backup/mount', {method: 'POST'}); if (r.ok) { this.showToast('Mounted', 'success'); await this.loadBackupConfig(); } else { const e = await r.json(); this.showToast(`Mount failed: ${e.message || e.error}`, 'error'); } } catch(e) { this.showToast('Mount error', 'error'); console.error(e); } },
+                async unmountBackupShare() { try { const r = await fetch('/api/backup/unmount', {method: 'POST'}); if (r.ok) { this.showToast('Unmounted', 'success'); await this.loadBackupConfig(); } else { const e = await r.json(); this.showToast(`Unmount failed: ${e.message || e.error}`, 'error'); } } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
+                async saveStackBackupConfig() { if (!this.selectedStack) return; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/config`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.stackBackupConfig)}); if (r.ok) this.showToast('Saved', 'success'); else this.showToast('Save failed', 'error'); } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
+                async backupStackNow() { if (!this.selectedStack) return; this.backupInProgress = true; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/backup-now`, {method: 'POST'}); if (r.ok) { const d = await r.json(); this.showToast(`Queued (ID: ${d.queue_id})`, 'success'); } else this.showToast('Backup failed', 'error'); } catch(e) { this.showToast('Error', 'error'); console.error(e); } finally { this.backupInProgress = false; } },
+                async loadStackBackupHistory(s) { if (!s) return; try { const r = await fetch(`/api/backup/stack/${s}/history`); if (r.ok) { const d = await r.json(); this.stackBackupHistory = d.backups || []; this.showToast(`Found ${this.stackBackupHistory.length} backups`, 'success'); } else this.showToast('Failed to load history', 'error'); } catch(e) { this.showToast('Error loading history', 'error'); console.error(e); } },
+                async restoreFromBackup(id) { if (!confirm('⚠️ WARNING: This will STOP the stack, restore data from backup, and restart. Current data will be backed up first. Continue?')) return; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/restore/${id}`, {method: 'POST'}); if (r.ok) { this.showToast('Restore started', 'success'); await this.refreshStacks(); } else { const e = await r.json(); this.showToast(`Restore failed: ${e.error}`, 'error'); } } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
+                async deleteBackup(id) { if (!confirm('Delete this backup permanently?')) return; try { const r = await fetch(`/api/backup/history/${id}`, {method: 'DELETE'}); if (r.ok) { this.showToast('Deleted', 'success'); await this.loadStackBackupHistory(this.selectedStack); } else this.showToast('Delete failed', 'error'); } catch(e) { this.showToast('Error', 'error'); console.error(e); } }
             }
         });
         
