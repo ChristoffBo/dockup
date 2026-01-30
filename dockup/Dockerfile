@@ -4,7 +4,7 @@ FROM python:3.14-slim
 ARG TARGETARCH
 ARG TARGETOS
 
-# Install Docker CLI and Docker Compose
+# Install Docker CLI, Docker Compose, and CIFS utilities for backup feature
 RUN apt-get update && \
     apt-get install -y \
     curl \
@@ -17,7 +17,8 @@ RUN apt-get update && \
     libxml2-dev \
     libxslt1-dev \
     cargo \
-    rustc && \
+    rustc \
+    cifs-utils && \
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
@@ -57,11 +58,12 @@ RUN pip install --no-cache-dir \
     beautifulsoup4==4.12.3 \
     lxml==5.3.0
 
-# Create directories including logs and trivy cache
-RUN mkdir -p /app/static /app/data /app/logs /stacks /config/trivy-cache
+# Create directories including logs, trivy cache, and backups
+RUN mkdir -p /app/static /app/data /app/logs /stacks /config/trivy-cache /app/backups /mnt/backup-share
 
 # Copy application files
 COPY app.py /app/
+COPY backup_manager.py /app/
 COPY linuxserver_templates.py /app/
 COPY static/index.html /app/static/
 COPY static/login.html /app/static/

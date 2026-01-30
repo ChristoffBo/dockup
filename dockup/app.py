@@ -46,6 +46,8 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 
 import shlex
+import backup_manager
+
 import re
 from typing import Dict, List, Tuple, Any
 
@@ -8923,7 +8925,20 @@ if __name__ == '__main__':
         load_scan_results()  # Load cached scans
         logger.info("✓ Configuration loaded")
         
-        # Load template library cache
+ 
+        # Initialize backup system
+        logger.info("Initializing backup system...")
+        backup_manager.initialize_backup_system(docker_client)
+    
+        # Add scheduled backup cleanup job (runs daily at 4 AM)
+        scheduler.add_job(
+            func=backup_manager.cleanup_old_queue_entries,
+            trigger=CronTrigger(hour=4, minute=0),
+            id='backup_queue_cleanup',
+            name='Backup Queue Cleanup',
+            replace_existing=True
+        )
+           # Load template library cache
         logger.info("Loading template library...")
         if not load_templates_cache():
             logger.info("No template cache found, will refresh on first access")
@@ -8981,4 +8996,630 @@ if __name__ == '__main__':
         logger.info("3. Ensure port 5000 is not already in use")
         import traceback
         traceback.print_exc()
-        exit(1)
+        ex
+
+# ============================================================================
+# BACKUP API ENDPOINTS
+# ============================================================================
+
+# Global Backup Configuration
+@app.route('/api/backup/config', methods=['GET'])
+@require_auth
+def get_backup_config():
+    """Get global backup configuration"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM global_backup_config WHERE id = 1")
+        config = cursor.fetchone()
+        conn.close()
+        
+        if config:
+            # Don't send password in response
+            config_dict = dict(config)
+            if 'smb_password' in config_dict:
+                config_dict['smb_password'] = '***' if config_dict['smb_password'] else ''
+            return jsonify(config_dict)
+        else:
+            return jsonify({})
+    except Exception as e:
+        logger.error(f"Error getting backup config: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/config', methods=['POST'])
+@require_auth
+def update_backup_config():
+    """Update global backup configuration"""
+    try:
+        data = request.json
+        
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Build update query based on type
+        if data.get('type') == 'local':
+            cursor.execute("""
+                UPDATE global_backup_config 
+                SET type = 'local',
+                    local_path = ?,
+                    mount_status = 'connected',
+                    last_mount_check = CURRENT_TIMESTAMP
+                WHERE id = 1
+            """, (data.get('local_path', backup_manager.BACKUP_LOCAL_DIR),))
+        
+        elif data.get('type') == 'smb':
+            # Handle password - only update if changed
+            password_update = ""
+            params = [data.get('smb_host'), data.get('smb_share'), data.get('smb_username')]
+            
+            if data.get('smb_password') and data.get('smb_password') != '***':
+                password_update = "smb_password = ?,"
+                params.append(data.get('smb_password'))
+            
+            params.extend([
+                data.get('smb_mount_path', ''),
+                1 if data.get('auto_mount') else 0
+            ])
+            
+            cursor.execute(f"""
+                UPDATE global_backup_config 
+                SET type = 'smb',
+                    smb_host = ?,
+                    smb_share = ?,
+                    smb_username = ?,
+                    {password_update}
+                    smb_mount_path = ?,
+                    auto_mount = ?,
+                    last_mount_check = CURRENT_TIMESTAMP
+                WHERE id = 1
+            """, params)
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True})
+    
+    except Exception as e:
+        logger.error(f"Error updating backup config: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/test-connection', methods=['POST'])
+@require_auth
+def test_backup_connection():
+    """Test backup destination connection"""
+    try:
+        is_available, mount_point, available_gb = backup_manager.check_backup_destination_available()
+        
+        return jsonify({
+            'success': is_available,
+            'mount_point': mount_point,
+            'available_gb': available_gb,
+            'message': 'Connected successfully' if is_available else 'Connection failed'
+        })
+    
+    except Exception as e:
+        logger.error(f"Error testing backup connection: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/mount', methods=['POST'])
+@require_auth
+def mount_backup_share():
+    """Mount SMB backup share"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM global_backup_config WHERE id = 1")
+        config = cursor.fetchone()
+        conn.close()
+        
+        if not config or config['type'] != 'smb':
+            return jsonify({'error': 'SMB not configured'}), 400
+        
+        success = backup_manager.mount_smb_share(
+            config['smb_host'],
+            config['smb_share'],
+            config['smb_username'],
+            config['smb_password'],
+            config['smb_mount_path'] or ''
+        )
+        
+        return jsonify({'success': success})
+    
+    except Exception as e:
+        logger.error(f"Error mounting backup share: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/unmount', methods=['POST'])
+@require_auth
+def unmount_backup_share():
+    """Unmount SMB backup share"""
+    try:
+        success = backup_manager.unmount_smb_share()
+        return jsonify({'success': success})
+    
+    except Exception as e:
+        logger.error(f"Error unmounting backup share: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Per-Stack Backup Configuration
+@app.route('/api/backup/stack/<stack_name>/config', methods=['GET'])
+@require_auth
+def get_stack_backup_config(stack_name):
+    """Get backup configuration for a stack"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get backup config
+        cursor.execute("SELECT * FROM backup_configs WHERE stack_name = ?", (stack_name,))
+        config = cursor.fetchone()
+        
+        # Get volume selections
+        cursor.execute("""
+            SELECT * FROM backup_volume_selections 
+            WHERE stack_name = ?
+        """, (stack_name,))
+        volumes = [dict(row) for row in cursor.fetchall()]
+        
+        conn.close()
+        
+        return jsonify({
+            'config': dict(config) if config else None,
+            'volumes': volumes
+        })
+    
+    except Exception as e:
+        logger.error(f"Error getting stack backup config: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/stack/<stack_name>/config', methods=['POST'])
+@require_auth
+def update_stack_backup_config(stack_name):
+    """Update backup configuration for a stack"""
+    try:
+        data = request.json
+        
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Check if config exists
+        cursor.execute("SELECT id FROM backup_configs WHERE stack_name = ?", (stack_name,))
+        exists = cursor.fetchone()
+        
+        if exists:
+            # Update existing
+            cursor.execute("""
+                UPDATE backup_configs 
+                SET enabled = ?,
+                    schedule = ?,
+                    schedule_time = ?,
+                    schedule_day = ?,
+                    retention_count = ?,
+                    stop_before_backup = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE stack_name = ?
+            """, (
+                1 if data.get('enabled') else 0,
+                data.get('schedule', 'manual'),
+                data.get('schedule_time', '03:00'),
+                data.get('schedule_day', 0),
+                data.get('retention_count', 7),
+                1 if data.get('stop_before_backup', True) else 0,
+                stack_name
+            ))
+        else:
+            # Insert new
+            cursor.execute("""
+                INSERT INTO backup_configs 
+                (stack_name, enabled, schedule, schedule_time, schedule_day, retention_count, stop_before_backup)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                stack_name,
+                1 if data.get('enabled') else 0,
+                data.get('schedule', 'manual'),
+                data.get('schedule_time', '03:00'),
+                data.get('schedule_day', 0),
+                data.get('retention_count', 7),
+                1 if data.get('stop_before_backup', True) else 0
+            ))
+        
+        # Update volume selections if provided
+        if 'volumes' in data:
+            # Delete existing selections
+            cursor.execute("DELETE FROM backup_volume_selections WHERE stack_name = ?", (stack_name,))
+            
+            # Insert new selections
+            for volume in data['volumes']:
+                cursor.execute("""
+                    INSERT INTO backup_volume_selections 
+                    (stack_name, host_path, container_path, backup_enabled, estimated_size_mb)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    stack_name,
+                    volume['host_path'],
+                    volume['container_path'],
+                    1 if volume.get('backup_enabled', True) else 0,
+                    volume.get('estimated_size_mb')
+                ))
+        
+        conn.commit()
+        
+        # Update scheduler if backup is enabled with schedule
+        if data.get('enabled') and data.get('schedule') in ['daily', 'weekly']:
+            update_backup_schedule(stack_name, data.get('schedule'), data.get('schedule_time'), data.get('schedule_day'))
+        else:
+            # Remove from scheduler
+            remove_backup_schedule(stack_name)
+        
+        conn.close()
+        
+        return jsonify({'success': True})
+    
+    except Exception as e:
+        logger.error(f"Error updating stack backup config: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/stack/<stack_name>/parse-volumes', methods=['GET'])
+@require_auth
+def parse_stack_volumes(stack_name):
+    """Parse compose file to get volume mounts"""
+    try:
+        volumes = backup_manager.parse_compose_volumes(stack_name, STACKS_DIR)
+        return jsonify({'volumes': volumes})
+    
+    except Exception as e:
+        logger.error(f"Error parsing volumes for {stack_name}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Backup Execution
+@app.route('/api/backup/stack/<stack_name>/backup-now', methods=['POST'])
+@require_auth
+def backup_stack_now(stack_name):
+    """Queue immediate backup for a stack"""
+    try:
+        # Notification callback
+        def notify(title, message, level):
+            send_notification(title, message, priority=5 if level == 'failure' else 1)
+        
+        queue_id = backup_manager.queue_backup(stack_name, STACKS_DIR, notify)
+        
+        if queue_id > 0:
+            return jsonify({
+                'success': True,
+                'queue_id': queue_id,
+                'message': f'Backup queued for {stack_name}'
+            })
+        else:
+            return jsonify({'error': 'Failed to queue backup'}), 500
+    
+    except Exception as e:
+        logger.error(f"Error queueing backup for {stack_name}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/queue', methods=['GET'])
+@require_auth
+def get_backup_queue():
+    """Get current backup queue status"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT * FROM backup_queue 
+            WHERE status IN ('queued', 'running')
+            ORDER BY queued_at ASC
+        """)
+        
+        queue = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        return jsonify({'queue': queue})
+    
+    except Exception as e:
+        logger.error(f"Error getting backup queue: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/queue/recent', methods=['GET'])
+@require_auth
+def get_recent_queue_items():
+    """Get recent completed/failed queue items"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT * FROM backup_queue 
+            WHERE status IN ('completed', 'failed')
+            ORDER BY completed_at DESC
+            LIMIT 50
+        """)
+        
+        items = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        return jsonify({'items': items})
+    
+    except Exception as e:
+        logger.error(f"Error getting recent queue items: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Backup History
+@app.route('/api/backup/stack/<stack_name>/history', methods=['GET'])
+@require_auth
+def get_stack_backup_history(stack_name):
+    """Get backup history for a stack"""
+    try:
+        backups = backup_manager.list_available_backups(stack_name)
+        return jsonify({'backups': backups})
+    
+    except Exception as e:
+        logger.error(f"Error getting backup history for {stack_name}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/history', methods=['GET'])
+@require_auth
+def get_all_backup_history():
+    """Get backup history for all stacks"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT * FROM backup_history 
+            WHERE status = 'success'
+            ORDER BY backup_date DESC
+            LIMIT 100
+        """)
+        
+        history = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        return jsonify({'history': history})
+    
+    except Exception as e:
+        logger.error(f"Error getting backup history: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/history/<int:backup_id>', methods=['DELETE'])
+@require_auth
+def delete_backup(backup_id):
+    """Delete a backup"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get backup info
+        cursor.execute("SELECT * FROM backup_history WHERE id = ?", (backup_id,))
+        backup = cursor.fetchone()
+        
+        if not backup:
+            conn.close()
+            return jsonify({'error': 'Backup not found'}), 404
+        
+        # Delete file
+        if os.path.exists(backup['backup_file_path']):
+            os.remove(backup['backup_file_path'])
+        
+        # Mark as deleted
+        cursor.execute("""
+            UPDATE backup_history 
+            SET status = 'deleted'
+            WHERE id = ?
+        """, (backup_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True})
+    
+    except Exception as e:
+        logger.error(f"Error deleting backup {backup_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Restore
+@app.route('/api/backup/stack/<stack_name>/restore/<int:backup_id>', methods=['POST'])
+@require_auth
+def restore_stack(stack_name, backup_id):
+    """Restore a stack from backup"""
+    try:
+        result = backup_manager.restore_from_backup(stack_name, backup_id, STACKS_DIR)
+        
+        if result['success']:
+            send_notification(
+                f"✓ Restore completed: {stack_name}",
+                result.get('message', 'Stack restored successfully'),
+                priority=1
+            )
+            return jsonify(result)
+        else:
+            send_notification(
+                f"✗ Restore failed: {stack_name}",
+                result.get('error', 'Unknown error'),
+                priority=5
+            )
+            return jsonify(result), 500
+    
+    except Exception as e:
+        logger.error(f"Error restoring {stack_name}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Scheduler Integration
+def update_backup_schedule(stack_name, schedule_type, schedule_time, schedule_day=0):
+    """Add or update backup schedule for a stack"""
+    try:
+        job_id = f'backup_{stack_name}'
+        
+        # Remove existing job
+        try:
+            scheduler.remove_job(job_id)
+        except:
+            pass
+        
+        # Add new job
+        if schedule_type == 'daily':
+            hour, minute = map(int, schedule_time.split(':'))
+            scheduler.add_job(
+                func=lambda: backup_manager.queue_backup(stack_name, STACKS_DIR, 
+                    lambda t, m, l: send_notification(t, m, priority=5 if l=='failure' else 1)),
+                trigger=CronTrigger(hour=hour, minute=minute),
+                id=job_id,
+                name=f'Backup {stack_name}',
+                replace_existing=True
+            )
+            logger.info(f"Scheduled daily backup for {stack_name} at {schedule_time}")
+        
+        elif schedule_type == 'weekly':
+            hour, minute = map(int, schedule_time.split(':'))
+            scheduler.add_job(
+                func=lambda: backup_manager.queue_backup(stack_name, STACKS_DIR,
+                    lambda t, m, l: send_notification(t, m, priority=5 if l=='failure' else 1)),
+                trigger=CronTrigger(day_of_week=schedule_day, hour=hour, minute=minute),
+                id=job_id,
+                name=f'Backup {stack_name}',
+                replace_existing=True
+            )
+            logger.info(f"Scheduled weekly backup for {stack_name} on day {schedule_day} at {schedule_time}")
+    
+    except Exception as e:
+        logger.error(f"Error updating backup schedule for {stack_name}: {e}")
+
+
+def remove_backup_schedule(stack_name):
+    """Remove backup schedule for a stack"""
+    try:
+        job_id = f'backup_{stack_name}'
+        scheduler.remove_job(job_id)
+        logger.info(f"Removed backup schedule for {stack_name}")
+    except:
+        pass
+
+
+# Stats and Monitoring
+@app.route('/api/backup/stats', methods=['GET'])
+@require_auth
+def get_backup_stats():
+    """Get overall backup statistics"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Count stacks with backups enabled
+        cursor.execute("SELECT COUNT(*) as cnt FROM backup_configs WHERE enabled = 1")
+        enabled_count = cursor.fetchone()['cnt']
+        
+        # Total successful backups
+        cursor.execute("SELECT COUNT(*) as cnt FROM backup_history WHERE status = 'success'")
+        total_backups = cursor.fetchone()['cnt']
+        
+        # Total backup size
+        cursor.execute("""
+            SELECT SUM(backup_size_mb) as total 
+            FROM backup_history 
+            WHERE status = 'success'
+        """)
+        total_size_mb = cursor.fetchone()['total'] or 0
+        
+        # Recent failures
+        cursor.execute("""
+            SELECT COUNT(*) as cnt 
+            FROM backup_history 
+            WHERE status = 'failed' 
+            AND backup_date > datetime('now', '-7 days')
+        """)
+        recent_failures = cursor.fetchone()['cnt']
+        
+        # Queue status
+        cursor.execute("SELECT COUNT(*) as cnt FROM backup_queue WHERE status = 'queued'")
+        queued = cursor.fetchone()['cnt']
+        
+        cursor.execute("SELECT COUNT(*) as cnt FROM backup_queue WHERE status = 'running'")
+        running = cursor.fetchone()['cnt']
+        
+        conn.close()
+        
+        return jsonify({
+            'enabled_stacks': enabled_count,
+            'total_backups': total_backups,
+            'total_size_gb': round(total_size_mb / 1024, 2),
+            'recent_failures': recent_failures,
+            'queue_pending': queued,
+            'queue_running': running
+        })
+    
+    except Exception as e:
+        logger.error(f"Error getting backup stats: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+it(1)
+
+# Backup Import/Scan Endpoints
+@app.route('/api/backup/scan', methods=['POST'])
+@require_auth
+def scan_backups():
+    """Scan backup directory for existing backups"""
+    try:
+        discovered = backup_manager.scan_backup_directory()
+        return jsonify({
+            'success': True,
+            'backups': discovered,
+            'count': len(discovered)
+        })
+    except Exception as e:
+        logger.error(f"Error scanning backups: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/import', methods=['POST'])
+@require_auth
+def import_backups():
+    """Import discovered backups into database"""
+    try:
+        result = backup_manager.import_discovered_backups()
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error importing backups: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/verify/<int:backup_id>', methods=['POST'])
+@require_auth
+def verify_backup(backup_id):
+    """Verify backup file integrity"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT backup_file_path FROM backup_history WHERE id = ?", (backup_id,))
+        backup = cursor.fetchone()
+        conn.close()
+        
+        if not backup:
+            return jsonify({'error': 'Backup not found'}), 404
+        
+        is_valid = backup_manager.verify_backup_integrity(backup['backup_file_path'])
+        
+        return jsonify({
+            'success': True,
+            'valid': is_valid,
+            'message': 'Backup is valid' if is_valid else 'Backup is corrupted or invalid'
+        })
+    except Exception as e:
+        logger.error(f"Error verifying backup: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
