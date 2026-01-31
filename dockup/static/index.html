@@ -3436,9 +3436,22 @@
                     <!-- VOLUME SELECTION -->
                     <div style="margin-bottom: 20px; border-top: 1px solid #334155; padding-top: 20px;">
                         <h4 style="margin-bottom: 15px;">Select Volumes to Backup</h4>
-                        <div v-if="!stackVolumes || stackVolumes.length === 0" style="color: #94a3b8; font-style: italic;">
-                            Loading volumes...
+                        
+                        <div v-if="volumesLoading" style="color: #94a3b8; font-style: italic;">
+                            <i class="fas fa-spinner fa-spin"></i> Loading volumes...
                         </div>
+                        
+                        <div v-else-if="volumesLoadingError" style="color: #ef4444; padding: 10px; background: rgba(239,68,68,0.1); border-radius: 6px; margin-bottom: 15px;">
+                            <i class="fas fa-exclamation-triangle"></i> Failed to load volumes. Please try again or check logs.
+                            <button @click="loadStackBackupConfig(scheduleStackName)" class="btn btn-sm" style="margin-left: 10px; padding: 4px 12px; background: #ef4444;">
+                                <i class="fas fa-redo"></i> Retry
+                            </button>
+                        </div>
+                        
+                        <div v-else-if="!stackVolumes || stackVolumes.length === 0" style="color: #94a3b8; font-style: italic;">
+                            No volumes found in this stack
+                        </div>
+                        
                         <div v-else style="display: flex; flex-direction: column; gap: 10px;">
                             <label v-for="vol in stackVolumes" :key="vol.host_path" 
                                    style="display: flex; align-items: center; gap: 10px; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 6px; cursor: pointer;">
@@ -4115,6 +4128,9 @@
                     stackBackupConfig: {enabled: false, schedule: 'manual', schedule_time: '03:00', schedule_day: 0, retention_count: 7, stop_before_backup: true},
                     stackBackupHistory: [],
                     stackVolumes: [],
+                    volumesLoadingError: false,
+                    volumesLoading: false,
+                    volumesLoadError: null,
                     backupInProgress: false
                 };
             },
@@ -6885,9 +6901,26 @@
                         } 
                         
                         // Load volumes
-                        const volR = await fetch(`/api/backup/stack/${stackName}/volumes`);
-                        if (volR.ok) {
-                            this.stackVolumes = await volR.json();
+                        this.volumesLoading = true;
+                        this.volumesLoadingError = false;
+                        this.stackVolumes = [];
+                        
+                        try {
+                            const volR = await fetch(`/api/backup/stack/${stackName}/volumes`);
+                            if (volR.ok) {
+                                this.stackVolumes = await volR.json();
+                            } else {
+                                const errorText = await volR.text();
+                                this.volumesLoadingError = true;
+                                this.showToast(`Failed to load volumes: ${volR.status}`, 'error');
+                                console.error('Volume load failed:', errorText);
+                            }
+                        } catch(volError) {
+                            this.volumesLoadingError = true;
+                            this.showToast('Error loading volumes', 'error');
+                            console.error('Volume loading error:', volError);
+                        } finally {
+                            this.volumesLoading = false;
                         }
                     } catch(e) { 
                         console.error('Failed to load stack backup config:', e); 
@@ -6905,9 +6938,20 @@
                             // Update local state
                             const vol = this.stackVolumes.find(v => v.host_path === hostPath);
                             if (vol) vol.backup_enabled = enabled;
+                            this.showToast('Volume setting updated', 'success');
+                        } else {
+                            const err = await r.json();
+                            this.showToast(`Failed to update volume: ${err.message || 'Unknown error'}`, 'error');
+                            // Revert UI state
+                            const vol = this.stackVolumes.find(v => v.host_path === hostPath);
+                            if (vol) vol.backup_enabled = !enabled;
                         }
                     } catch(e) {
                         console.error('Failed to toggle volume:', e);
+                        this.showToast('Error updating volume setting', 'error');
+                        // Revert UI state
+                        const vol = this.stackVolumes.find(v => v.host_path === hostPath);
+                        if (vol) vol.backup_enabled = !enabled;
                     }
                 },
                 async backupStackNow() { 
