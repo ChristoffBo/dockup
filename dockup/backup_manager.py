@@ -198,10 +198,38 @@ def mount_smb_share(host: str, share: str, username: str, password: str, mount_p
         
         # Create credentials file
         import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, newline='\n') as f:
+            # Add domain for compatibility (empty domain for standalone servers)
             f.write(f"username={username}\n")
             f.write(f"password={password}\n")
+            f.write("domain=\n")
+            f.flush()
+            os.fsync(f.fileno())
             cred_file = f.name
+        
+        # Set strict permissions (0600) - required by mount.cifs
+        os.chmod(cred_file, 0o600)
+        
+        logger.info(f"Created credentials file: {cred_file}")
+        logger.info(f"Username: {username}")
+        logger.info(f"Password length: {len(password)}")
+        logger.info(f"Password has special chars: {'@' in password or '!' in password}")
+        
+        # Verify credentials file was written correctly
+        try:
+            with open(cred_file, 'r') as verify:
+                cred_contents = verify.read()
+                logger.info(f"Credentials file size: {len(cred_contents)} bytes")
+                logger.info(f"Credentials file lines: {len(cred_contents.splitlines())}")
+                # Show sanitized content (mask password)
+                lines = cred_contents.splitlines()
+                for line in lines:
+                    if line.startswith('password='):
+                        logger.info(f"Line: password=[{len(line.split('=',1)[1])} chars]")
+                    else:
+                        logger.info(f"Line: {line}")
+        except Exception as e:
+            logger.error(f"Failed to verify credentials file: {e}")
         
         # Try SMB versions in order: 3.1.1 → 3.0 → 2.1
         versions = ['3.1.1', '3.0', '2.1']

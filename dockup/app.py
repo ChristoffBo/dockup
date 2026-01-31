@@ -8949,12 +8949,17 @@ def get_backup_config():
         conn.close()
         
         if config:
-            return jsonify(dict(config))
+            result = dict(config)
+            # Add available space
+            available, mount_point, available_gb, error = backup_manager.check_backup_destination_available()
+            result['available_gb'] = available_gb if available else 0
+            return jsonify(result)
         
         return jsonify({
             'type': 'local',
             'local_path': '/app/backups',
-            'mount_status': 'disconnected'
+            'mount_status': 'disconnected',
+            'available_gb': 0
         })
     except Exception as e:
         logger.error(f"Error getting backup config: {e}")
@@ -9061,10 +9066,20 @@ def test_backup_connection():
             import tempfile
             cred_file = None
             try:
-                with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+                with tempfile.NamedTemporaryFile(mode='w', delete=False, newline='\n') as f:
                     f.write(f"username={username}\n")
                     f.write(f"password={password}\n")
+                    f.write("domain=\n")
+                    f.flush()
+                    os.fsync(f.fileno())
                     cred_file = f.name
+                
+                # Set strict permissions
+                os.chmod(cred_file, 0o600)
+                
+                logger.info(f"Created test credentials file: {cred_file}")
+                logger.info(f"Username: {username}")
+                logger.info(f"Password length: {len(password)}")
                 
                 cmd = ['smbclient', f'//{host}/{share}', '-A', cred_file, '-c', 'pwd']
                 logger.info(f"Running: smbclient //{host}/{share} -A [credfile] -c pwd")
@@ -9072,17 +9087,26 @@ def test_backup_connection():
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
                 
                 logger.info(f"Exit code: {result.returncode}")
-                if result.stdout:
-                    logger.info(f"Stdout: {result.stdout[:200]}")
-                if result.stderr:
-                    logger.info(f"Stderr: {result.stderr[:200]}")
+                logger.info(f"Full stdout:\n{result.stdout}")
+                logger.info(f"Full stderr:\n{result.stderr}")
+                
+                # Debug: show what's actually in the credentials file
+                try:
+                    with open(cred_file, 'rb') as f:
+                        raw_bytes = f.read()
+                        logger.info(f"Cred file raw bytes: {raw_bytes}")
+                        logger.info(f"Cred file hex: {raw_bytes.hex()}")
+                except Exception as e:
+                    logger.error(f"Can't read cred file: {e}")
                 
                 if result.returncode == 0:
                     logger.info("✓ Test successful")
                     return jsonify({'success': True, 'message': 'Credentials valid', 'available_gb': 0})
                 
                 error = result.stderr or result.stdout or ""
-                if 'NT_STATUS_LOGON_FAILURE' in error:
+                logger.error(f"FULL ERROR OUTPUT: {error}")
+                
+                if 'NT_STATUS_LOGON_FAILURE' in error or 'NT_STATUS_ACCESS_DENIED' in error:
                     msg = "Wrong username or password"
                 elif 'NT_STATUS_BAD_NETWORK_NAME' in error:
                     msg = "Share not found"
