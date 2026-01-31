@@ -9050,35 +9050,42 @@ def test_backup_connection():
         
         elif config['type'] == 'smb':
             # Test SMB connection using smbclient
-            logger.info(f"Testing SMB connection to //{config['smb_host']}/{config['smb_share']}")
+            logger.info(f"Testing SMB: //{config['smb_host']}/{config['smb_share']} user={config['smb_username']}")
             
+            # Simple test - just list directory
             test_cmd = [
                 'smbclient',
                 f"//{config['smb_host']}/{config['smb_share']}",
                 '-U', f"{config['smb_username']}%{config['smb_password']}",
-                '-c', 'ls'
+                '-c', 'pwd'
             ]
+            
+            logger.info(f"Running: smbclient //{config['smb_host']}/{config['smb_share']} -U {config['smb_username']}%*** -c pwd")
             
             result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
             
-            logger.info(f"smbclient returncode: {result.returncode}")
+            logger.info(f"Exit code: {result.returncode}")
+            if result.stdout:
+                logger.info(f"Stdout: {result.stdout.strip()}")
             if result.stderr:
-                logger.info(f"smbclient stderr: {result.stderr.strip()}")
+                logger.info(f"Stderr: {result.stderr.strip()}")
             
             if result.returncode == 0:
-                logger.info("SMB credentials test successful")
-                return jsonify({'success': True, 'message': 'SMB credentials valid', 'available_gb': 0})
+                logger.info("✓ SMB test successful")
+                return jsonify({'success': True, 'message': 'Credentials valid', 'available_gb': 0})
             else:
                 error = result.stderr.strip()
-                if 'NT_STATUS_LOGON_FAILURE' in error or 'NT_STATUS_ACCESS_DENIED' in error:
-                    msg = "Invalid username or password"
+                logger.error(f"✗ SMB test failed: {error}")
+                
+                if 'NT_STATUS_LOGON_FAILURE' in error:
+                    msg = "Wrong username or password"
                 elif 'NT_STATUS_BAD_NETWORK_NAME' in error:
                     msg = f"Share '{config['smb_share']}' not found"
                 elif 'NT_STATUS_HOST_UNREACHABLE' in error or 'NT_STATUS_IO_TIMEOUT' in error:
-                    msg = f"Cannot reach host '{config['smb_host']}'"
+                    msg = f"Cannot reach {config['smb_host']}"
                 else:
-                    msg = f"Connection failed: {error}"
-                logger.error(f"SMB test failed: {msg}")
+                    msg = f"Failed: {error[:100]}"
+                
                 return jsonify({'success': False, 'message': msg})
         
         return jsonify({'success': False, 'message': 'Unknown backup type'})
@@ -9112,11 +9119,11 @@ def mount_backup_share():
         
         logger.info(f"Config found: {config is not None}")
         if config:
-            logger.info(f"Config type: {config.get('type')}")
+            logger.info(f"Config type: {config['type']}")
             logger.info(f"Config keys: {list(config.keys())}")
         
         if not config or config['type'] != 'smb':
-            logger.error(f"SMB not configured. config={config is not None}, type={config.get('type') if config else 'N/A'}")
+            logger.error(f"SMB not configured. config={config is not None}, type={config['type'] if config else 'N/A'}")
             return jsonify({'success': False, 'message': 'SMB not configured'}), 400
         
         # Log what we're trying to mount (without password)
