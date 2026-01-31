@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 DATA_DIR = os.getenv('DATA_DIR', '/app/data')
+STACKS_DIR = os.getenv('STACKS_DIR', '/stacks')
 DATABASE_FILE = os.path.join(DATA_DIR, 'dockup.db')
 BACKUP_MOUNT_POINT = '/mnt/backup-share'
 BACKUP_LOCAL_DIR = '/app/backups'
@@ -58,10 +59,16 @@ except Exception as e:
 
 def get_db_connection():
     """Get database connection with row factory and timeout"""
-    conn = sqlite3.connect(DATABASE_FILE, timeout=30.0)
+    conn = sqlite3.connect(DATABASE_FILE, timeout=60.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     # Enable WAL mode for better concurrency
     conn.execute('PRAGMA journal_mode=WAL')
+    # Increase cache size
+    conn.execute('PRAGMA cache_size=-64000')  # 64MB cache
+    # Set busy timeout
+    conn.execute('PRAGMA busy_timeout=60000')  # 60 seconds
+    # Synchronous mode for better performance
+    conn.execute('PRAGMA synchronous=NORMAL')
     return conn
 
 
@@ -1023,6 +1030,7 @@ def backup_worker():
             # Get job from queue (timeout so we can check running flag)
             try:
                 queue_id = backup_queue.get(timeout=1)
+                logger.info(f"🔥 WORKER GOT QUEUE ID: {queue_id}")
             except Empty:
                 continue
             
@@ -1034,6 +1042,8 @@ def backup_worker():
             """, (queue_id,))
             job = cursor.fetchone()
             conn.close()
+            
+            logger.info(f"Job from DB: {dict(job) if job else 'NOT FOUND'}")
             
             if not job:
                 backup_queue.task_done()
@@ -1070,7 +1080,7 @@ def backup_worker():
                 logger.info(f"Processing backup job {queue_id} for {stack_name}")
                 
                 # Execute backup
-                success, backup_path, error = execute_backup(stack_name)
+                success, backup_path, error = execute_backup(stack_name, STACKS_DIR)
                 
                 # Update queue status
                 conn = get_db_connection()
@@ -1119,12 +1129,14 @@ def start_backup_worker():
     global backup_worker_running, backup_worker_thread
     
     if backup_worker_running:
+        logger.info("Backup worker already running")
         return
     
     backup_worker_running = True
     backup_worker_thread = threading.Thread(target=backup_worker, daemon=True)
     backup_worker_thread.start()
-    logger.info("✓ Backup worker started")
+    logger.info("✓✓✓ BACKUP WORKER THREAD STARTED ✓✓✓")
+    logger.info(f"Worker thread is alive: {backup_worker_thread.is_alive()}")
 
 
 def stop_backup_worker():
