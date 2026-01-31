@@ -2478,6 +2478,12 @@
                         <div class="form-group"><label>Username</label><input v-model="backupConfig.smb_username" class="form-control" required></div>
                         <div class="form-group"><label>Password</label><input type="password" v-model="backupConfig.smb_password" class="form-control" required placeholder="Enter password"></div>
                         <div class="form-group"><label>Mount Path (optional subdirectory)</label><input v-model="backupConfig.smb_mount_path" class="form-control" placeholder="e.g. backups/dockup"></div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="checkbox" v-model="backupConfig.auto_mount" style="margin-right: 8px;">
+                                Automatically mount on startup
+                            </label>
+                        </div>
                         <div class="form-group"><button @click="testBackupConnection" class="btn btn-secondary">Test Connection</button> <button @click="mountBackupShare" class="btn btn-secondary" v-if="backupConfig.mount_status !== 'connected'">Mount</button> <button @click="unmountBackupShare" class="btn btn-secondary" v-if="backupConfig.mount_status === 'connected'">Unmount</button></div>
                         <div v-if="backupConfig.mount_status === 'connected'" style="color:#10b981;margin-top:10px;">✓ Connected - {{backupAvailableSpace}} GB available</div>
                     </div>
@@ -5872,6 +5878,9 @@
                         const actionResponse = await axios.get(`/api/stack/${stackName}/action-schedules`);
                         this.actionSchedules = actionResponse.data.schedules || [];
                         
+                        // Load backup config for this stack
+                        await this.loadStackBackupConfig(stackName);
+                        
                         // Reset tab and form state
                         this.scheduleTab = 'update';
                         this.showAddActionSchedule = false;
@@ -6768,7 +6777,20 @@
                     });
                 }
 ,
-                async loadBackupConfig() { try { const r = await fetch('/api/backup/config'); if (r.ok) { this.backupConfig = await r.json(); } } catch(e) { console.error(e); } },
+                async loadBackupConfig() { 
+                    try { 
+                        const r = await fetch('/api/backup/config'); 
+                        if (r.ok) { 
+                            const data = await r.json(); 
+                            this.backupConfig = data; 
+                            if (data.available_gb !== undefined) {
+                                this.backupAvailableSpace = data.available_gb;
+                            }
+                        } 
+                    } catch(e) { 
+                        console.error(e); 
+                    } 
+                },
                 async saveBackupConfig() { console.log('saveBackupConfig called', this.backupConfig); try { const r = await fetch('/api/backup/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.backupConfig)}); console.log('Save response:', r.status); if (r.ok) { this.showToast('Saved', 'success'); } else { const err = await r.text(); console.error('Save failed:', err); this.showToast('Failed', 'error'); } } catch(e) { console.error('Save error:', e); this.showToast('Error', 'error'); } },
                 async testBackupConnection() { 
                     console.log('Testing connection...');
@@ -6806,12 +6828,48 @@
                     } 
                 },
                 async unmountBackupShare() { try { const r = await fetch('/api/backup/unmount', {method: 'POST'}); if (r.ok) { this.showToast('Unmounted', 'success'); await this.loadBackupConfig(); } else { const e = await r.json(); this.showToast(`Unmount failed: ${e.message || e.error}`, 'error'); } } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
-                async saveStackBackupConfig() { if (!this.selectedStack) return; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/config`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.stackBackupConfig)}); if (r.ok) this.showToast('Saved', 'success'); else this.showToast('Save failed', 'error'); } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
+                async saveStackBackupConfig() { 
+                    const stack = this.scheduleStackName;
+                    if (!stack) {
+                        this.showToast('No stack selected', 'error');
+                        return;
+                    }
+                    try { 
+                        const r = await fetch(`/api/backup/stack/${stack}/config`, {
+                            method: 'POST', 
+                            headers: {'Content-Type': 'application/json'}, 
+                            body: JSON.stringify(this.stackBackupConfig)
+                        }); 
+                        if (r.ok) this.showToast('Saved', 'success'); 
+                        else this.showToast('Save failed', 'error'); 
+                    } catch(e) { 
+                        this.showToast('Error', 'error'); 
+                        console.error(e); 
+                    } 
+                },
+                async loadStackBackupConfig(stackName) { 
+                    if (!stackName) return;
+                    try { 
+                        const r = await fetch(`/api/backup/stack/${stackName}/config`); 
+                        if (r.ok) { 
+                            const config = await r.json(); 
+                            this.stackBackupConfig = {
+                                enabled: config.enabled || false,
+                                schedule: config.schedule || 'manual',
+                                cron: config.cron || '0 2 * * *',
+                                retention_count: config.retention_count || 7,
+                                stop_before_backup: config.stop_before_backup !== false
+                            };
+                        } 
+                    } catch(e) { 
+                        console.error('Failed to load stack backup config:', e); 
+                    } 
+                },
                 async backupStackNow() { 
-                    const stack = this.scheduleStackName || this.selectedStack;
-                    console.log('backupStackNow called, stack:', stack); 
+                    const stack = this.scheduleStackName;
+                    console.log('backupStackNow called, scheduleStackName:', stack); 
                     if (!stack) { 
-                        console.error('No stack selected!'); 
+                        console.error('No stack in schedule context!'); 
                         this.showToast('No stack selected', 'error'); 
                         return; 
                     } 
