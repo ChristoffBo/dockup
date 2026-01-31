@@ -3433,6 +3433,27 @@
                         <input type="number" v-model.number="stackBackupConfig.retention_count" min="1" max="50" class="form-control" style="width: 100px; padding: 8px;">
                     </div>
                     
+                    <!-- VOLUME SELECTION -->
+                    <div style="margin-bottom: 20px; border-top: 1px solid #334155; padding-top: 20px;">
+                        <h4 style="margin-bottom: 15px;">Select Volumes to Backup</h4>
+                        <div v-if="!stackVolumes || stackVolumes.length === 0" style="color: #94a3b8; font-style: italic;">
+                            Loading volumes...
+                        </div>
+                        <div v-else style="display: flex; flex-direction: column; gap: 10px;">
+                            <label v-for="vol in stackVolumes" :key="vol.host_path" 
+                                   style="display: flex; align-items: center; gap: 10px; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 6px; cursor: pointer;">
+                                <input type="checkbox" 
+                                       :checked="vol.backup_enabled" 
+                                       @change="toggleVolumeBackup(vol.host_path, $event.target.checked)"
+                                       style="width: 18px; height: 18px;">
+                                <div style="flex: 1;">
+                                    <div style="font-weight: 500;">{{vol.host_path}}</div>
+                                    <div style="font-size: 0.85em; color: #94a3b8;">→ {{vol.container_path}}</div>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                    
                     <div style="display:flex;gap:10px;">
                         <button @click="saveStackBackupConfig()" class="btn btn-primary">Save All Changes</button>
                         <button @click="backupStackNow()" :disabled="backupInProgress" class="btn btn-success">{{backupInProgress ? "Backing up..." : "Backup Now"}}</button>
@@ -4093,6 +4114,7 @@
                     backupAvailableSpace: 0,
                     stackBackupConfig: {enabled: false, schedule: 'manual', schedule_time: '03:00', schedule_day: 0, retention_count: 7, stop_before_backup: true},
                     stackBackupHistory: [],
+                    stackVolumes: [],
                     backupInProgress: false
                 };
             },
@@ -6861,9 +6883,32 @@
                                 stop_before_backup: config.stop_before_backup !== false
                             };
                         } 
+                        
+                        // Load volumes
+                        const volR = await fetch(`/api/backup/stack/${stackName}/volumes`);
+                        if (volR.ok) {
+                            this.stackVolumes = await volR.json();
+                        }
                     } catch(e) { 
                         console.error('Failed to load stack backup config:', e); 
                     } 
+                },
+                async toggleVolumeBackup(hostPath, enabled) {
+                    if (!this.scheduleStackName) return;
+                    try {
+                        const r = await fetch(`/api/backup/stack/${this.scheduleStackName}/volume`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({host_path: hostPath, backup_enabled: enabled})
+                        });
+                        if (r.ok) {
+                            // Update local state
+                            const vol = this.stackVolumes.find(v => v.host_path === hostPath);
+                            if (vol) vol.backup_enabled = enabled;
+                        }
+                    } catch(e) {
+                        console.error('Failed to toggle volume:', e);
+                    }
                 },
                 async backupStackNow() { 
                     const stack = this.scheduleStackName;
