@@ -615,18 +615,25 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         temp_backup_dir = os.path.join(BACKUP_TEMP_DIR, backup_name)
         os.makedirs(temp_backup_dir, exist_ok=True)
         
-        # Copy compose file (check both names)
+        # Copy compose file (check all variants)
         stack_path = os.path.join(stacks_dir, stack_name)
-        compose_src = os.path.join(stack_path, 'compose.yml')
-        if not os.path.exists(compose_src):
-            compose_src = os.path.join(stack_path, 'docker-compose.yml')
+        compose_src = None
+        for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
+            test_path = os.path.join(stack_path, filename)
+            if os.path.exists(test_path):
+                compose_src = test_path
+                break
         
-        if os.path.exists(compose_src):
+        if compose_src:
+            logger.info(f"Copying compose file: {compose_src}")
             shutil.copy2(compose_src, os.path.join(temp_backup_dir, 'docker-compose.yml'))
+        else:
+            logger.error(f"No compose file found in {stack_path}")
         
         # Copy .env if exists
         env_src = os.path.join(stack_path, '.env')
         if os.path.exists(env_src):
+            logger.info(f"Copying .env file")
             shutil.copy2(env_src, os.path.join(temp_backup_dir, '.env'))
         
         # Copy volumes
