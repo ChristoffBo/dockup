@@ -9308,6 +9308,54 @@ def parse_stack_volumes(stack_name):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/backup/stack/<stack_name>/volumes', methods=['GET'])
+@require_auth
+def get_stack_volumes(stack_name):
+    """Get volumes with backup selection status for a stack"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT host_path, container_path, backup_enabled 
+            FROM backup_volume_selections 
+            WHERE stack_name = ?
+        """, (stack_name,))
+        volumes = cursor.fetchall()
+        
+        # If no volumes in DB, parse and populate
+        if not volumes:
+            logger.info(f"No volumes in DB for {stack_name}, parsing compose file...")
+            parsed = backup_manager.parse_stack_volumes(stack_name)
+            
+            for vol in parsed:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO backup_volume_selections 
+                    (stack_name, host_path, container_path, backup_enabled)
+                    VALUES (?, ?, ?, 1)
+                """, (stack_name, vol['host_path'], vol.get('container_path', ''), True))
+            
+            conn.commit()
+            
+            # Re-fetch
+            cursor.execute("""
+                SELECT host_path, container_path, backup_enabled 
+                FROM backup_volume_selections 
+                WHERE stack_name = ?
+            """, (stack_name,))
+            volumes = cursor.fetchall()
+        
+        conn.close()
+        
+        # Convert to list of dicts
+        result = [dict(v) for v in volumes]
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error getting stack volumes: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/backup/stack/<stack_name>/backup-now', methods=['POST'])
 @require_auth
 def backup_stack_now(stack_name):
