@@ -9083,9 +9083,14 @@ def test_backup_connection():
         return jsonify({'success': False, 'message': 'Unknown backup type'})
         
     except subprocess.TimeoutExpired:
+        logger.error("=== TEST TIMEOUT ===")
         return jsonify({'success': False, 'message': 'Connection timeout'}), 500
     except Exception as e:
-        logger.error(f"Error testing backup connection: {e}")
+        logger.error("=== TEST EXCEPTION ===")
+        logger.error(f"Error: {e}")
+        logger.error(f"Type: {type(e)}")
+        import traceback
+        logger.error(f"Traceback:\n{traceback.format_exc()}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 

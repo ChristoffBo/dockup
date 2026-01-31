@@ -162,6 +162,15 @@ def mount_smb_share(host: str, share: str, username: str, password: str, mount_p
     Returns:
         (success, error_message)
     """
+    
+    # IMPOSSIBLE TO MISS LOGGING
+    print("=" * 100)
+    print("MOUNT_SMB_SHARE FUNCTION CALLED")
+    print("=" * 100)
+    logger.info("=" * 100)
+    logger.info("MOUNT_SMB_SHARE FUNCTION CALLED")
+    logger.info("=" * 100)
+    
     try:
         logger.info("=" * 80)
         logger.info("MOUNT_SMB_SHARE CALLED")
