@@ -9311,48 +9311,69 @@ def parse_stack_volumes(stack_name):
 @app.route('/api/backup/stack/<stack_name>/volumes', methods=['GET'])
 @require_auth
 def get_stack_volumes(stack_name):
-    """Get volumes with backup selection status for a stack"""
+    """Get volumes for a stack by parsing compose file"""
     try:
+        logger.info(f"Getting volumes for stack: {stack_name}")
+        
+        # Parse volumes directly
+        volumes = backup_manager.parse_stack_volumes(stack_name)
+        logger.info(f"Parsed {len(volumes)} volumes for {stack_name}")
+        
+        if not volumes:
+            logger.warning(f"No volumes found for {stack_name}")
+            return jsonify([])
+        
+        # Get saved selections from DB
         conn = backup_manager.get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT host_path, container_path, backup_enabled 
+            SELECT host_path, backup_enabled 
             FROM backup_volume_selections 
             WHERE stack_name = ?
         """, (stack_name,))
-        volumes = cursor.fetchall()
-        
-        # If no volumes in DB, parse and populate
-        if not volumes:
-            logger.info(f"No volumes in DB for {stack_name}, parsing compose file...")
-            parsed = backup_manager.parse_stack_volumes(stack_name)
-            
-            for vol in parsed:
-                cursor.execute("""
-                    INSERT OR IGNORE INTO backup_volume_selections 
-                    (stack_name, host_path, container_path, backup_enabled)
-                    VALUES (?, ?, ?, 1)
-                """, (stack_name, vol['host_path'], vol.get('container_path', ''), True))
-            
-            conn.commit()
-            
-            # Re-fetch
-            cursor.execute("""
-                SELECT host_path, container_path, backup_enabled 
-                FROM backup_volume_selections 
-                WHERE stack_name = ?
-            """, (stack_name,))
-            volumes = cursor.fetchall()
-        
+        selections = {row['host_path']: row['backup_enabled'] for row in cursor.fetchall()}
         conn.close()
         
-        # Convert to list of dicts
-        result = [dict(v) for v in volumes]
-        return jsonify(result)
+        # Merge: use saved selection if exists, otherwise default to enabled
+        for vol in volumes:
+            vol['backup_enabled'] = selections.get(vol['host_path'], True)
+        
+        logger.info(f"Returning {len(volumes)} volumes")
+        return jsonify(volumes)
+        
     except Exception as e:
         logger.error(f"Error getting stack volumes: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/stack/<stack_name>/volume', methods=['POST'])
+@require_auth
+def toggle_stack_volume(stack_name):
+    """Toggle backup enabled for a specific volume"""
+    try:
+        data = request.json
+        host_path = data.get('host_path')
+        backup_enabled = data.get('backup_enabled', True)
+        
+        logger.info(f"Toggling volume {host_path} for {stack_name}: enabled={backup_enabled}")
+        
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO backup_volume_selections (stack_name, host_path, container_path, backup_enabled)
+            VALUES (?, ?, '', ?)
+            ON CONFLICT(stack_name, host_path) DO UPDATE SET
+                backup_enabled = excluded.backup_enabled
+        """, (stack_name, host_path, 1 if backup_enabled else 0))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        logger.error(f"Error toggling volume: {e}")
         return jsonify({'error': str(e)}), 500
 
 
