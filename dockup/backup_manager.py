@@ -582,19 +582,32 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             return False, '', f"Insufficient disk space. Required: {required_space_gb:.1f} GB, Available: {available_gb} GB"
         
         # Stop container if required
+        logger.info(f"Stop before backup setting: {config['stop_before_backup']}")
+        logger.info(f"Docker client available: {docker_client is not None}")
+        
         if config['stop_before_backup'] and docker_client:
             try:
+                logger.info(f"Looking for containers with label: com.docker.compose.project={stack_name}")
                 containers = docker_client.containers.list(
                     filters={'label': f'com.docker.compose.project={stack_name}'}
                 )
+                logger.info(f"Found {len(containers)} containers")
                 if containers:
                     container_was_running = True
-                    logger.info(f"Stopping containers for {stack_name}...")
+                    logger.info(f"🛑 Stopping {len(containers)} containers for {stack_name}...")
                     for container in containers:
+                        logger.info(f"  Stopping container: {container.name}")
                         container.stop(timeout=30)
+                        logger.info(f"  ✓ Stopped: {container.name}")
                     time.sleep(2)
+                else:
+                    logger.info("No containers found to stop")
             except Exception as e:
-                logger.warning(f"Error stopping containers: {e}")
+                logger.error(f"Error stopping containers: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        else:
+            logger.info("Skipping container stop (disabled or no docker client)")
         
         # Create backup directory
         timestamp = datetime.now().strftime('%Y-%m-%d-%H%M%S')
@@ -674,8 +687,8 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO backup_history 
-            (stack_name, backup_file_path, backup_size_mb, duration_seconds, status, volumes_backed_up)
-            VALUES (?, ?, ?, ?, 'success', ?)
+            (stack_name, backup_file_path, backup_size_mb, duration_seconds, status, volumes_backed_up, backup_date)
+            VALUES (?, ?, ?, ?, 'success', ?, CURRENT_TIMESTAMP)
         """, (stack_name, backup_file_path, backup_size_mb, duration, json.dumps(volumes_backed_up)))
         conn.commit()
         
@@ -753,8 +766,8 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO backup_history 
-                (stack_name, backup_file_path, status, error_message)
-                VALUES (?, '', 'failed', ?)
+                (stack_name, backup_file_path, status, error_message, backup_date)
+                VALUES (?, '', 'failed', ?, CURRENT_TIMESTAMP)
             """, (stack_name, error_msg))
             conn.commit()
             conn.close()
