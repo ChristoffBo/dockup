@@ -8983,17 +8983,18 @@ def update_backup_config():
             logger.info(f"Saving SMB config: host={data.get('smb_host')}, share={data.get('smb_share')}, user={data.get('smb_username')}")
             
             cursor.execute("""
-                UPDATE global_backup_config 
-                SET type = 'smb',
-                    smb_host = ?,
-                    smb_share = ?,
-                    smb_username = ?,
-                    smb_password = ?,
-                    smb_mount_path = ?,
-                    auto_mount = ?,
+                INSERT INTO global_backup_config (id, type, smb_host, smb_share, smb_username, smb_password, smb_mount_path, auto_mount, mount_status, last_mount_check)
+                VALUES (1, 'smb', ?, ?, ?, ?, ?, ?, 'disconnected', CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    type = 'smb',
+                    smb_host = excluded.smb_host,
+                    smb_share = excluded.smb_share,
+                    smb_username = excluded.smb_username,
+                    smb_password = excluded.smb_password,
+                    smb_mount_path = excluded.smb_mount_path,
+                    auto_mount = excluded.auto_mount,
                     mount_status = 'disconnected',
                     last_mount_check = CURRENT_TIMESTAMP
-                WHERE id = 1
             """, (
                 data.get('smb_host', ''),
                 data.get('smb_share', ''),
@@ -9004,6 +9005,13 @@ def update_backup_config():
             ))
         
         conn.commit()
+        
+        # Verify save
+        cursor.execute("SELECT smb_host, smb_username, smb_password FROM global_backup_config WHERE id = 1")
+        verify = cursor.fetchone()
+        if verify:
+            logger.info(f"Verified saved: host={verify['smb_host']}, user={verify['smb_username']}, password={'SET' if verify['smb_password'] else 'EMPTY'}")
+        
         conn.close()
         return jsonify({'success': True})
         

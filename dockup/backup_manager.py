@@ -175,7 +175,8 @@ def mount_smb_share(host: str, share: str, username: str, password: str, mount_p
         subprocess.run(['umount', '-f', BACKUP_MOUNT_POINT], 
                       capture_output=True, timeout=5)
         
-        # Build mount command
+        # Build mount command - escape password for shell
+        # Use subprocess list form (doesn't need escaping)
         mount_cmd = [
             'mount.cifs',
             f'//{host}/{share}',
@@ -184,9 +185,32 @@ def mount_smb_share(host: str, share: str, username: str, password: str, mount_p
             f'username={username},password={password},uid=1000,gid=1000,file_mode=0777,dir_mode=0777'
         ]
         
+        logger.info(f"Running mount command: mount.cifs //{host}/{share} {BACKUP_MOUNT_POINT} -o username={username},password=***")
         result = subprocess.run(mount_cmd, capture_output=True, text=True, timeout=30)
         
+        logger.info(f"Mount command returncode: {result.returncode}")
+        if result.stdout:
+            logger.info(f"Mount stdout: {result.stdout.strip()}")
+        if result.stderr:
+            logger.error(f"Mount stderr: {result.stderr.strip()}")
+        
         if result.returncode == 0:
+            # VERIFY it actually mounted
+            verify = subprocess.run(['mountpoint', '-q', BACKUP_MOUNT_POINT], 
+                                  capture_output=True, timeout=5)
+            
+            if verify.returncode != 0:
+                logger.error(f"Mount command returned 0 but mountpoint verification failed!")
+                # Try to see what's in the directory
+                try:
+                    ls_result = subprocess.run(['ls', '-la', BACKUP_MOUNT_POINT], 
+                                             capture_output=True, text=True, timeout=5)
+                    logger.info(f"Directory contents: {ls_result.stdout}")
+                except:
+                    pass
+                return False, "Mount command succeeded but verification failed. Mount point not accessible."
+            
+            logger.info(f"Mount verified successfully!")
             # Update database
             conn = get_db_connection()
             cursor = conn.cursor()
