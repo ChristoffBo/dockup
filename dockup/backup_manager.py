@@ -572,7 +572,27 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             WHERE stack_name = ? AND backup_enabled = 1
         """, (stack_name,))
         volumes = cursor.fetchall()
+        
+        logger.info(f"📦 Found {len(volumes)} ENABLED volumes for {stack_name}")
+        for v in volumes:
+            logger.info(f"  - {v['host_path']}")
+        
+        # Also log disabled volumes
+        cursor.execute("""
+            SELECT host_path 
+            FROM backup_volume_selections 
+            WHERE stack_name = ? AND backup_enabled = 0
+        """, (stack_name,))
+        disabled = cursor.fetchall()
+        if disabled:
+            logger.info(f"⛔ Skipping {len(disabled)} DISABLED volumes:")
+            for v in disabled:
+                logger.info(f"  - {v['host_path']}")
+        
         conn.close()
+        
+        if not volumes:
+            logger.warning(f"No enabled volumes found for {stack_name} - backup will only include compose file")
         
         # Estimate size and check space
         estimated_size_mb = estimate_backup_size(stack_name, stacks_dir)
@@ -640,10 +660,17 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         volumes_dir = os.path.join(temp_backup_dir, 'volumes')
         os.makedirs(volumes_dir, exist_ok=True)
         
+        logger.info(f"Starting volume backup for {len(volumes)} volumes...")
         volumes_backed_up = []
         for idx, volume in enumerate(volumes):
             host_path = volume['host_path']
-            if os.path.exists(host_path):
+            logger.info(f"[{idx+1}/{len(volumes)}] Processing volume: {host_path}")
+            
+            if not os.path.exists(host_path):
+                logger.warning(f"  ⚠️  Path does not exist: {host_path}")
+                continue
+                
+            try:
                 # Use index + sanitized path to avoid basename collisions
                 vol_name = f"{idx}_{os.path.basename(host_path)}"
                 vol_dest = os.path.join(volumes_dir, vol_name)
@@ -654,11 +681,18 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
                     f.write(f"{vol_name}={host_path}\n")
                 
                 if os.path.isdir(host_path):
+                    logger.info(f"  📁 Copying directory...")
                     shutil.copytree(host_path, vol_dest, symlinks=True)
                 else:
+                    logger.info(f"  📄 Copying file...")
                     shutil.copy2(host_path, vol_dest)
                 
+                logger.info(f"  ✓ Backed up: {host_path}")
                 volumes_backed_up.append(host_path)
+            except Exception as e:
+                logger.error(f"  ❌ Failed to backup {host_path}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
         
         # Create tarball
         backup_file_name = f"{backup_name}.tar.gz"
@@ -1043,6 +1077,16 @@ def backup_worker():
     """Background worker thread to process backup queue"""
     global backup_worker_running
     
+    try:
+        logger.info("=" * 80)
+        logger.info("🔥🔥🔥 BACKUP WORKER FUNCTION CALLED 🔥🔥🔥")
+        logger.info("=" * 80)
+        logger.info(f"backup_worker_running: {backup_worker_running}")
+        logger.info(f"backup_queue: {backup_queue}")
+        logger.info("=" * 80)
+    except Exception as e:
+        logger.error(f"Error in worker startup logging: {e}")
+    
     logger.info("✓ Backup worker thread started")
     
     while backup_worker_running:
@@ -1148,15 +1192,27 @@ def start_backup_worker():
     """Start the backup worker thread"""
     global backup_worker_running, backup_worker_thread
     
-    if backup_worker_running:
-        logger.info("Backup worker already running")
-        return
-    
-    backup_worker_running = True
-    backup_worker_thread = threading.Thread(target=backup_worker, daemon=True)
-    backup_worker_thread.start()
-    logger.info("✓✓✓ BACKUP WORKER THREAD STARTED ✓✓✓")
-    logger.info(f"Worker thread is alive: {backup_worker_thread.is_alive()}")
+    try:
+        if backup_worker_running:
+            logger.info("Backup worker already running")
+            return
+        
+        logger.info("🚀 ATTEMPTING TO START BACKUP WORKER")
+        backup_worker_running = True
+        backup_worker_thread = threading.Thread(target=backup_worker, daemon=True)
+        backup_worker_thread.start()
+        logger.info("✓✓✓ BACKUP WORKER THREAD STARTED ✓✓✓")
+        logger.info(f"Worker thread is alive: {backup_worker_thread.is_alive()}")
+        
+        # Give it a moment to start
+        time.sleep(0.5)
+        logger.info(f"Worker thread still alive after 0.5s: {backup_worker_thread.is_alive()}")
+        
+    except Exception as e:
+        logger.error(f"❌ FAILED TO START WORKER: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        backup_worker_running = False
 
 
 def stop_backup_worker():
