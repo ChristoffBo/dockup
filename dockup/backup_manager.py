@@ -157,91 +157,126 @@ def init_backup_database():
 
 def mount_smb_share(host: str, share: str, username: str, password: str, mount_path: str = '') -> Tuple[bool, str]:
     """
-    Mount SMB/CIFS share
+    Mount SMB/CIFS share - completely rewritten
     
     Returns:
         (success, error_message)
     """
     try:
-        # Check if already mounted
-        result = subprocess.run(['mountpoint', '-q', BACKUP_MOUNT_POINT], 
-                              capture_output=True, text=True, timeout=5)
+        logger.info("=" * 80)
+        logger.info("MOUNT_SMB_SHARE CALLED")
+        logger.info(f"Host: {host}")
+        logger.info(f"Share: {share}")
+        logger.info(f"Username: {username}")
+        logger.info(f"Mount path: {mount_path}")
+        logger.info(f"Target: {BACKUP_MOUNT_POINT}")
+        logger.info("=" * 80)
         
-        if result.returncode == 0:
-            logger.info("SMB share already mounted")
+        # Step 1: Check if mount.cifs exists
+        which_result = subprocess.run(['which', 'mount.cifs'], capture_output=True, text=True)
+        if which_result.returncode != 0:
+            logger.error("mount.cifs NOT FOUND")
+            return False, "mount.cifs not installed"
+        logger.info(f"mount.cifs found at: {which_result.stdout.strip()}")
+        
+        # Step 2: Check if mount point directory exists
+        if not os.path.exists(BACKUP_MOUNT_POINT):
+            logger.error(f"Mount point {BACKUP_MOUNT_POINT} does not exist")
+            return False, f"Mount point directory missing: {BACKUP_MOUNT_POINT}"
+        logger.info(f"Mount point exists: {BACKUP_MOUNT_POINT}")
+        
+        # Step 3: Check if already mounted
+        logger.info("Checking if already mounted...")
+        check = subprocess.run(['mountpoint', '-q', BACKUP_MOUNT_POINT], capture_output=True)
+        if check.returncode == 0:
+            logger.info("Already mounted, returning success")
             return True, ""
+        logger.info("Not currently mounted")
         
-        # Unmount if something is there but not recognized
-        subprocess.run(['umount', '-f', BACKUP_MOUNT_POINT], 
-                      capture_output=True, timeout=5)
+        # Step 4: Try to unmount anything that might be stuck
+        logger.info("Attempting cleanup unmount...")
+        subprocess.run(['umount', '-f', '-l', BACKUP_MOUNT_POINT], capture_output=True, timeout=5)
         
-        # Build mount command - escape password for shell
-        # Use subprocess list form (doesn't need escaping)
+        # Step 5: Build and execute mount command
+        mount_options = f'username={username},password={password},uid=0,gid=0,file_mode=0777,dir_mode=0777,vers=3.0'
+        
         mount_cmd = [
             'mount.cifs',
             f'//{host}/{share}',
             BACKUP_MOUNT_POINT,
             '-o',
-            f'username={username},password={password},uid=1000,gid=1000,file_mode=0777,dir_mode=0777'
+            mount_options
         ]
         
-        logger.info(f"Running mount command: mount.cifs //{host}/{share} {BACKUP_MOUNT_POINT} -o username={username},password=***")
+        logger.info("Executing mount command...")
+        logger.info(f"Command: mount.cifs //{host}/{share} {BACKUP_MOUNT_POINT} -o username={username},password=***,uid=0,gid=0,file_mode=0777,dir_mode=0777,vers=3.0")
+        
         result = subprocess.run(mount_cmd, capture_output=True, text=True, timeout=30)
         
-        logger.info(f"Mount command returncode: {result.returncode}")
+        logger.info(f"Mount exit code: {result.returncode}")
+        
         if result.stdout:
             logger.info(f"Mount stdout: {result.stdout.strip()}")
+        
         if result.stderr:
             logger.error(f"Mount stderr: {result.stderr.strip()}")
         
-        if result.returncode == 0:
-            # VERIFY it actually mounted
-            verify = subprocess.run(['mountpoint', '-q', BACKUP_MOUNT_POINT], 
-                                  capture_output=True, timeout=5)
+        # Step 6: Check result
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() if result.stderr else "Unknown error"
             
-            if verify.returncode != 0:
-                logger.error(f"Mount command returned 0 but mountpoint verification failed!")
-                # Try to see what's in the directory
-                try:
-                    ls_result = subprocess.run(['ls', '-la', BACKUP_MOUNT_POINT], 
-                                             capture_output=True, text=True, timeout=5)
-                    logger.info(f"Directory contents: {ls_result.stdout}")
-                except:
-                    pass
-                return False, "Mount command succeeded but verification failed. Mount point not accessible."
-            
-            logger.info(f"Mount verified successfully!")
-            # Update database
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE global_backup_config 
-                SET mount_status = 'connected', last_mount_check = CURRENT_TIMESTAMP
-                WHERE id = 1
-            """)
-            conn.commit()
-            conn.close()
-            
-            logger.info(f"✓ SMB share mounted: //{host}/{share}")
-            return True, ""
-        else:
-            error = result.stderr.strip()
-            
-            # Parse common errors
-            if 'Permission denied' in error or 'access denied' in error.lower():
-                return False, "Access denied. Check username and password."
-            elif 'No such file or directory' in error or 'could not resolve' in error.lower():
-                return False, f"Cannot reach host '{host}'. Check IP address."
-            elif 'No such device' in error:
-                return False, f"Share '{share}' not found on host."
+            # Parse error
+            if 'Permission denied' in error_msg or 'access denied' in error_msg.lower():
+                return False, f"Permission denied. Check credentials. Error: {error_msg}"
+            elif 'No such file or directory' in error_msg or 'could not resolve' in error_msg.lower():
+                return False, f"Cannot reach {host}. Error: {error_msg}"
+            elif 'No such device' in error_msg:
+                return False, f"Share {share} not found. Error: {error_msg}"
             else:
-                return False, f"Mount failed: {error}"
-                
+                return False, f"Mount failed: {error_msg}"
+        
+        # Step 7: Verify mount actually worked
+        logger.info("Verifying mount...")
+        verify = subprocess.run(['mountpoint', '-q', BACKUP_MOUNT_POINT], capture_output=True)
+        
+        if verify.returncode != 0:
+            logger.error("VERIFICATION FAILED - mountpoint says not mounted")
+            
+            # Check what's actually there
+            ls_result = subprocess.run(['ls', '-la', BACKUP_MOUNT_POINT], capture_output=True, text=True)
+            logger.error(f"Directory contents:\n{ls_result.stdout}")
+            
+            # Check actual mounts
+            mount_check = subprocess.run(['mount'], capture_output=True, text=True)
+            logger.error(f"Current mounts:\n{mount_check.stdout}")
+            
+            return False, "Mount command succeeded but directory not accessible"
+        
+        logger.info("✓✓✓ MOUNT VERIFIED SUCCESSFULLY ✓✓✓")
+        
+        # Step 8: Update database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE global_backup_config 
+            SET mount_status = 'connected', last_mount_check = CURRENT_TIMESTAMP
+            WHERE id = 1
+        """)
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✓ Database updated")
+        return True, ""
+        
     except subprocess.TimeoutExpired:
-        return False, "Connection timeout. Check network and firewall."
+        logger.error("Mount command timed out")
+        return False, "Mount timeout - check network"
     except Exception as e:
-        logger.error(f"Error mounting SMB share: {e}")
-        return False, str(e)
+        logger.error(f"Exception in mount_smb_share: {e}")
+        logger.error(f"Exception type: {type(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return False, f"Mount error: {str(e)}"
 
 
 def unmount_smb_share() -> bool:
@@ -315,7 +350,9 @@ def check_backup_destination_available() -> Tuple[bool, str, int, str]:
                 return True, actual_path, available_gb, ""
             else:
                 # Not mounted - try to mount if auto_mount enabled
+                logger.info(f"Share not mounted. auto_mount={config['auto_mount']}")
                 if config['auto_mount']:
+                    logger.info("Attempting auto-mount...")
                     success, error = mount_smb_share(
                         config['smb_host'],
                         config['smb_share'],
@@ -327,6 +364,7 @@ def check_backup_destination_available() -> Tuple[bool, str, int, str]:
                         # Recursively check again
                         return check_backup_destination_available()
                     else:
+                        logger.error(f"Auto-mount failed: {error}")
                         return False, BACKUP_MOUNT_POINT, 0, error
                 return False, BACKUP_MOUNT_POINT, 0, "SMB share not mounted and auto-mount is disabled"
         

@@ -9023,22 +9023,67 @@ def update_backup_config():
 @app.route('/api/backup/test-connection', methods=['POST'])
 @require_auth
 def test_backup_connection():
-    """Test backup destination connection"""
+    """Test backup destination connection - does NOT mount, just tests credentials"""
     try:
         logger.info("=" * 80)
         logger.info("TEST CONNECTION ENDPOINT CALLED")
         logger.info("=" * 80)
         
-        is_available, mount_point, available_gb, error_msg = backup_manager.check_backup_destination_available()
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM global_backup_config WHERE id = 1")
+        config = cursor.fetchone()
+        conn.close()
         
-        logger.info(f"Test result: available={is_available}, error={error_msg}")
+        if not config:
+            return jsonify({'success': False, 'message': 'No configuration found'}), 400
         
-        return jsonify({
-            'success': is_available,
-            'mount_point': mount_point,
-            'available_gb': available_gb,
-            'message': 'Connected successfully' if is_available else error_msg
-        })
+        if config['type'] == 'local':
+            path = config['local_path']
+            if os.path.exists(path) and os.access(path, os.W_OK):
+                stat = shutil.disk_usage(path)
+                available_gb = stat.free // (1024**3)
+                return jsonify({'success': True, 'mount_point': path, 'available_gb': available_gb, 'message': 'Local path accessible'})
+            else:
+                return jsonify({'success': False, 'message': f"Path '{path}' not accessible"})
+        
+        elif config['type'] == 'smb':
+            # Test SMB connection using smbclient
+            logger.info(f"Testing SMB connection to //{config['smb_host']}/{config['smb_share']}")
+            
+            test_cmd = [
+                'smbclient',
+                f"//{config['smb_host']}/{config['smb_share']}",
+                '-U', f"{config['smb_username']}%{config['smb_password']}",
+                '-c', 'ls'
+            ]
+            
+            result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
+            
+            logger.info(f"smbclient returncode: {result.returncode}")
+            if result.stderr:
+                logger.info(f"smbclient stderr: {result.stderr.strip()}")
+            
+            if result.returncode == 0:
+                logger.info("SMB credentials test successful")
+                return jsonify({'success': True, 'message': 'SMB credentials valid', 'available_gb': 0})
+            else:
+                error = result.stderr.strip()
+                if 'NT_STATUS_LOGON_FAILURE' in error or 'NT_STATUS_ACCESS_DENIED' in error:
+                    msg = "Invalid username or password"
+                elif 'NT_STATUS_BAD_NETWORK_NAME' in error:
+                    msg = f"Share '{config['smb_share']}' not found"
+                elif 'NT_STATUS_HOST_UNREACHABLE' in error or 'NT_STATUS_IO_TIMEOUT' in error:
+                    msg = f"Cannot reach host '{config['smb_host']}'"
+                else:
+                    msg = f"Connection failed: {error}"
+                logger.error(f"SMB test failed: {msg}")
+                return jsonify({'success': False, 'message': msg})
+        
+        return jsonify({'success': False, 'message': 'Unknown backup type'})
+        
+    except subprocess.TimeoutExpired:
+        return jsonify({'success': False, 'message': 'Connection timeout'}), 500
     except Exception as e:
         logger.error(f"Error testing backup connection: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
