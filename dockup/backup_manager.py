@@ -57,16 +57,19 @@ except Exception as e:
 # ============================================================================
 
 def get_db_connection():
-    """Get database connection with row factory"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    """Get database connection with row factory and timeout"""
+    conn = sqlite3.connect(DATABASE_FILE, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    # Enable WAL mode for better concurrency
+    conn.execute('PRAGMA journal_mode=WAL')
     return conn
 
 
 def init_backup_database():
     """Initialize SQLite database for backup feature"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = sqlite3.connect(DATABASE_FILE, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA journal_mode=WAL')
     cursor = conn.cursor()
     
     # Global backup destination configuration
@@ -1119,27 +1122,39 @@ def stop_backup_worker():
 
 def queue_backup(stack_name: str) -> int:
     """
-    Add backup to queue
+    Add backup to queue with retry on database lock
     
     Returns:
         queue_id
     """
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO backup_queue (stack_name, status)
-            VALUES (?, 'queued')
-        """, (stack_name,))
-        queue_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        
-        backup_queue.put(queue_id)
-        logger.info(f"✓ Backup queued for {stack_name} (ID: {queue_id})")
-        return queue_id
-        
-    except Exception as e:
-        logger.error(f"Error queuing backup: {e}")
-        return -1
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO backup_queue (stack_name, status)
+                VALUES (?, 'queued')
+            """, (stack_name,))
+            queue_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            
+            backup_queue.put(queue_id)
+            logger.info(f"✓ Backup queued for {stack_name} (ID: {queue_id})")
+            return queue_id
+            
+        except sqlite3.OperationalError as e:
+            if 'locked' in str(e) and attempt < max_retries - 1:
+                logger.warning(f"Database locked, retrying... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(0.5)
+                continue
+            else:
+                logger.error(f"Error queuing backup after {attempt + 1} attempts: {e}")
+                return -1
+        except Exception as e:
+            logger.error(f"Error queuing backup: {e}")
+            return -1
+    
+    return -1
 
