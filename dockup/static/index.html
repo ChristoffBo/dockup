@@ -6774,7 +6774,36 @@
                 async mountBackupShare() { console.log('mountBackupShare called'); try { const r = await fetch('/api/backup/mount', {method: 'POST'}); console.log('Mount response:', r.status); if (r.ok) { this.showToast('Mounted', 'success'); await this.loadBackupConfig(); } else { const e = await r.json(); console.error('Mount failed:', e); this.showToast(`Mount failed: ${e.message || e.error}`, 'error'); } } catch(e) { console.error('Mount error:', e); this.showToast('Mount error', 'error'); } },
                 async unmountBackupShare() { try { const r = await fetch('/api/backup/unmount', {method: 'POST'}); if (r.ok) { this.showToast('Unmounted', 'success'); await this.loadBackupConfig(); } else { const e = await r.json(); this.showToast(`Unmount failed: ${e.message || e.error}`, 'error'); } } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
                 async saveStackBackupConfig() { if (!this.selectedStack) return; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/config`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.stackBackupConfig)}); if (r.ok) this.showToast('Saved', 'success'); else this.showToast('Save failed', 'error'); } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
-                async backupStackNow() { console.log('backupStackNow called, selectedStack:', this.selectedStack); if (!this.selectedStack) { console.error('No stack selected!'); this.showToast('No stack selected', 'error'); return; } this.backupInProgress = true; try { const url = `/api/backup/stack/${this.selectedStack}/backup-now`; console.log('Calling:', url); const r = await fetch(url, {method: 'POST'}); console.log('Backup response:', r.status); if (r.ok) { const d = await r.json(); console.log('Backup queued:', d); this.showToast(`Queued (ID: ${d.queue_id})`, 'success'); } else { const err = await r.text(); console.error('Backup failed:', err); this.showToast('Backup failed', 'error'); } } catch(e) { console.error('Backup error:', e); this.showToast('Error', 'error'); } finally { this.backupInProgress = false; } },
+                async backupStackNow() { 
+                    const stack = this.scheduleStackName || this.selectedStack;
+                    console.log('backupStackNow called, stack:', stack); 
+                    if (!stack) { 
+                        console.error('No stack selected!'); 
+                        this.showToast('No stack selected', 'error'); 
+                        return; 
+                    } 
+                    this.backupInProgress = true; 
+                    try { 
+                        const url = `/api/backup/stack/${stack}/backup-now`; 
+                        console.log('Calling:', url); 
+                        const r = await fetch(url, {method: 'POST'}); 
+                        console.log('Backup response:', r.status); 
+                        if (r.ok) { 
+                            const d = await r.json(); 
+                            console.log('Backup queued:', d); 
+                            this.showToast(`Backup queued`, 'success'); 
+                        } else { 
+                            const err = await r.text(); 
+                            console.error('Backup failed:', err); 
+                            this.showToast('Backup failed', 'error'); 
+                        } 
+                    } catch(e) { 
+                        console.error('Backup error:', e); 
+                        this.showToast('Error', 'error'); 
+                    } finally { 
+                        this.backupInProgress = false; 
+                    } 
+                },
                 async loadStackBackupHistory(s) { if (!s) return; try { const r = await fetch(`/api/backup/stack/${s}/history`); if (r.ok) { const d = await r.json(); this.stackBackupHistory = d.backups || []; this.showToast(`Found ${this.stackBackupHistory.length} backups`, 'success'); } else this.showToast('Failed to load history', 'error'); } catch(e) { this.showToast('Error loading history', 'error'); console.error(e); } },
                 async restoreFromBackup(id) { if (!confirm('⚠️ WARNING: This will STOP the stack, restore data from backup, and restart. Current data will be backed up first. Continue?')) return; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/restore/${id}`, {method: 'POST'}); if (r.ok) { this.showToast('Restore started', 'success'); await this.refreshStacks(); } else { const e = await r.json(); this.showToast(`Restore failed: ${e.error}`, 'error'); } } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
                 async deleteBackup(id) { if (!confirm('Delete this backup permanently?')) return; try { const r = await fetch(`/api/backup/history/${id}`, {method: 'DELETE'}); if (r.ok) { this.showToast('Deleted', 'success'); await this.loadStackBackupHistory(this.selectedStack); } else this.showToast('Delete failed', 'error'); } catch(e) { this.showToast('Error', 'error'); console.error(e); } }
