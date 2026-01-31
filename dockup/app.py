@@ -9301,7 +9301,7 @@ def update_stack_backup_config(stack_name):
 def parse_stack_volumes(stack_name):
     """Parse and return volumes from stack's docker-compose.yml"""
     try:
-        volumes = backup_manager.parse_stack_volumes(stack_name)
+        volumes = backup_manager.parse_stack_volumes(stack_name, STACKS_DIR)
         return jsonify({'volumes': volumes})
     except Exception as e:
         logger.error(f"Error parsing stack volumes: {e}")
@@ -9314,9 +9314,10 @@ def get_stack_volumes(stack_name):
     """Get volumes for a stack by parsing compose file"""
     try:
         logger.info(f"Getting volumes for stack: {stack_name}")
+        logger.info(f"Using stacks directory: {STACKS_DIR}")
         
-        # Parse volumes directly
-        volumes = backup_manager.parse_stack_volumes(stack_name)
+        # Parse volumes directly with correct path
+        volumes = backup_manager.parse_stack_volumes(stack_name, STACKS_DIR)
         logger.info(f"Parsed {len(volumes)} volumes for {stack_name}")
         
         if not volumes:
