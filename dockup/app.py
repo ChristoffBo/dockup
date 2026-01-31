@@ -8948,11 +8948,7 @@ def get_backup_config():
         conn.close()
         
         if config:
-            # Convert Row to dict and mask password
-            config_dict = dict(config)
-            if config_dict.get('smb_password'):
-                config_dict['smb_password'] = '***'
-            return jsonify(config_dict)
+            return jsonify(dict(config))
         
         return jsonify({
             'type': 'local',
@@ -8984,51 +8980,28 @@ def update_backup_config():
             """, (data.get('local_path', '/app/backups'),))
         
         elif data.get('type') == 'smb':
-            # Only update password if it's provided and not the masked value
-            password = data.get('smb_password', '')
+            logger.info(f"Saving SMB config: host={data.get('smb_host')}, share={data.get('smb_share')}, user={data.get('smb_username')}")
             
-            if password and password != '***' and password != '':
-                # Password provided - update everything including password
-                cursor.execute("""
-                    UPDATE global_backup_config 
-                    SET type = 'smb',
-                        smb_host = ?,
-                        smb_share = ?,
-                        smb_username = ?,
-                        smb_password = ?,
-                        smb_mount_path = ?,
-                        auto_mount = ?,
-                        mount_status = 'disconnected',
-                        last_mount_check = CURRENT_TIMESTAMP
-                    WHERE id = 1
-                """, (
-                    data.get('smb_host', ''),
-                    data.get('smb_share', ''),
-                    data.get('smb_username', ''),
-                    password,
-                    data.get('smb_mount_path', ''),
-                    1 if data.get('auto_mount') else 0
-                ))
-            else:
-                # Password is masked or empty - keep existing password
-                cursor.execute("""
-                    UPDATE global_backup_config 
-                    SET type = 'smb',
-                        smb_host = ?,
-                        smb_share = ?,
-                        smb_username = ?,
-                        smb_mount_path = ?,
-                        auto_mount = ?,
-                        mount_status = 'disconnected',
-                        last_mount_check = CURRENT_TIMESTAMP
-                    WHERE id = 1
-                """, (
-                    data.get('smb_host', ''),
-                    data.get('smb_share', ''),
-                    data.get('smb_username', ''),
-                    data.get('smb_mount_path', ''),
-                    1 if data.get('auto_mount') else 0
-                ))
+            cursor.execute("""
+                UPDATE global_backup_config 
+                SET type = 'smb',
+                    smb_host = ?,
+                    smb_share = ?,
+                    smb_username = ?,
+                    smb_password = ?,
+                    smb_mount_path = ?,
+                    auto_mount = ?,
+                    mount_status = 'disconnected',
+                    last_mount_check = CURRENT_TIMESTAMP
+                WHERE id = 1
+            """, (
+                data.get('smb_host', ''),
+                data.get('smb_share', ''),
+                data.get('smb_username', ''),
+                data.get('smb_password', ''),
+                data.get('smb_mount_path', ''),
+                1 if data.get('auto_mount') else 0
+            ))
         
         conn.commit()
         conn.close()
