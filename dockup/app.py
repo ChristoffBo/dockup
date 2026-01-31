@@ -28,6 +28,7 @@ import psutil
 import bcrypt
 import requests
 import secrets
+import shutil
 import fcntl
 import hashlib
 from datetime import datetime
@@ -9109,8 +9110,13 @@ def mount_backup_share():
         config = cursor.fetchone()
         conn.close()
         
+        logger.info(f"Config found: {config is not None}")
+        if config:
+            logger.info(f"Config type: {config.get('type')}")
+            logger.info(f"Config keys: {list(config.keys())}")
+        
         if not config or config['type'] != 'smb':
-            logger.error("SMB not configured or config missing")
+            logger.error(f"SMB not configured. config={config is not None}, type={config.get('type') if config else 'N/A'}")
             return jsonify({'success': False, 'message': 'SMB not configured'}), 400
         
         # Log what we're trying to mount (without password)
