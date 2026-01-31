@@ -9025,7 +9025,13 @@ def update_backup_config():
 def test_backup_connection():
     """Test backup destination connection"""
     try:
+        logger.info("=" * 80)
+        logger.info("TEST CONNECTION ENDPOINT CALLED")
+        logger.info("=" * 80)
+        
         is_available, mount_point, available_gb, error_msg = backup_manager.check_backup_destination_available()
+        
+        logger.info(f"Test result: available={is_available}, error={error_msg}")
         
         return jsonify({
             'success': is_available,
@@ -9043,6 +9049,10 @@ def test_backup_connection():
 def mount_backup_share():
     """Mount SMB backup share"""
     try:
+        logger.info("=" * 80)
+        logger.info("MOUNT ENDPOINT CALLED")
+        logger.info("=" * 80)
+        
         conn = backup_manager.get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM global_backup_config WHERE id = 1")
@@ -9050,6 +9060,7 @@ def mount_backup_share():
         conn.close()
         
         if not config or config['type'] != 'smb':
+            logger.error("SMB not configured or config missing")
             return jsonify({'success': False, 'message': 'SMB not configured'}), 400
         
         # Log what we're trying to mount (without password)
