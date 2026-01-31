@@ -3427,8 +3427,8 @@
                     </div>
                     
                     <div style="display:flex;gap:10px;">
-                        <button @click="saveStackBackupConfig(); showScheduleModal = false;" class="btn btn-primary">Save All Changes</button>
-                        <button @click="backupStackNow(); showScheduleModal = false;" :disabled="backupInProgress" class="btn btn-success">{{backupInProgress ? "Backing up..." : "Backup Now"}}</button>
+                        <button @click="saveStackBackupConfig()" class="btn btn-primary">Save All Changes</button>
+                        <button @click="backupStackNow()" :disabled="backupInProgress" class="btn btn-success">{{backupInProgress ? "Backing up..." : "Backup Now"}}</button>
                     </div>
                 </div>
 
@@ -6767,7 +6767,7 @@
                     });
                 }
 ,
-                async loadBackupConfig() { try { const r = await fetch('/api/backup/config'); if (r.ok) { const c = await r.json(); this.backupConfig = c; if (c.smb_password === '***') this.backupConfig.smb_password = ''; } } catch(e) { console.error(e); } },
+                async loadBackupConfig() { try { const r = await fetch('/api/backup/config'); if (r.ok) { this.backupConfig = await r.json(); } } catch(e) { console.error(e); } },
                 async saveBackupConfig() { try { const r = await fetch('/api/backup/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(this.backupConfig)}); if (r.ok) { this.showToast('Saved', 'success'); } else this.showToast('Failed', 'error'); } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
                 async testBackupConnection() { try { const r = await fetch('/api/backup/test-connection', {method: 'POST'}); const d = await r.json(); if (d.success) { this.backupAvailableSpace = d.available_gb; this.backupConfig.mount_status = 'connected'; this.showToast(`Connected! ${d.available_gb} GB`, 'success'); } else this.showToast(`Failed: ${d.message}`, 'error'); } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
                 async mountBackupShare() { try { const r = await fetch('/api/backup/mount', {method: 'POST'}); if (r.ok) { this.showToast('Mounted', 'success'); await this.loadBackupConfig(); } else { const e = await r.json(); this.showToast(`Mount failed: ${e.message || e.error}`, 'error'); } } catch(e) { this.showToast('Mount error', 'error'); console.error(e); } },
