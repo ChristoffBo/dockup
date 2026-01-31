@@ -458,11 +458,20 @@ def parse_stack_volumes(stack_name: str, stacks_dir: str = '/stacks') -> List[Di
     """
     try:
         stack_path = os.path.join(stacks_dir, stack_name)
-        compose_file = os.path.join(stack_path, 'docker-compose.yml')
         
-        if not os.path.exists(compose_file):
-            logger.error(f"Compose file not found: {compose_file}")
+        # Check for compose files in order: compose.yaml, compose.yml, docker-compose.yaml, docker-compose.yml
+        compose_file = None
+        for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
+            test_path = os.path.join(stack_path, filename)
+            if os.path.exists(test_path):
+                compose_file = test_path
+                break
+        
+        if not compose_file:
+            logger.error(f"No compose file found in {stack_path}")
             return []
+        
+        logger.info(f"Found compose file: {compose_file}")
         
         with open(compose_file, 'r') as f:
             compose_data = yaml.safe_load(f)
@@ -470,6 +479,7 @@ def parse_stack_volumes(stack_name: str, stacks_dir: str = '/stacks') -> List[Di
         volumes = []
         
         if not compose_data or 'services' not in compose_data:
+            logger.warning(f"No services found in {compose_file}")
             return []
         
         for service_name, service in compose_data.get('services', {}).items():
@@ -509,10 +519,13 @@ def parse_stack_volumes(stack_name: str, stacks_dir: str = '/stacks') -> List[Di
                             'backup_enabled': True
                         })
         
+        logger.info(f"Parsed {len(volumes)} volumes from {compose_file}")
         return volumes
         
     except Exception as e:
         logger.error(f"Error parsing stack volumes: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return []
 
 
@@ -582,9 +595,12 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         temp_backup_dir = os.path.join(BACKUP_TEMP_DIR, backup_name)
         os.makedirs(temp_backup_dir, exist_ok=True)
         
-        # Copy docker-compose.yml
+        # Copy compose file (check both names)
         stack_path = os.path.join(stacks_dir, stack_name)
-        compose_src = os.path.join(stack_path, 'docker-compose.yml')
+        compose_src = os.path.join(stack_path, 'compose.yml')
+        if not os.path.exists(compose_src):
+            compose_src = os.path.join(stack_path, 'docker-compose.yml')
+        
         if os.path.exists(compose_src):
             shutil.copy2(compose_src, os.path.join(temp_backup_dir, 'docker-compose.yml'))
         
