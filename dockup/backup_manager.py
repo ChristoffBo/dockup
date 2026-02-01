@@ -543,13 +543,20 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
     Returns:
         (success, backup_file_path, error_message)
     """
+    logger.info("=" * 80)
+    logger.info(f"🚀 EXECUTE_BACKUP CALLED FOR: {stack_name}")
+    logger.info(f"Stacks directory: {stacks_dir}")
+    logger.info("=" * 80)
+    
     start_time = time.time()
     backup_file_path = None
     container_was_running = False
     
     try:
+        logger.info("Checking backup destination availability...")
         # Check destination is available
         is_available, dest_path, available_gb, error_msg = check_backup_destination_available()
+        logger.info(f"Destination check result: available={is_available}, path={dest_path}, space={available_gb}GB")
         if not is_available:
             return False, '', f"Backup destination not available: {error_msg}"
         
@@ -764,7 +771,14 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         
         kept_count = min(len(all_backups), config['retention_count'])
         
-        logger.info(f"✓ Backup completed: {backup_file_name} ({backup_size_mb:.1f} MB in {duration}s)")
+        logger.info("=" * 80)
+        logger.info(f"✅ BACKUP COMPLETED SUCCESSFULLY")
+        logger.info(f"Stack: {stack_name}")
+        logger.info(f"File: {backup_file_name}")
+        logger.info(f"Size: {backup_size_mb:.1f} MB")
+        logger.info(f"Duration: {duration}s")
+        logger.info(f"Kept: {kept_count} backups")
+        logger.info("=" * 80)
         
         # Send success notification
         try:
@@ -776,11 +790,18 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         except Exception as notif_error:
             logger.error(f"Failed to send notification: {notif_error}")
         
+        logger.info(f"Returning success: True, {backup_file_path}, ''")
         return True, backup_file_path, ""
         
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Backup failed for {stack_name}: {error_msg}")
+        logger.error("=" * 80)
+        logger.error(f"❌ BACKUP FAILED FOR {stack_name}")
+        logger.error(f"Error: {error_msg}")
+        logger.error("=" * 80)
+        import traceback
+        logger.error(f"Traceback:\n{traceback.format_exc()}")
+        logger.error("=" * 80)
         
         # Send error notification
         try:
@@ -1145,19 +1166,23 @@ def backup_worker():
                 logger.info(f"Processing backup job {queue_id} for {stack_name}")
                 
                 # Execute backup
+                logger.info(f"Calling execute_backup for {stack_name}...")
                 success, backup_path, error = execute_backup(stack_name, STACKS_DIR)
+                logger.info(f"execute_backup returned: success={success}, path={backup_path}, error={error}")
                 
                 # Update queue status
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 
                 if success:
+                    logger.info(f"✅ Backup succeeded, updating queue to completed")
                     cursor.execute("""
                         UPDATE backup_queue 
                         SET status = 'completed', end_time = CURRENT_TIMESTAMP, backup_file_path = ?
                         WHERE id = ?
                     """, (backup_path, queue_id))
                 else:
+                    logger.error(f"❌ Backup failed, updating queue to failed: {error}")
                     cursor.execute("""
                         UPDATE backup_queue 
                         SET status = 'failed', end_time = CURRENT_TIMESTAMP, error_message = ?
