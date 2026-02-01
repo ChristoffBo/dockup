@@ -1015,28 +1015,6 @@ try:
     backup_manager.docker_client = docker_client
     backup_manager.start_backup_worker()
     logger.info("✓ Backup system initialized")
-    
-    # Schedule existing backup jobs
-    conn = backup_manager.get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT stack_name, schedule, schedule_time, schedule_day 
-        FROM backup_configs 
-        WHERE enabled = 1 AND schedule != 'manual'
-    """)
-    scheduled_backups = cursor.fetchall()
-    conn.close()
-    
-    for config in scheduled_backups:
-        schedule_backup_job(
-            config['stack_name'],
-            config['schedule'],
-            config['schedule_time'],
-            config['schedule_day']
-        )
-    
-    logger.info(f"✓ Restored {len(scheduled_backups)} backup schedules")
-    
 except Exception as e:
     logger.error(f"Error initializing backup system: {e}")
 
@@ -9813,6 +9791,31 @@ if __name__ == '__main__':
         logger.info("Setting up scheduler...")
         scheduler = setup_scheduler()
         logger.info("✓ Scheduler started")
+        
+        # Load existing backup schedules
+        logger.info("Loading backup schedules...")
+        try:
+            conn = backup_manager.get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT stack_name, schedule, schedule_time, schedule_day 
+                FROM backup_configs 
+                WHERE enabled = 1 AND schedule != 'manual'
+            """)
+            scheduled_backups = cursor.fetchall()
+            conn.close()
+            
+            for backup_config in scheduled_backups:
+                schedule_backup_job(
+                    backup_config['stack_name'],
+                    backup_config['schedule'],
+                    backup_config['schedule_time'],
+                    backup_config['schedule_day']
+                )
+            
+            logger.info(f"✓ Restored {len(scheduled_backups)} backup schedules")
+        except Exception as e:
+            logger.error(f"Error loading backup schedules: {e}")
         
         # Run orphan import on startup
         logger.info("Scanning for orphan containers to import...")
