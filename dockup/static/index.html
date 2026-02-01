@@ -2398,6 +2398,12 @@
                                 <span>Notify when stacks become unhealthy</span>
                             </label>
                         </div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.notify_on_backup">
+                                <span>Notify on backup completion/failure</span>
+                            </label>
+                        </div>
                         <div class="form-group" v-if="settings.notify_on_health_failure">
                             <label class="form-label">Health Check Threshold</label>
                             <input type="number" class="form-control" v-model.number="settings.health_check_threshold" min="1" max="10" placeholder="3">
@@ -7020,13 +7026,25 @@
                         return;
                     }
                     try { 
+                        // Include volumes
+                        const saveData = {
+                            ...this.stackBackupConfig,
+                            volumes: this.stackVolumes
+                        };
+                        
                         const r = await fetch(`/api/backup/stack/${stack}/config`, {
                             method: 'POST', 
                             headers: {'Content-Type': 'application/json'}, 
-                            body: JSON.stringify(this.stackBackupConfig)
+                            body: JSON.stringify(saveData)
                         }); 
-                        if (r.ok) this.showToast('Saved', 'success'); 
-                        else this.showToast('Save failed', 'error'); 
+                        
+                        if (r.ok) {
+                            this.showToast('Backup settings saved', 'success');
+                            // Reload to confirm
+                            await this.loadStackBackupConfig(stack);
+                        } else {
+                            this.showToast('Save failed', 'error');
+                        }
                     } catch(e) { 
                         this.showToast('Error', 'error'); 
                         console.error(e); 
@@ -7037,13 +7055,17 @@
                     try { 
                         const r = await fetch(`/api/backup/stack/${stackName}/config`); 
                         if (r.ok) { 
-                            const config = await r.json(); 
+                            const data = await r.json();
+                            // Backend returns {config: {...}, volumes: [...]}
+                            const cfg = data.config || {};
+                            
                             this.stackBackupConfig = {
-                                enabled: config.enabled || false,
-                                schedule: config.schedule || 'manual',
-                                cron: config.cron || '0 2 * * *',
-                                retention_count: config.retention_count || 7,
-                                stop_before_backup: config.stop_before_backup !== false
+                                enabled: cfg.enabled || false,
+                                schedule: cfg.schedule || 'manual',
+                                schedule_time: cfg.schedule_time || '03:00',
+                                schedule_day: cfg.schedule_day || 0,
+                                retention_count: cfg.retention_count || 7,
+                                stop_before_backup: cfg.stop_before_backup !== false
                             };
                         } 
                         
