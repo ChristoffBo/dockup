@@ -1701,10 +1701,22 @@ def check_auth():
 
 def send_notification(title, message, notify_type='info'):
     """Send notification via configured services"""
+    logger.info("=" * 80)
+    logger.info(f"SEND_NOTIFICATION CALLED")
+    logger.info(f"Title: {title}")
+    logger.info(f"Message: {message}")
+    logger.info(f"Type: {notify_type}")
+    
     # Check if backup notification
     is_backup = 'backup' in title.lower()
+    logger.info(f"Is backup notification: {is_backup}")
     
     # Check notification preferences
+    logger.info(f"notify_on_backup setting: {config.get('notify_on_backup', True)}")
+    logger.info(f"notify_on_check setting: {config.get('notify_on_check')}")
+    logger.info(f"notify_on_update setting: {config.get('notify_on_update')}")
+    logger.info(f"notify_on_error setting: {config.get('notify_on_error')}")
+    
     if is_backup and not config.get('notify_on_backup', True):
         logger.info(f"Backup notification skipped (notify_on_backup=False): {title}")
         return
@@ -1722,10 +1734,14 @@ def send_notification(title, message, notify_type='info'):
         logger.info(f"Notification skipped (notify_on_health_failure=False): {title}")
         return
     
+    logger.info(f"apobj length: {len(apobj)}")
+    logger.info(f"apobj URLs: {[str(s) for s in apobj]}")
+    
     if len(apobj) > 0:
         logger.info(f"Sending notification: {title} - {message}")
         try:
             result = apobj.notify(title=title, body=message, notify_type=notify_type)
+            logger.info(f"apobj.notify() returned: {result}")
             if result:
                 logger.info(f"✓ Notification sent successfully")
             else:
@@ -1739,6 +1755,8 @@ def send_notification(title, message, notify_type='info'):
             logger.warning(f"No notification services configured. Backup notification not sent: {title}")
         else:
             logger.info(f"No notification services configured. Title: {title}")
+    
+    logger.info("=" * 80)
 
 
 # ============================================================================
@@ -2904,12 +2922,16 @@ def get_stacks():
             # Get update history for "fresh" badge
             update_info = update_history.get(stack_name, {})
             last_update = update_info.get('last_update')
+            # Convert to user timezone for display
+            if last_update:
+                last_update = format_timestamp(last_update)
+            
             updated_recently = False
             update_age_hours = None
             
             if last_update:
                 try:
-                    update_time = datetime.fromisoformat(last_update)
+                    update_time = datetime.fromisoformat(last_update.replace('Z', '+00:00'))
                     age_delta = datetime.now(pytz.UTC) - update_time
                     update_age_hours = age_delta.total_seconds() / 3600
                     
@@ -8874,10 +8896,14 @@ def api_templates_list():
             })
         
         with templates_cache_lock:
+            last_updated = templates_cache.get('last_updated')
+            if last_updated:
+                last_updated = format_timestamp(last_updated)
+            
             return jsonify({
                 'success': True,
                 'enabled': True,
-                'last_updated': templates_cache.get('last_updated'),
+                'last_updated': last_updated,
                 'count': len(templates_cache.get('templates', [])),
                 'templates': templates_cache.get('templates', [])
             })
@@ -9435,6 +9461,12 @@ def get_stack_backup_history(stack_name):
         """, (stack_name,))
         backups = [dict(row) for row in cursor.fetchall()]
         conn.close()
+        
+        # Convert timestamps to user timezone
+        for backup in backups:
+            if backup.get('backup_date'):
+                backup['backup_date'] = format_timestamp(backup['backup_date'])
+        
         return jsonify({'backups': backups})
     except Exception as e:
         logger.error(f"Error getting backup history: {e}")
@@ -9539,6 +9571,12 @@ def get_all_backups():
         """)
         backups = [dict(row) for row in cursor.fetchall()]
         conn.close()
+        
+        # Convert timestamps to user timezone
+        for backup in backups:
+            if backup.get('backup_date'):
+                backup['backup_date'] = format_timestamp(backup['backup_date'])
+        
         return jsonify({'backups': backups})
     except Exception as e:
         logger.error(f"Error getting all backups: {e}")
