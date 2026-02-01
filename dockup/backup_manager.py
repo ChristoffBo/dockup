@@ -826,10 +826,13 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             from app import send_notification
             send_notification(
                 f"✓ Backup completed: {stack_name}",
-                f"Size: {backup_size_mb:.1f} MB, Duration: {duration}s, Kept: {kept_count} backups"
+                f"Size: {backup_size_mb:.1f} MB, Duration: {duration}s, Kept: {kept_count} backups",
+                notify_type='success'
             )
         except Exception as notif_error:
             logger.error(f"Failed to send notification: {notif_error}")
+            import traceback
+            logger.error(traceback.format_exc())
         
         logger.info(f"Returning success: True, {backup_file_path}, ''")
         return True, backup_file_path, ""
@@ -850,10 +853,12 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             send_notification(
                 f"✗ Backup failed: {stack_name}",
                 f"Error: {error_msg}",
-                level="error"
+                notify_type="error"
             )
-        except:
-            pass
+        except Exception as notif_error:
+            logger.error(f"Failed to send error notification: {notif_error}")
+            import traceback
+            logger.error(traceback.format_exc())
         
         # Restart container if it was stopped
         if container_was_running and docker_client:
