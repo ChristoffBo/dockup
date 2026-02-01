@@ -1051,22 +1051,44 @@ def scan_backup_directory() -> List[Dict]:
         List of discovered backup files
     """
     try:
+        logger.info("=" * 80)
+        logger.info("SCAN_BACKUP_DIRECTORY CALLED")
+        logger.info("=" * 80)
+        
         is_available, dest_path, _, error_msg = check_backup_destination_available()
+        logger.info(f"Destination available: {is_available}")
+        logger.info(f"Destination path: {dest_path}")
+        logger.info(f"Error message: {error_msg}")
+        
         if not is_available:
             logger.error(f"Cannot scan: {error_msg}")
+            return []
+        
+        # List all files in directory
+        try:
+            all_files = os.listdir(dest_path)
+            logger.info(f"Found {len(all_files)} files/directories in {dest_path}")
+            logger.info(f"Files: {all_files}")
+        except Exception as e:
+            logger.error(f"Error listing directory: {e}")
             return []
         
         backups = []
         pattern = re.compile(r'^(.+?)_(\d{4}-\d{2}-\d{2}-\d{6})\.tar\.gz$')
         
-        for filename in os.listdir(dest_path):
+        for filename in all_files:
+            logger.info(f"Checking file: {filename}")
             if filename.endswith('.tar.gz'):
+                logger.info(f"  -> Is .tar.gz file")
                 match = pattern.match(filename)
                 if match:
+                    logger.info(f"  -> Matches pattern")
                     stack_name = match.group(1)
                     timestamp_str = match.group(2)
                     file_path = os.path.join(dest_path, filename)
                     file_size = os.path.getsize(file_path) / (1024 * 1024)
+                    
+                    logger.info(f"  -> Stack: {stack_name}, Date: {timestamp_str}, Size: {file_size:.1f}MB")
                     
                     # Parse timestamp
                     try:
@@ -1081,7 +1103,12 @@ def scan_backup_directory() -> List[Dict]:
                         'file_path': file_path,
                         'size_mb': round(file_size, 2)
                     })
+                else:
+                    logger.info(f"  -> Does NOT match pattern")
+            else:
+                logger.info(f"  -> Not a .tar.gz file")
         
+        logger.info(f"Total backups found: {len(backups)}")
         return sorted(backups, key=lambda x: x['backup_date'], reverse=True)
         
     except Exception as e:
