@@ -824,9 +824,9 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             logger.info(f"Deleted: {deleted_count} old backup(s)")
         logger.info("=" * 80)
         
-        # Send success notification
+        # Send success notification via HTTP to ensure proper config context
         try:
-            from app import send_notification
+            import requests
             msg_parts = [
                 f"Stack: {stack_name}",
                 f"Size: {backup_size_mb:.1f} MB",
@@ -836,10 +836,15 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             if deleted_count > 0:
                 msg_parts.append(f"Removed {deleted_count} old backup(s)")
             
-            send_notification(
-                f"✓ Backup Completed: {stack_name}",
-                "\n".join(msg_parts),
-                notify_type='success'
+            # Call internal notification endpoint
+            requests.post(
+                'http://localhost:5000/api/internal/backup-notification',
+                json={
+                    'title': f"✓ Backup Completed: {stack_name}",
+                    'message': "\n".join(msg_parts),
+                    'type': 'success'
+                },
+                timeout=5
             )
         except Exception as notif_error:
             logger.error(f"Failed to send notification: {notif_error}")
@@ -859,13 +864,17 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         logger.error(f"Traceback:\n{traceback.format_exc()}")
         logger.error("=" * 80)
         
-        # Send error notification
+        # Send error notification via HTTP
         try:
-            from app import send_notification
-            send_notification(
-                f"✗ Backup failed: {stack_name}",
-                f"Error: {error_msg}",
-                notify_type="error"
+            import requests
+            requests.post(
+                'http://localhost:5000/api/internal/backup-notification',
+                json={
+                    'title': f"✗ Backup Failed: {stack_name}",
+                    'message': f"Error: {error_msg}",
+                    'type': 'error'
+                },
+                timeout=5
             )
         except Exception as notif_error:
             logger.error(f"Failed to send error notification: {notif_error}")

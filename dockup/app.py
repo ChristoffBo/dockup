@@ -13,7 +13,7 @@ PERFORMANCE OPTIMIZATIONS:
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.4.2"
+DOCKUP_VERSION = "1.4.1"
 
 import os
 import json
@@ -4854,6 +4854,22 @@ def api_test_notification():
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/internal/backup-notification', methods=['POST'])
+def api_internal_backup_notification():
+    """Internal endpoint for backup notifications from backup_manager thread"""
+    try:
+        data = request.json
+        send_notification(
+            data.get('title', 'Backup Notification'),
+            data.get('message', ''),
+            data.get('type', 'info')
+        )
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Error sending backup notification: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/images')
