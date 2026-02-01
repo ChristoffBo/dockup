@@ -28,7 +28,6 @@ jobs:
           push: true
           tags: |
             gitea.bothmainc.com/cbothma/dockup:latest
-            gitea.bothmainc.com/cbothma/dockup:${{ github.sha }}
 
       - name: Notify Gotify
         if: always()
