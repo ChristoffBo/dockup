@@ -811,6 +811,7 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         conn.close()
         
         kept_count = min(len(all_backups), config['retention_count'])
+        deleted_count = max(0, len(all_backups) - config['retention_count'])
         
         logger.info("=" * 80)
         logger.info(f"✅ BACKUP COMPLETED SUCCESSFULLY")
@@ -819,14 +820,25 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         logger.info(f"Size: {backup_size_mb:.1f} MB")
         logger.info(f"Duration: {duration}s")
         logger.info(f"Kept: {kept_count} backups")
+        if deleted_count > 0:
+            logger.info(f"Deleted: {deleted_count} old backup(s)")
         logger.info("=" * 80)
         
         # Send success notification
         try:
             from app import send_notification
+            msg_parts = [
+                f"Stack: {stack_name}",
+                f"Size: {backup_size_mb:.1f} MB",
+                f"Duration: {duration}s",
+                f"Retention: {kept_count}/{config['retention_count']}"
+            ]
+            if deleted_count > 0:
+                msg_parts.append(f"Removed {deleted_count} old backup(s)")
+            
             send_notification(
-                f"✓ Backup completed: {stack_name}",
-                f"Size: {backup_size_mb:.1f} MB, Duration: {duration}s, Kept: {kept_count} backups",
+                f"✓ Backup Completed: {stack_name}",
+                "\n".join(msg_parts),
                 notify_type='success'
             )
         except Exception as notif_error:
