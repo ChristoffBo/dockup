@@ -1077,10 +1077,6 @@
                     <i class="fas fa-box-open"></i>
                     Templates
                 </div>
-                <div class="nav-item" :class="{active: currentView === 'backups'}" @click="currentView = 'backups'; loadAllBackups()">
-                    <i class="fas fa-database"></i>
-                    Backups
-                </div>
                 <div class="nav-item" :class="{active: currentView === 'settings'}" @click="currentView = 'settings'">
                     <i class="fas fa-cog"></i>
                     Settings
@@ -1994,82 +1990,6 @@
                 </div>
             </div>
 
-            <div v-if="currentView === 'backups'">
-                <div class="header">
-                    <h1>All Backups</h1>
-                    <p>Restore any backup even if the stack no longer exists</p>
-                </div>
-
-                <div class="card">
-                    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
-                        <button @click="loadAllBackups()" class="btn btn-primary">
-                            <i class="fas fa-sync"></i> Refresh Backups
-                        </button>
-                        <button @click="scanAndImportBackups()" class="btn btn-success" :disabled="scanningBackups">
-                            <i class="fas fa-search"></i> {{ scanningBackups ? 'Scanning...' : 'Scan & Import from Network Share' }}
-                        </button>
-                    </div>
-                    
-                    <div v-if="allBackups && allBackups.length > 0" style="overflow-x: auto;">
-                        <table style="width: 100%; border-collapse: collapse;">
-                            <thead>
-                                <tr style="background: rgba(255,255,255,0.05); border-bottom: 2px solid rgba(255,255,255,0.1);">
-                                    <th style="padding: 12px; text-align: left; font-weight: 600;">Stack Name</th>
-                                    <th style="padding: 12px; text-align: left; font-weight: 600;">Backup Date</th>
-                                    <th style="padding: 12px; text-align: left; font-weight: 600;">Size</th>
-                                    <th style="padding: 12px; text-align: left; font-weight: 600;">Duration</th>
-                                    <th style="padding: 12px; text-align: left; font-weight: 600;">Status</th>
-                                    <th style="padding: 12px; text-align: right; font-weight: 600;">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="backup in allBackups" :key="backup.id" 
-                                    style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                    <td style="padding: 12px;">
-                                        <strong style="color: #60a5fa;">{{ backup.stack_name }}</strong>
-                                    </td>
-                                    <td style="padding: 12px;">{{ formatBackupDate(backup.backup_date) }}</td>
-                                    <td style="padding: 12px;">{{ backup.backup_size_mb ? backup.backup_size_mb.toFixed(1) : '0' }} MB</td>
-                                    <td style="padding: 12px;">{{ backup.duration_seconds || 0 }}s</td>
-                                    <td style="padding: 12px;">
-                                        <span v-if="backup.status === 'success'" style="color: #10b981; display: flex; align-items: center;">
-                                            <i class="fas fa-check-circle" style="margin-right: 5px;"></i> Success
-                                        </span>
-                                        <span v-else style="color: #ef4444; display: flex; align-items: center;">
-                                            <i class="fas fa-times-circle" style="margin-right: 5px;"></i> Failed
-                                        </span>
-                                    </td>
-                                    <td style="padding: 12px; text-align: right;">
-                                        <button @click="restoreGlobalBackup(backup.stack_name, backup.id)" 
-                                                class="btn btn-sm" 
-                                                style="background: #3b82f6; margin-right: 5px;"
-                                                title="Restore this backup">
-                                            <i class="fas fa-undo"></i> Restore
-                                        </button>
-                                        <button @click="deleteBackup(backup.id)" 
-                                                class="btn btn-sm" 
-                                                style="background: #ef4444;"
-                                                title="Delete this backup">
-                                            <i class="fas fa-trash"></i> Delete
-                                        </button>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                    <div v-else-if="allBackups && allBackups.length === 0" 
-                         style="padding: 60px 20px; background: rgba(255,255,255,0.03); border-radius: 8px; text-align: center;">
-                        <i class="fas fa-database" style="font-size: 48px; color: rgba(255,255,255,0.3); margin-bottom: 15px;"></i>
-                        <p style="font-size: 16px; opacity: 0.7;">No backups found</p>
-                        <p style="font-size: 14px; opacity: 0.5; margin-top: 10px;">Configure backup for your stacks to see backups here</p>
-                    </div>
-                    <div v-else style="padding: 40px; text-align: center;">
-                        <i class="fas fa-spinner fa-spin" style="font-size: 32px; color: #60a5fa;"></i>
-                        <p style="margin-top: 15px; opacity: 0.7;">Loading backups...</p>
-                    </div>
-                </div>
-            </div>
-
             <div v-if="currentView === 'settings'">
                 <div class="header">
                     <h1>Settings</h1>
@@ -2396,6 +2316,12 @@
                             <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
                                 <input type="checkbox" v-model="settings.notify_on_health_failure">
                                 <span>Notify when stacks become unhealthy</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.notify_on_backup">
+                                <span>Notify on backup completion/failure</span>
                             </label>
                         </div>
                         <div class="form-group" v-if="settings.notify_on_health_failure">
@@ -3353,7 +3279,7 @@
                         <i class="fas fa-play-circle"></i> Start/Stop/Restart
                     </button>
                         <button 
-                            @click="scheduleTab = 'backup'; loadStackBackupHistory(scheduleStackName)" 
+                            @click="scheduleTab = 'backup'" 
                             :class="['tab-btn', scheduleTab === 'backup' ? 'active' : '']"
                             style="padding: 10px 20px; background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer;"
                             :style="scheduleTab === 'backup' ? 'border-bottom-color: #10b981; color: #10b981;' : 'color: #94a3b8;'">
@@ -3550,70 +3476,6 @@
                     <div style="display:flex;gap:10px;">
                         <button @click="saveStackBackupConfig()" class="btn btn-primary">Save All Changes</button>
                         <button @click="backupStackNow()" :disabled="backupInProgress" class="btn btn-success">{{backupInProgress ? "Backing up..." : "Backup Now"}}</button>
-                    </div>
-                    
-                    <!-- Backup History -->
-                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1);">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                            <h3 style="margin: 0;"><i class="fas fa-history"></i> Backup History</h3>
-                            <button @click="loadStackBackupHistory(scheduleStackName)" class="btn btn-sm btn-secondary">
-                                <i class="fas fa-sync"></i> Refresh
-                            </button>
-                        </div>
-                        
-                        <div v-if="stackBackupHistory && stackBackupHistory.length > 0" style="overflow-x: auto;">
-                            <table style="width: 100%; border-collapse: collapse;">
-                                <thead>
-                                    <tr style="background: rgba(255,255,255,0.05); border-bottom: 2px solid rgba(255,255,255,0.1);">
-                                        <th style="padding: 10px; text-align: left; font-weight: 600;">Date</th>
-                                        <th style="padding: 10px; text-align: left; font-weight: 600;">Size</th>
-                                        <th style="padding: 10px; text-align: left; font-weight: 600;">Duration</th>
-                                        <th style="padding: 10px; text-align: left; font-weight: 600;">Status</th>
-                                        <th style="padding: 10px; text-align: right; font-weight: 600;">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr v-for="backup in stackBackupHistory" :key="backup.id" 
-                                        style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                        <td style="padding: 10px;">{{ formatBackupDate(backup.backup_date) }}</td>
-                                        <td style="padding: 10px;">{{ backup.backup_size_mb ? backup.backup_size_mb.toFixed(1) : '0' }} MB</td>
-                                        <td style="padding: 10px;">{{ backup.duration_seconds || 0 }}s</td>
-                                        <td style="padding: 10px;">
-                                            <span v-if="backup.status === 'success'" style="color: #10b981;">
-                                                <i class="fas fa-check-circle"></i> Success
-                                            </span>
-                                            <span v-else style="color: #ef4444;">
-                                                <i class="fas fa-times-circle"></i> Failed
-                                            </span>
-                                        </td>
-                                        <td style="padding: 10px; text-align: right;">
-                                            <button @click="restoreStackBackup(backup.id)" 
-                                                    class="btn btn-sm" 
-                                                    style="background: #3b82f6; margin-right: 5px;"
-                                                    title="Restore this backup">
-                                                <i class="fas fa-undo"></i> Restore
-                                            </button>
-                                            <button @click="deleteBackup(backup.id)" 
-                                                    class="btn btn-sm" 
-                                                    style="background: #ef4444;"
-                                                    title="Delete this backup">
-                                                <i class="fas fa-trash"></i>
-                                            </button>
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                        <div v-else-if="stackBackupHistory && stackBackupHistory.length === 0" 
-                             style="padding: 30px; background: rgba(255,255,255,0.03); border-radius: 8px; text-align: center;">
-                            <i class="fas fa-database" style="font-size: 32px; color: rgba(255,255,255,0.3); margin-bottom: 10px;"></i>
-                            <p style="opacity: 0.7;">No backups found for this stack</p>
-                            <p style="font-size: 0.9em; opacity: 0.5; margin-top: 5px;">Click "Backup Now" to create your first backup</p>
-                        </div>
-                        <div v-else style="padding: 20px; text-align: center;">
-                            <i class="fas fa-spinner fa-spin" style="color: #60a5fa;"></i>
-                            <span style="margin-left: 10px; opacity: 0.7;">Loading history...</span>
-                        </div>
                     </div>
                 </div>
 
@@ -4270,9 +4132,6 @@
                     backupConfig: {type: 'local', local_path: '/app/backups', smb_host: '', smb_share: '', smb_username: '', smb_password: '', smb_mount_path: '', auto_mount: true, mount_status: 'disconnected'},
                     backupAvailableSpace: 0,
                     stackBackupConfig: {enabled: false, schedule: 'manual', schedule_time: '03:00', schedule_day: 0, retention_count: 7, stop_before_backup: true},
-                    stackBackupHistory: null,
-                    allBackups: null,
-                    scanningBackups: false,
                     stackBackupHistory: [],
                     stackVolumes: [],
                     volumesLoadingError: false,
@@ -7020,27 +6879,31 @@
                         return;
                     }
                     try { 
-                        // Prepare data with volumes
+                        // Include volumes in save
                         const saveData = {
                             ...this.stackBackupConfig,
                             volumes: this.stackVolumes
                         };
+                        
+                        console.log('Saving backup config:', saveData);
                         
                         const r = await fetch(`/api/backup/stack/${stack}/config`, {
                             method: 'POST', 
                             headers: {'Content-Type': 'application/json'}, 
                             body: JSON.stringify(saveData)
                         }); 
+                        
                         if (r.ok) {
                             this.showToast('Backup configuration saved', 'success');
                             // Reload to confirm
                             await this.loadStackBackupConfig(stack);
                         } else {
                             this.showToast('Save failed', 'error');
+                            console.error('Save failed:', await r.text());
                         }
                     } catch(e) { 
                         this.showToast('Error saving config', 'error'); 
-                        console.error(e); 
+                        console.error('Save error:', e); 
                     } 
                 },
                 async loadStackBackupConfig(stackName) { 
@@ -7048,7 +6911,10 @@
                     try { 
                         const r = await fetch(`/api/backup/stack/${stackName}/config`); 
                         if (r.ok) { 
-                            const config = await r.json(); 
+                            const data = await r.json();
+                            // Backend returns {config: {...}, volumes: [...]}
+                            const config = data.config || data;
+                            
                             this.stackBackupConfig = {
                                 enabled: config.enabled || false,
                                 schedule: config.schedule || 'manual',
@@ -7057,6 +6923,8 @@
                                 retention_count: config.retention_count || 7,
                                 stop_before_backup: config.stop_before_backup !== false
                             };
+                            
+                            console.log('Loaded backup config:', this.stackBackupConfig);
                         } 
                         
                         // Load volumes
@@ -7143,136 +7011,9 @@
                         this.backupInProgress = false; 
                     } 
                 },
-                async loadStackBackupHistory(s) { 
-                    if (!s) return; 
-                    try { 
-                        const r = await fetch(`/api/backup/stack/${s}/history`); 
-                        if (r.ok) { 
-                            const d = await r.json(); 
-                            this.stackBackupHistory = d.backups || []; 
-                        } else {
-                            this.showToast('Failed to load history', 'error'); 
-                        }
-                    } catch(e) { 
-                        this.showToast('Error loading history', 'error'); 
-                        console.error(e); 
-                    } 
-                },
-                async loadAllBackups() {
-                    try {
-                        const r = await fetch('/api/backup/all');
-                        if (r.ok) {
-                            const d = await r.json();
-                            this.allBackups = d.backups || [];
-                            this.showToast(`Loaded ${this.allBackups.length} backups`, 'success');
-                        } else {
-                            this.showToast('Failed to load backups', 'error');
-                        }
-                    } catch(e) {
-                        this.showToast('Error loading backups', 'error');
-                        console.error(e);
-                    }
-                },
-                async restoreStackBackup(id) { 
-                    const stack = this.scheduleStackName;
-                    if (!stack) {
-                        this.showToast('No stack selected', 'error');
-                        return;
-                    }
-                    if (!confirm('⚠️ WARNING: This will STOP the stack, restore data from backup, and restart. Current data will be backed up first. Continue?')) return; 
-                    try { 
-                        const r = await fetch(`/api/backup/stack/${stack}/restore/${id}`, {method: 'POST'}); 
-                        if (r.ok) { 
-                            this.showToast('Restore started', 'success'); 
-                            await this.refreshStacks();
-                            await this.loadStackBackupHistory(stack);
-                        } else { 
-                            const e = await r.json(); 
-                            this.showToast(`Restore failed: ${e.error}`, 'error'); 
-                        } 
-                    } catch(e) { 
-                        this.showToast('Error', 'error'); 
-                        console.error(e); 
-                    } 
-                },
-                async restoreGlobalBackup(stackName, id) {
-                    if (!confirm(`⚠️ WARNING: This will restore ${stackName} from backup. This will:\n\n1. Stop any existing containers for this stack\n2. Restore all data from the backup\n3. Restart the stack\n\nCurrent data will be backed up first. Continue?`)) {
-                        return;
-                    }
-                    try {
-                        const r = await fetch(`/api/backup/stack/${stackName}/restore/${id}`, {method: 'POST'});
-                        if (r.ok) {
-                            this.showToast(`Restore started for ${stackName}`, 'success');
-                            await this.refreshStacks();
-                            this.currentView = 'dashboard';
-                        } else {
-                            const e = await r.json();
-                            this.showToast(`Restore failed: ${e.error}`, 'error');
-                        }
-                    } catch(e) {
-                        this.showToast('Error starting restore', 'error');
-                        console.error(e);
-                    }
-                },
-                async deleteBackup(id) { 
-                    if (!confirm('Delete this backup permanently?')) return; 
-                    try { 
-                        const r = await fetch(`/api/backup/history/${id}`, {method: 'DELETE'}); 
-                        if (r.ok) { 
-                            this.showToast('Deleted', 'success'); 
-                            if (this.scheduleStackName) {
-                                await this.loadStackBackupHistory(this.scheduleStackName);
-                            }
-                            if (this.allBackups) {
-                                await this.loadAllBackups();
-                            }
-                        } else {
-                            this.showToast('Delete failed', 'error'); 
-                        }
-                    } catch(e) { 
-                        this.showToast('Error', 'error'); 
-                        console.error(e); 
-                    } 
-                },
-                formatBackupDate(dateStr) {
-                    if (!dateStr) return 'N/A';
-                    const d = new Date(dateStr);
-                    return d.toLocaleString();
-                },
-                async scanAndImportBackups() {
-                    this.scanningBackups = true;
-                    try {
-                        // First scan the directory
-                        const scanRes = await fetch('/api/backup/scan');
-                        if (!scanRes.ok) {
-                            this.showToast('Failed to scan backup directory', 'error');
-                            return;
-                        }
-                        
-                        const scanData = await scanRes.json();
-                        const foundCount = scanData.backups ? scanData.backups.length : 0;
-                        
-                        if (foundCount === 0) {
-                            this.showToast('No backup files found in network share', 'warning');
-                            return;
-                        }
-                        
-                        // Import discovered backups
-                        const importRes = await fetch('/api/backup/import', {method: 'POST'});
-                        if (importRes.ok) {
-                            const importData = await importRes.json();
-                            this.showToast(`Imported ${importData.count} backups from network share`, 'success');
-                            await this.loadAllBackups();
-                        } else {
-                            this.showToast('Failed to import backups', 'error');
-                        }
-                    } catch(e) {
-                        console.error('Scan/import error:', e);
-                        this.showToast('Error scanning backups', 'error');
-                    } finally {
-                        this.scanningBackups = false;
-                    }
-                }
+                async loadStackBackupHistory(s) { if (!s) return; try { const r = await fetch(`/api/backup/stack/${s}/history`); if (r.ok) { const d = await r.json(); this.stackBackupHistory = d.backups || []; this.showToast(`Found ${this.stackBackupHistory.length} backups`, 'success'); } else this.showToast('Failed to load history', 'error'); } catch(e) { this.showToast('Error loading history', 'error'); console.error(e); } },
+                async restoreFromBackup(id) { if (!confirm('⚠️ WARNING: This will STOP the stack, restore data from backup, and restart. Current data will be backed up first. Continue?')) return; try { const r = await fetch(`/api/backup/stack/${this.selectedStack}/restore/${id}`, {method: 'POST'}); if (r.ok) { this.showToast('Restore started', 'success'); await this.refreshStacks(); } else { const e = await r.json(); this.showToast(`Restore failed: ${e.error}`, 'error'); } } catch(e) { this.showToast('Error', 'error'); console.error(e); } },
+                async deleteBackup(id) { if (!confirm('Delete this backup permanently?')) return; try { const r = await fetch(`/api/backup/history/${id}`, {method: 'DELETE'}); if (r.ok) { this.showToast('Deleted', 'success'); await this.loadStackBackupHistory(this.selectedStack); } else this.showToast('Delete failed', 'error'); } catch(e) { this.showToast('Error', 'error'); console.error(e); } }
             }
         });
         
