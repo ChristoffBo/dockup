@@ -9584,6 +9584,59 @@ def remove_backup_job(stack_name):
         pass
 
 
+@app.route('/api/backup/mass-schedule', methods=['POST'])
+@require_auth
+def mass_schedule_backups():
+    """Apply backup schedule to multiple stacks"""
+    try:
+        data = request.json
+        stack_names = data.get('stacks', [])
+        
+        if not stack_names:
+            return jsonify({'error': 'No stacks provided'}), 400
+        
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        
+        for stack_name in stack_names:
+            cursor.execute("""
+                INSERT INTO backup_configs 
+                (stack_name, enabled, schedule, schedule_time, schedule_day, retention_count, stop_before_backup, updated_at)
+                VALUES (?, 1, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(stack_name) DO UPDATE SET
+                    enabled = 1,
+                    schedule = excluded.schedule,
+                    schedule_time = excluded.schedule_time,
+                    schedule_day = excluded.schedule_day,
+                    retention_count = excluded.retention_count,
+                    stop_before_backup = 1,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (
+                stack_name,
+                data.get('schedule', 'weekly'),
+                data.get('schedule_time', '03:00'),
+                data.get('schedule_day', 0),
+                data.get('retention_count', 7)
+            ))
+            
+            schedule_backup_job(
+                stack_name,
+                data.get('schedule', 'weekly'),
+                data.get('schedule_time', '03:00'),
+                data.get('schedule_day', 0)
+            )
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✓ Mass scheduled {len(stack_names)} stacks")
+        return jsonify({'success': True, 'count': len(stack_names)})
+        
+    except Exception as e:
+        logger.error(f"Error in mass schedule: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 
 if __name__ == '__main__':
     try:
