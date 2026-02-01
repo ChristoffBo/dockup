@@ -7352,7 +7352,7 @@
                         return;
                     }
                     
-                    if (!confirm(`Apply backup schedule to ${this.massScheduleStacks.length} stack(s)?`)) {
+                    if (!confirm(`Apply backup schedule to ${this.massScheduleStacks.length} stack(s)?\n\nSchedule: ${this.massScheduleConfig.schedule}\nTime: ${this.massScheduleConfig.schedule_time}\nRetention: ${this.massScheduleConfig.retention_count} backups`)) {
                         return;
                     }
                     
@@ -7368,14 +7368,25 @@
                         
                         if (r.ok) {
                             const data = await r.json();
-                            this.showToast(`Scheduled ${data.count} stacks for backup`, 'success');
+                            this.showToast(`✓ Scheduled ${data.count} stacks for backup`, 'success');
                             this.massScheduleStacks = [];
+                            
+                            // Refresh stacks to update UI
+                            await this.refreshStacks();
                         } else {
-                            this.showToast('Failed to apply schedule', 'error');
+                            // Parse error from backend
+                            let errorMsg = 'Failed to apply schedule';
+                            try {
+                                const errorData = await r.json();
+                                errorMsg = errorData.error || errorData.message || errorMsg;
+                            } catch(e) {
+                                errorMsg = await r.text() || errorMsg;
+                            }
+                            this.showToast(errorMsg, 'error');
                         }
                     } catch(e) {
-                        this.showToast('Error applying schedule', 'error');
-                        console.error(e);
+                        this.showToast('Error applying schedule: ' + e.message, 'error');
+                        console.error('Mass schedule error:', e);
                     }
                 }
             }
