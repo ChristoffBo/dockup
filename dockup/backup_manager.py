@@ -569,8 +569,26 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         config = cursor.fetchone()
         
         if not config:
-            conn.close()
-            return False, '', f"No backup configuration found for stack '{stack_name}'"
+            logger.warning(f"No backup config found for {stack_name}, creating default config...")
+            # Create default config for manual backup
+            cursor.execute("""
+                INSERT INTO backup_configs 
+                (stack_name, enabled, schedule, retention_count, stop_before_backup)
+                VALUES (?, 0, 'manual', 7, 1)
+            """, (stack_name,))
+            conn.commit()
+            
+            # Fetch the newly created config
+            cursor.execute("""
+                SELECT * FROM backup_configs WHERE stack_name = ?
+            """, (stack_name,))
+            config = cursor.fetchone()
+            
+            if not config:
+                conn.close()
+                return False, '', f"Failed to create backup configuration for stack '{stack_name}'"
+            
+            logger.info(f"Created default backup config for {stack_name}")
         
         # Get selected volumes
         cursor.execute("""
@@ -579,6 +597,29 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             WHERE stack_name = ? AND backup_enabled = 1
         """, (stack_name,))
         volumes = cursor.fetchall()
+        
+        # If no volumes in database, auto-populate from compose file
+        if not volumes:
+            logger.warning(f"No volumes in database for {stack_name}, attempting to parse from compose file...")
+            parsed_volumes = parse_stack_volumes(stack_name, stacks_dir)
+            if parsed_volumes:
+                logger.info(f"Found {len(parsed_volumes)} volumes in compose file, adding to database...")
+                for vol in parsed_volumes:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO backup_volume_selections 
+                        (stack_name, host_path, container_path, backup_enabled)
+                        VALUES (?, ?, ?, 1)
+                    """, (stack_name, vol['host_path'], vol['container_path']))
+                conn.commit()
+                
+                # Re-fetch volumes
+                cursor.execute("""
+                    SELECT host_path, container_path 
+                    FROM backup_volume_selections 
+                    WHERE stack_name = ? AND backup_enabled = 1
+                """, (stack_name,))
+                volumes = cursor.fetchall()
+                logger.info(f"Auto-populated {len(volumes)} volumes")
         
         logger.info(f"📦 Found {len(volumes)} ENABLED volumes for {stack_name}")
         for v in volumes:
