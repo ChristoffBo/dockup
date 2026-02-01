@@ -2068,6 +2068,63 @@
                         <p style="margin-top: 15px; opacity: 0.7;">Loading backups...</p>
                     </div>
                 </div>
+                
+                <!-- Mass Schedule Card -->
+                <div class="card" style="margin-top: 20px;">
+                    <h3><i class="fas fa-calendar-alt"></i> Mass Backup Schedule</h3>
+                    <p style="margin-bottom: 20px; opacity: 0.8;">Select multiple stacks and apply the same backup schedule to all</p>
+                    
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="margin-bottom: 10px;">Select Stacks:</h4>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px;">
+                            <label v-for="stack in stacks" :key="stack.name" 
+                                   style="display: flex; align-items: center; gap: 8px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px; cursor: pointer;">
+                                <input type="checkbox" v-model="massScheduleStacks" :value="stack.name">
+                                <span>{{ stack.name }}</span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                        <div>
+                            <label class="form-label">Schedule Type</label>
+                            <select v-model="massScheduleConfig.schedule" class="form-select">
+                                <option value="daily">Daily</option>
+                                <option value="weekly">Weekly</option>
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label class="form-label">Time</label>
+                            <input type="time" v-model="massScheduleConfig.schedule_time" class="form-input">
+                        </div>
+                        
+                        <div v-if="massScheduleConfig.schedule === 'weekly'">
+                            <label class="form-label">Day of Week</label>
+                            <select v-model.number="massScheduleConfig.schedule_day" class="form-select">
+                                <option :value="0">Sunday</option>
+                                <option :value="1">Monday</option>
+                                <option :value="2">Tuesday</option>
+                                <option :value="3">Wednesday</option>
+                                <option :value="4">Thursday</option>
+                                <option :value="5">Friday</option>
+                                <option :value="6">Saturday</option>
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label class="form-label">Keep Last N Backups</label>
+                            <input type="number" v-model.number="massScheduleConfig.retention_count" class="form-input" min="1" max="30">
+                        </div>
+                    </div>
+                    
+                    <button @click="applyMassSchedule()" 
+                            :disabled="massScheduleStacks.length === 0"
+                            class="btn btn-success">
+                        <i class="fas fa-calendar-check"></i> 
+                        Apply Schedule to {{ massScheduleStacks.length }} Stack(s)
+                    </button>
+                </div>
             </div>
 
             <div v-if="currentView === 'settings'">
@@ -4276,6 +4333,8 @@
                     backupConfig: {type: 'local', local_path: '/app/backups', smb_host: '', smb_share: '', smb_username: '', smb_password: '', smb_mount_path: '', auto_mount: true, mount_status: 'disconnected'},
                     backupAvailableSpace: 0,
                     stackBackupConfig: {enabled: false, schedule: 'manual', schedule_time: '03:00', schedule_day: 0, retention_count: 7, stop_before_backup: true},
+                    massScheduleStacks: [],
+                    massScheduleConfig: {schedule: 'weekly', schedule_time: '03:00', schedule_day: 0, retention_count: 7},
                     stackBackupHistory: null,
                     allBackups: null,
                     scanningBackups: false,
@@ -7067,29 +7126,33 @@
                                 retention_count: cfg.retention_count || 7,
                                 stop_before_backup: cfg.stop_before_backup !== false
                             };
+                            
+                            // CRITICAL FIX: Load volumes into this.stackVolumes
+                            this.stackVolumes = data.volumes || [];
                         } 
                         
-                        // Load volumes
-                        this.volumesLoading = true;
-                        this.volumesLoadingError = false;
-                        this.stackVolumes = [];
-                        
-                        try {
-                            const volR = await fetch(`/api/backup/stack/${stackName}/volumes`);
-                            if (volR.ok) {
-                                this.stackVolumes = await volR.json();
-                            } else {
-                                const errorText = await volR.text();
+                        // Load volumes from parse endpoint if not in config response
+                        if (!this.stackVolumes || this.stackVolumes.length === 0) {
+                            this.volumesLoading = true;
+                            this.volumesLoadingError = false;
+                            
+                            try {
+                                const volR = await fetch(`/api/backup/stack/${stackName}/volumes`);
+                                if (volR.ok) {
+                                    this.stackVolumes = await volR.json();
+                                } else {
+                                    const errorText = await volR.text();
+                                    this.volumesLoadingError = true;
+                                    this.showToast(`Failed to load volumes: ${volR.status}`, 'error');
+                                    console.error('Volume load failed:', errorText);
+                                }
+                            } catch(volError) {
                                 this.volumesLoadingError = true;
-                                this.showToast(`Failed to load volumes: ${volR.status}`, 'error');
-                                console.error('Volume load failed:', errorText);
+                                this.showToast('Error loading volumes', 'error');
+                                console.error('Volume loading error:', volError);
+                            } finally {
+                                this.volumesLoading = false;
                             }
-                        } catch(volError) {
-                            this.volumesLoadingError = true;
-                            this.showToast('Error loading volumes', 'error');
-                            console.error('Volume loading error:', volError);
-                        } finally {
-                            this.volumesLoading = false;
                         }
                     } catch(e) { 
                         console.error('Failed to load stack backup config:', e); 
@@ -7281,6 +7344,38 @@
                         this.showToast('Error scanning backups', 'error');
                     } finally {
                         this.scanningBackups = false;
+                    }
+                },
+                async applyMassSchedule() {
+                    if (this.massScheduleStacks.length === 0) {
+                        this.showToast('No stacks selected', 'error');
+                        return;
+                    }
+                    
+                    if (!confirm(`Apply backup schedule to ${this.massScheduleStacks.length} stack(s)?`)) {
+                        return;
+                    }
+                    
+                    try {
+                        const r = await fetch('/api/backup/mass-schedule', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                stacks: this.massScheduleStacks,
+                                ...this.massScheduleConfig
+                            })
+                        });
+                        
+                        if (r.ok) {
+                            const data = await r.json();
+                            this.showToast(`Scheduled ${data.count} stacks for backup`, 'success');
+                            this.massScheduleStacks = [];
+                        } else {
+                            this.showToast('Failed to apply schedule', 'error');
+                        }
+                    } catch(e) {
+                        this.showToast('Error applying schedule', 'error');
+                        console.error(e);
                     }
                 }
             }
