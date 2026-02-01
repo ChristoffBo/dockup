@@ -826,7 +826,12 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         
         # Send success notification
         try:
-            from app import send_notification
+            from app import send_notification, config as app_config, apobj as app_apobj
+            
+            logger.info(f"DEBUG: About to send notification")
+            logger.info(f"DEBUG: app_config has gotify_url: {app_config.get('gotify_url')}")
+            logger.info(f"DEBUG: app_apobj length: {len(app_apobj)}")
+            
             msg_parts = [
                 f"Stack: {stack_name}",
                 f"Size: {backup_size_mb:.1f} MB",

@@ -1353,15 +1353,34 @@ def setup_notifications():
     global apobj
     apobj = apprise.Apprise()
     
+    logger.info("=" * 80)
+    logger.info("SETUP_NOTIFICATIONS CALLED")
+    logger.info(f"gotify_url in config: {config.get('gotify_url')}")
+    logger.info(f"gotify_token in config: {config.get('gotify_token')}")
+    logger.info(f"apprise_urls in config: {config.get('apprise_urls', [])}")
+    
     # Add Gotify
     if config.get('gotify_url') and config.get('gotify_token'):
         gotify_url = f"gotify://{config['gotify_url'].replace('http://', '').replace('https://', '')}/{config['gotify_token']}"
+        logger.info(f"Adding Gotify URL: {gotify_url}")
         apobj.add(gotify_url)
+        logger.info(f"✓ Gotify added, apobj length now: {len(apobj)}")
+    else:
+        logger.warning("Gotify not configured (missing URL or token)")
     
     # Add Apprise URLs
+    apprise_count = 0
     for url in config.get('apprise_urls', []):
         if url.strip():
+            logger.info(f"Adding Apprise URL: {url}")
             apobj.add(url)
+            apprise_count += 1
+    
+    if apprise_count > 0:
+        logger.info(f"✓ Added {apprise_count} Apprise URLs")
+    
+    logger.info(f"Final apobj length: {len(apobj)}")
+    logger.info("=" * 80)
 
 
 def check_docker_hub_rate_limit():
