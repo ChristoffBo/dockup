@@ -92,12 +92,6 @@ flask_logger = logging.getLogger('werkzeug')
 flask_logger.setLevel(logging.INFO)
 flask_logger.addHandler(file_handler)
 
-# Configure backup_manager logger
-backup_logger = logging.getLogger('backup_manager')
-backup_logger.setLevel(logging.INFO)
-backup_logger.addHandler(file_handler)
-backup_logger.addHandler(console_handler)
-
 logger.info(f"DockUp {DOCKUP_VERSION} starting - Logs rotate daily, keeping 7 days")
 
 # ============================================================================
@@ -1712,12 +1706,15 @@ def send_notification(title, message, notify_type='info'):
     if not config.get('notify_on_update') and 'updated successfully' in message.lower():
         logger.info(f"Notification skipped (notify_on_update=False): {title}")
         return
-    if not config.get('notify_on_error') and notify_type == 'error':
+    if not config.get('notify_on_error') and notify_type == 'error' and 'backup' not in title.lower():
         logger.info(f"Notification skipped (notify_on_error=False): {title}")
         return
     if not config.get('notify_on_health_failure', True) and 'unhealthy' in message.lower():
         logger.info(f"Notification skipped (notify_on_health_failure=False): {title}")
         return
+    
+    # Always send backup notifications regardless of other settings
+    is_backup_notification = 'backup' in title.lower()
     
     if len(apobj) > 0:
         logger.info(f"Sending notification: {title} - {message}")
@@ -1730,7 +1727,10 @@ def send_notification(title, message, notify_type='info'):
         except Exception as e:
             logger.info(f"✗ Notification error: {e}")
     else:
-        logger.info(f"No notification services configured. Title: {title}")
+        if is_backup_notification:
+            logger.warning(f"No notification services configured. Backup notification not sent: {title}")
+        else:
+            logger.info(f"No notification services configured. Title: {title}")
 
 
 # ============================================================================
@@ -9504,6 +9504,27 @@ def import_backups():
         return jsonify({'success': True, 'count': count, 'message': f'Imported {count} backups'})
     except Exception as e:
         logger.error(f"Error importing backups: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/all', methods=['GET'])
+@require_auth
+def get_all_backups():
+    """Get all backups across all stacks for global restore page"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM backup_history 
+            WHERE status != 'deleted'
+            ORDER BY backup_date DESC
+            LIMIT 200
+        """)
+        backups = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return jsonify({'backups': backups})
+    except Exception as e:
+        logger.error(f"Error getting all backups: {e}")
         return jsonify({'error': str(e)}), 500
 
 
