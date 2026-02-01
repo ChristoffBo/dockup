@@ -13,7 +13,7 @@ PERFORMANCE OPTIMIZATIONS:
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "1.4.2"
+DOCKUP_VERSION = "1.4.1"
 
 import os
 import json
@@ -9725,26 +9725,36 @@ def mass_schedule_backups():
         cursor = conn.cursor()
         
         for stack_name in stack_names:
+            # Create/update backup config
             cursor.execute("""
                 INSERT INTO backup_configs 
                 (stack_name, enabled, schedule, schedule_time, schedule_day, retention_count, stop_before_backup, updated_at)
-                VALUES (?, 1, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                VALUES (?, 1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(stack_name) DO UPDATE SET
                     enabled = 1,
                     schedule = excluded.schedule,
                     schedule_time = excluded.schedule_time,
                     schedule_day = excluded.schedule_day,
                     retention_count = excluded.retention_count,
-                    stop_before_backup = 1,
+                    stop_before_backup = excluded.stop_before_backup,
                     updated_at = CURRENT_TIMESTAMP
             """, (
                 stack_name,
                 data.get('schedule', 'weekly'),
                 data.get('schedule_time', '03:00'),
                 data.get('schedule_day', 0),
-                data.get('retention_count', 7)
+                data.get('retention_count', 7),
+                1 if data.get('stop_before_backup', True) else 0
             ))
             
+            # Auto-populate volumes from compose file
+            try:
+                backup_manager.auto_populate_volumes(stack_name)
+                logger.info(f"✓ Auto-populated volumes for {stack_name}")
+            except Exception as vol_error:
+                logger.warning(f"Could not auto-populate volumes for {stack_name}: {vol_error}")
+            
+            # Schedule the backup job
             schedule_backup_job(
                 stack_name,
                 data.get('schedule', 'weekly'),
@@ -9760,6 +9770,34 @@ def mass_schedule_backups():
         
     except Exception as e:
         logger.error(f"Error in mass schedule: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/stack/<stack_name>/config/reset', methods=['POST'])
+@require_auth
+def reset_stack_backup_config(stack_name):
+    """Delete backup config and volumes for a stack to reset it"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Delete backup config
+        cursor.execute("DELETE FROM backup_configs WHERE stack_name = ?", (stack_name,))
+        
+        # Delete volume selections
+        cursor.execute("DELETE FROM backup_volume_selections WHERE stack_name = ?", (stack_name,))
+        
+        conn.commit()
+        conn.close()
+        
+        # Remove from scheduler
+        remove_backup_job(stack_name)
+        
+        logger.info(f"✓ Reset backup config for {stack_name}")
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        logger.error(f"Error resetting backup config: {e}")
         return jsonify({'error': str(e)}), 500
 
 
