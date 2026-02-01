@@ -40,6 +40,7 @@ from flask_sock import Sock
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.executors.pool import ThreadPoolExecutor as APThreadPoolExecutor
+from apscheduler.jobstores.base import JobLookupError
 from croniter import croniter
 import apprise
 import backup_manager
@@ -5375,6 +5376,14 @@ def api_config_set():
     global config
     data = request.json
     
+    # Validate timezone if provided
+    if 'timezone' in data:
+        try:
+            pytz.timezone(data['timezone'])
+        except pytz.exceptions.UnknownTimeZoneError:
+            logger.warning(f"Invalid timezone provided: {data['timezone']}, falling back to UTC")
+            data['timezone'] = 'UTC'
+    
     # Preserve critical fields that shouldn't be overwritten
     preserved = {
         'api_token': config.get('api_token'),
@@ -5386,7 +5395,8 @@ def api_config_set():
         data.get('templates_enabled') != config.get('templates_enabled') or
         data.get('templates_refresh_schedule') != config.get('templates_refresh_schedule') or
         data.get('auto_update_enabled') != config.get('auto_update_enabled') or
-        data.get('auto_update_check_schedule') != config.get('auto_update_check_schedule')
+        data.get('auto_update_check_schedule') != config.get('auto_update_check_schedule') or
+        data.get('timezone') != config.get('timezone')
     )
     
     # Update config
@@ -9557,8 +9567,10 @@ def schedule_backup_job(stack_name, schedule_type, schedule_time, schedule_day=0
         try:
             scheduler.remove_job(job_id)
             logger.info(f"Removed existing job: {job_id}")
-        except:
+        except JobLookupError:
             logger.info(f"No existing job to remove: {job_id}")
+        except Exception as e:
+            logger.warning(f"Unexpected error removing job {job_id}: {e}", exc_info=True)
         
         # Parse time
         hour, minute = map(int, schedule_time.split(':'))
