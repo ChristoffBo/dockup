@@ -811,7 +811,6 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         conn.close()
         
         kept_count = min(len(all_backups), config['retention_count'])
-        deleted_count = max(0, len(all_backups) - config['retention_count'])
         
         logger.info("=" * 80)
         logger.info(f"✅ BACKUP COMPLETED SUCCESSFULLY")
@@ -820,27 +819,14 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         logger.info(f"Size: {backup_size_mb:.1f} MB")
         logger.info(f"Duration: {duration}s")
         logger.info(f"Kept: {kept_count} backups")
-        if deleted_count > 0:
-            logger.info(f"Deleted: {deleted_count} old backup(s)")
         logger.info("=" * 80)
         
         # Send success notification
         try:
             from app import send_notification
-            
-            # Build detailed message
-            message_parts = [
-                f"Stack: {stack_name}",
-                f"Size: {backup_size_mb:.1f} MB",
-                f"Duration: {duration}s",
-                f"Retention: {kept_count}/{config['retention_count']} backups kept"
-            ]
-            if deleted_count > 0:
-                message_parts.append(f"Deleted {deleted_count} old backup(s)")
-            
             send_notification(
-                f"✓ Backup Completed: {stack_name}",
-                "\n".join(message_parts),
+                f"✓ Backup completed: {stack_name}",
+                f"Size: {backup_size_mb:.1f} MB, Duration: {duration}s, Kept: {kept_count} backups",
                 notify_type='success'
             )
         except Exception as notif_error:
@@ -1030,25 +1016,19 @@ def restore_from_backup(backup_id: int, stacks_dir: str = '/stacks') -> Tuple[bo
         # Clean up temp
         shutil.rmtree(restore_temp)
         
-        # Start containers using docker-compose up
-        logger.info(f"Starting stack {stack_name} with docker-compose...")
-        try:
-            result = subprocess.run(
-                ['docker-compose', 'up', '-d'],
-                cwd=stack_path,
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            if result.returncode == 0:
-                logger.info(f"✓ Stack {stack_name} started successfully")
-            else:
-                logger.warning(f"docker-compose up returned code {result.returncode}")
-                logger.warning(f"stdout: {result.stdout}")
-                logger.warning(f"stderr: {result.stderr}")
-        except Exception as e:
-            logger.warning(f"Error starting stack with docker-compose: {e}")
-            logger.info("Stack restored but not started - you can start it manually from the UI")
+        # Start containers using Docker SDK
+        if docker_client:
+            try:
+                logger.info(f"Starting containers for {stack_name}...")
+                containers = docker_client.containers.list(
+                    all=True,
+                    filters={'label': f'com.docker.compose.project={stack_name}'}
+                )
+                for container in containers:
+                    container.start()
+                    logger.info(f"Started: {container.name}")
+            except Exception as e:
+                logger.warning(f"Error starting containers: {e}")
         
         logger.info(f"✓ Restore completed for {stack_name} from backup {backup_id}")
         return True, ""

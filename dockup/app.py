@@ -1106,7 +1106,6 @@ def load_config():
             'notify_on_update': True,
             'notify_on_error': True,
             'notify_on_health_failure': True,
-            'notify_on_backup': True,
             'health_check_threshold': 3,
             'timezone': 'UTC',
             'auto_prune': False,
@@ -1700,26 +1699,22 @@ def check_auth():
 
 def send_notification(title, message, notify_type='info'):
     """Send notification via configured services"""
-    # Check if this is a backup notification
-    is_backup_notification = 'backup' in title.lower()
-    
     # Check notification preferences
-    if is_backup_notification and not config.get('notify_on_backup', True):
-        logger.info(f"Backup notification skipped (notify_on_backup=False): {title}")
-        return
-    
     if not config.get('notify_on_check') and 'update available' in message.lower():
         logger.info(f"Notification skipped (notify_on_check=False): {title}")
         return
     if not config.get('notify_on_update') and 'updated successfully' in message.lower():
         logger.info(f"Notification skipped (notify_on_update=False): {title}")
         return
-    if not config.get('notify_on_error') and notify_type == 'error' and not is_backup_notification:
+    if not config.get('notify_on_error') and notify_type == 'error' and 'backup' not in title.lower():
         logger.info(f"Notification skipped (notify_on_error=False): {title}")
         return
     if not config.get('notify_on_health_failure', True) and 'unhealthy' in message.lower():
         logger.info(f"Notification skipped (notify_on_health_failure=False): {title}")
         return
+    
+    # Always send backup notifications regardless of other settings
+    is_backup_notification = 'backup' in title.lower()
     
     if len(apobj) > 0:
         logger.info(f"Sending notification: {title} - {message}")
@@ -1728,11 +1723,9 @@ def send_notification(title, message, notify_type='info'):
             if result:
                 logger.info(f"✓ Notification sent successfully")
             else:
-                logger.warning(f"✗ Notification failed to send (apobj.notify returned False)")
+                logger.info(f"✗ Notification failed to send")
         except Exception as e:
-            logger.error(f"✗ Notification error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.info(f"✗ Notification error: {e}")
     else:
         if is_backup_notification:
             logger.warning(f"No notification services configured. Backup notification not sent: {title}")
@@ -9488,7 +9481,7 @@ def get_backup_queue():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/backup/scan', methods=['POST'])
+@app.route('/api/backup/scan', methods=['GET', 'POST'])
 @require_auth
 def scan_backups():
     """Scan backup directory for existing backups"""
@@ -9511,6 +9504,27 @@ def import_backups():
         return jsonify({'success': True, 'count': count, 'message': f'Imported {count} backups'})
     except Exception as e:
         logger.error(f"Error importing backups: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/all', methods=['GET'])
+@require_auth
+def get_all_backups():
+    """Get all backups across all stacks for global restore page"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM backup_history 
+            WHERE status != 'deleted'
+            ORDER BY backup_date DESC
+            LIMIT 200
+        """)
+        backups = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return jsonify({'backups': backups})
+    except Exception as e:
+        logger.error(f"Error getting all backups: {e}")
         return jsonify({'error': str(e)}), 500
 
 
