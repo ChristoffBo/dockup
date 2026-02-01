@@ -4190,6 +4190,7 @@
                         notify_on_update: true,
                         notify_on_error: true,
                         notify_on_health_failure: true,
+                        notify_on_backup: true,
                         health_check_threshold: 3,
                         password_enabled: false,
                         host_stats_mode: 'auto',
@@ -7375,18 +7376,37 @@
                             await this.refreshStacks();
                         } else {
                             // Parse error from backend
-                            let errorMsg = 'Failed to apply schedule';
+                            let userMsg = 'Failed to apply schedule';
+                            let debugInfo = null;
+                            
                             try {
                                 const errorData = await r.json();
-                                errorMsg = errorData.error || errorData.message || errorMsg;
+                                debugInfo = errorData;
+                                
+                                // Sanitize: only show safe error messages to user
+                                if (errorData.error && typeof errorData.error === 'string') {
+                                    // Filter out sensitive info (paths, stack traces, SQL)
+                                    const sensitivePatterns = /(?:\/[\w\/]+\/|Error:|Traceback|line \d+|sqlite|database|\.py)/i;
+                                    if (!sensitivePatterns.test(errorData.error)) {
+                                        userMsg = errorData.error;
+                                    }
+                                }
                             } catch(e) {
-                                errorMsg = await r.text() || errorMsg;
+                                debugInfo = await r.text();
                             }
-                            this.showToast(errorMsg, 'error');
+                            
+                            // Log full error for debugging
+                            console.error('Mass schedule failed:', {
+                                status: r.status,
+                                statusText: r.statusText,
+                                response: debugInfo
+                            });
+                            
+                            this.showToast(userMsg, 'error');
                         }
                     } catch(e) {
-                        this.showToast('Error applying schedule: ' + e.message, 'error');
                         console.error('Mass schedule error:', e);
+                        this.showToast('Error applying schedule: Network or client error', 'error');
                     }
                 }
             }
