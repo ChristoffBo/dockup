@@ -7020,15 +7020,26 @@
                         return;
                     }
                     try { 
+                        // Prepare data with volumes
+                        const saveData = {
+                            ...this.stackBackupConfig,
+                            volumes: this.stackVolumes
+                        };
+                        
                         const r = await fetch(`/api/backup/stack/${stack}/config`, {
                             method: 'POST', 
                             headers: {'Content-Type': 'application/json'}, 
-                            body: JSON.stringify(this.stackBackupConfig)
+                            body: JSON.stringify(saveData)
                         }); 
-                        if (r.ok) this.showToast('Saved', 'success'); 
-                        else this.showToast('Save failed', 'error'); 
+                        if (r.ok) {
+                            this.showToast('Backup configuration saved', 'success');
+                            // Reload to confirm
+                            await this.loadStackBackupConfig(stack);
+                        } else {
+                            this.showToast('Save failed', 'error');
+                        }
                     } catch(e) { 
-                        this.showToast('Error', 'error'); 
+                        this.showToast('Error saving config', 'error'); 
                         console.error(e); 
                     } 
                 },
@@ -7041,7 +7052,8 @@
                             this.stackBackupConfig = {
                                 enabled: config.enabled || false,
                                 schedule: config.schedule || 'manual',
-                                cron: config.cron || '0 2 * * *',
+                                schedule_time: config.schedule_time || '03:00',
+                                schedule_day: config.schedule_day || 0,
                                 retention_count: config.retention_count || 7,
                                 stop_before_backup: config.stop_before_backup !== false
                             };
