@@ -1016,19 +1016,25 @@ def restore_from_backup(backup_id: int, stacks_dir: str = '/stacks') -> Tuple[bo
         # Clean up temp
         shutil.rmtree(restore_temp)
         
-        # Start containers using Docker SDK
-        if docker_client:
-            try:
-                logger.info(f"Starting containers for {stack_name}...")
-                containers = docker_client.containers.list(
-                    all=True,
-                    filters={'label': f'com.docker.compose.project={stack_name}'}
-                )
-                for container in containers:
-                    container.start()
-                    logger.info(f"Started: {container.name}")
-            except Exception as e:
-                logger.warning(f"Error starting containers: {e}")
+        # Start containers using docker-compose up
+        logger.info(f"Starting stack {stack_name} with docker-compose...")
+        try:
+            result = subprocess.run(
+                ['docker-compose', 'up', '-d'],
+                cwd=stack_path,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            if result.returncode == 0:
+                logger.info(f"✓ Stack {stack_name} started successfully")
+            else:
+                logger.warning(f"docker-compose up returned code {result.returncode}")
+                logger.warning(f"stdout: {result.stdout}")
+                logger.warning(f"stderr: {result.stderr}")
+        except Exception as e:
+            logger.warning(f"Error starting stack with docker-compose: {e}")
+            logger.info("Stack restored but not started - you can start it manually from the UI")
         
         logger.info(f"✓ Restore completed for {stack_name} from backup {backup_id}")
         return True, ""
