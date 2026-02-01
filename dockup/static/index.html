@@ -2001,9 +2001,14 @@
                 </div>
 
                 <div class="card">
-                    <button @click="loadAllBackups()" class="btn btn-primary" style="margin-bottom: 20px;">
-                        <i class="fas fa-sync"></i> Refresh Backups
-                    </button>
+                    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                        <button @click="loadAllBackups()" class="btn btn-primary">
+                            <i class="fas fa-sync"></i> Refresh Backups
+                        </button>
+                        <button @click="scanAndImportBackups()" class="btn btn-success" :disabled="scanningBackups">
+                            <i class="fas fa-search"></i> {{ scanningBackups ? 'Scanning...' : 'Scan & Import from Network Share' }}
+                        </button>
+                    </div>
                     
                     <div v-if="allBackups && allBackups.length > 0" style="overflow-x: auto;">
                         <table style="width: 100%; border-collapse: collapse;">
@@ -4267,6 +4272,7 @@
                     stackBackupConfig: {enabled: false, schedule: 'manual', schedule_time: '03:00', schedule_day: 0, retention_count: 7, stop_before_backup: true},
                     stackBackupHistory: null,
                     allBackups: null,
+                    scanningBackups: false,
                     stackBackupHistory: [],
                     stackVolumes: [],
                     volumesLoadingError: false,
@@ -7220,6 +7226,40 @@
                     if (!dateStr) return 'N/A';
                     const d = new Date(dateStr);
                     return d.toLocaleString();
+                },
+                async scanAndImportBackups() {
+                    this.scanningBackups = true;
+                    try {
+                        // First scan the directory
+                        const scanRes = await fetch('/api/backup/scan');
+                        if (!scanRes.ok) {
+                            this.showToast('Failed to scan backup directory', 'error');
+                            return;
+                        }
+                        
+                        const scanData = await scanRes.json();
+                        const foundCount = scanData.backups ? scanData.backups.length : 0;
+                        
+                        if (foundCount === 0) {
+                            this.showToast('No backup files found in network share', 'warning');
+                            return;
+                        }
+                        
+                        // Import discovered backups
+                        const importRes = await fetch('/api/backup/import', {method: 'POST'});
+                        if (importRes.ok) {
+                            const importData = await importRes.json();
+                            this.showToast(`Imported ${importData.count} backups from network share`, 'success');
+                            await this.loadAllBackups();
+                        } else {
+                            this.showToast('Failed to import backups', 'error');
+                        }
+                    } catch(e) {
+                        console.error('Scan/import error:', e);
+                        this.showToast('Error scanning backups', 'error');
+                    } finally {
+                        this.scanningBackups = false;
+                    }
                 }
             }
         });
