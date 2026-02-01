@@ -1,3 +1,22 @@
+## latest (2026-02-01)
+Added full stack backups with their composes. Add network share in settings, and each stack can be set in its scheduler in the ui.
+Also added a new Backups tab where you can resotre from. NOW also if you have a second dockup you can go to the backups stab refresh the backups if same network share was mountes and transfer full stacks via a restore.
+Please note if you have update your Dockup compose. Below how mine looks:
+
+
+  --name dockup \
+  --privileged \
+  --cap-add SYS_ADMIN \
+  -p 5000:5000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /DATA/Compose:/stacks \
+  -v /DATA/AppData:/DATA/AppData \
+  -v dockup_data:/app/data \
+  -v $(pwd)/backups:/app/backups \
+  --restart unless-stopped \
+  
+
+
 ## latest (2026-01-26)
 Fixed a split editor Parse issue
 ## latest (2026-01-18)
