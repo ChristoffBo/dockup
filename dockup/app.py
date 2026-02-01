@@ -9539,21 +9539,39 @@ def get_all_backups():
 def schedule_backup_job(stack_name, schedule_type, schedule_time, schedule_day=0):
     """Schedule automated backup job"""
     try:
+        logger.info("=" * 80)
+        logger.info(f"SCHEDULE_BACKUP_JOB CALLED")
+        logger.info(f"Stack: {stack_name}")
+        logger.info(f"Type: {schedule_type}")
+        logger.info(f"Time: {schedule_time}")
+        logger.info(f"Day: {schedule_day}")
+        logger.info("=" * 80)
+        
         job_id = f'backup_{stack_name}'
+        
+        # Get user timezone
+        user_tz = pytz.timezone(config.get('timezone', 'UTC'))
+        logger.info(f"Using timezone: {user_tz}")
         
         # Remove existing job
         try:
             scheduler.remove_job(job_id)
+            logger.info(f"Removed existing job: {job_id}")
         except:
-            pass
+            logger.info(f"No existing job to remove: {job_id}")
         
         # Parse time
         hour, minute = map(int, schedule_time.split(':'))
+        logger.info(f"Parsed time: hour={hour}, minute={minute}")
         
         if schedule_type == 'daily':
+            # Use CronTrigger with timezone like action schedules
+            trigger = CronTrigger(hour=hour, minute=minute, timezone=user_tz)
+            logger.info(f"Created daily CronTrigger: {trigger}")
+            
             scheduler.add_job(
                 backup_manager.queue_backup,
-                CronTrigger(hour=hour, minute=minute),
+                trigger,
                 args=[stack_name],
                 id=job_id,
                 replace_existing=True
@@ -9561,17 +9579,34 @@ def schedule_backup_job(stack_name, schedule_type, schedule_time, schedule_day=0
             logger.info(f"✓ Scheduled daily backup for {stack_name} at {schedule_time}")
             
         elif schedule_type == 'weekly':
+            # Use CronTrigger with timezone like action schedules
+            trigger = CronTrigger(day_of_week=schedule_day, hour=hour, minute=minute, timezone=user_tz)
+            logger.info(f"Created weekly CronTrigger: {trigger}")
+            
             scheduler.add_job(
                 backup_manager.queue_backup,
-                CronTrigger(day_of_week=schedule_day, hour=hour, minute=minute),
+                trigger,
                 args=[stack_name],
                 id=job_id,
                 replace_existing=True
             )
             logger.info(f"✓ Scheduled weekly backup for {stack_name} on day {schedule_day} at {schedule_time}")
+        
+        # Verify job was added
+        try:
+            job = scheduler.get_job(job_id)
+            if job:
+                logger.info(f"✓ Verified job exists: {job}")
+                logger.info(f"  Next run: {job.next_run_time}")
+            else:
+                logger.error(f"✗ Job not found after adding: {job_id}")
+        except Exception as ve:
+            logger.error(f"✗ Error verifying job: {ve}")
             
     except Exception as e:
         logger.error(f"Error scheduling backup job: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 def remove_backup_job(stack_name):
@@ -9582,6 +9617,34 @@ def remove_backup_job(stack_name):
         logger.info(f"✓ Removed backup schedule for {stack_name}")
     except:
         pass
+
+
+@app.route('/api/debug/scheduler/jobs', methods=['GET'])
+@require_auth
+def debug_scheduler_jobs():
+    """Debug endpoint to list all scheduler jobs"""
+    try:
+        jobs = scheduler.get_jobs()
+        job_list = []
+        for job in jobs:
+            job_list.append({
+                'id': job.id,
+                'name': job.name,
+                'func': str(job.func),
+                'trigger': str(job.trigger),
+                'next_run': str(job.next_run_time) if job.next_run_time else None,
+                'args': str(job.args),
+                'kwargs': str(job.kwargs)
+            })
+        
+        return jsonify({
+            'total_jobs': len(jobs),
+            'scheduler_running': scheduler.running,
+            'jobs': job_list
+        })
+    except Exception as e:
+        logger.error(f"Error getting scheduler jobs: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/backup/mass-schedule', methods=['POST'])
