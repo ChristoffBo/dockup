@@ -9481,7 +9481,7 @@ def get_backup_queue():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/backup/scan', methods=['POST'])
+@app.route('/api/backup/scan', methods=['GET', 'POST'])
 @require_auth
 def scan_backups():
     """Scan backup directory for existing backups"""
