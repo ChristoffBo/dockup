@@ -92,6 +92,12 @@ flask_logger = logging.getLogger('werkzeug')
 flask_logger.setLevel(logging.INFO)
 flask_logger.addHandler(file_handler)
 
+# Configure backup_manager logger
+backup_logger = logging.getLogger('backup_manager')
+backup_logger.setLevel(logging.INFO)
+backup_logger.addHandler(file_handler)
+backup_logger.addHandler(console_handler)
+
 logger.info(f"DockUp {DOCKUP_VERSION} starting - Logs rotate daily, keeping 7 days")
 
 # ============================================================================
