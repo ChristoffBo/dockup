@@ -1077,17 +1077,18 @@ def backup_worker():
     """Background worker thread to process backup queue"""
     global backup_worker_running
     
+    logger.info("=" * 80)
+    logger.info("🔥🔥🔥 BACKUP WORKER THREAD FUNCTION ENTERED 🔥🔥🔥")
+    logger.info("=" * 80)
+    
     try:
-        logger.info("=" * 80)
-        logger.info("🔥🔥🔥 BACKUP WORKER FUNCTION CALLED 🔥🔥🔥")
-        logger.info("=" * 80)
         logger.info(f"backup_worker_running: {backup_worker_running}")
         logger.info(f"backup_queue: {backup_queue}")
-        logger.info("=" * 80)
+        logger.info(f"backup_queue.qsize(): {backup_queue.qsize()}")
     except Exception as e:
         logger.error(f"Error in worker startup logging: {e}")
     
-    logger.info("✓ Backup worker thread started")
+    logger.info("✓ Backup worker thread main loop starting")
     
     while backup_worker_running:
         try:
@@ -1186,33 +1187,61 @@ def backup_worker():
                 
         except Exception as outer_e:
             logger.error(f"Outer worker error: {outer_e}")
+    
+    logger.info("=" * 80)
+    logger.info("🔥 BACKUP WORKER THREAD EXITING (backup_worker_running=False)")
+    logger.info("=" * 80)
 
 
 def start_backup_worker():
     """Start the backup worker thread"""
     global backup_worker_running, backup_worker_thread
     
+    logger.info("=" * 80)
+    logger.info("🚀 START_BACKUP_WORKER CALLED")
+    logger.info("=" * 80)
+    
     try:
-        if backup_worker_running:
-            logger.info("Backup worker already running")
+        # Check if already running
+        if backup_worker_thread and backup_worker_thread.is_alive():
+            logger.info(f"Backup worker already running (thread alive: {backup_worker_thread.is_alive()})")
+            backup_worker_running = True  # Ensure flag is set
             return
         
-        logger.info("🚀 ATTEMPTING TO START BACKUP WORKER")
+        logger.info(f"Current state: backup_worker_running={backup_worker_running}, thread_exists={backup_worker_thread is not None}")
+        if backup_worker_thread:
+            logger.info(f"Existing thread alive: {backup_worker_thread.is_alive()}")
+        
+        # Set flag BEFORE starting thread to avoid race condition
         backup_worker_running = True
-        backup_worker_thread = threading.Thread(target=backup_worker, daemon=True)
+        
+        # Create and start thread
+        backup_worker_thread = threading.Thread(target=backup_worker, daemon=True, name="BackupWorker")
+        logger.info("Thread object created, calling start()...")
         backup_worker_thread.start()
+        logger.info("Thread start() called")
+        
         logger.info("✓✓✓ BACKUP WORKER THREAD STARTED ✓✓✓")
         logger.info(f"Worker thread is alive: {backup_worker_thread.is_alive()}")
+        logger.info(f"Worker thread name: {backup_worker_thread.name}")
+        logger.info(f"Worker thread ident: {backup_worker_thread.ident}")
         
         # Give it a moment to start
         time.sleep(0.5)
         logger.info(f"Worker thread still alive after 0.5s: {backup_worker_thread.is_alive()}")
+        
+        # Log initial queue state
+        logger.info(f"Queue size: {backup_queue.qsize()}")
         
     except Exception as e:
         logger.error(f"❌ FAILED TO START WORKER: {e}")
         import traceback
         logger.error(traceback.format_exc())
         backup_worker_running = False
+    
+    logger.info("=" * 80)
+    logger.info("START_BACKUP_WORKER COMPLETED")
+    logger.info("=" * 80)
 
 
 def stop_backup_worker():
@@ -1231,6 +1260,15 @@ def queue_backup(stack_name: str) -> int:
     Returns:
         queue_id
     """
+    logger.info("=" * 80)
+    logger.info(f"QUEUE_BACKUP CALLED FOR: {stack_name}")
+    logger.info(f"Current queue size: {backup_queue.qsize()}")
+    logger.info(f"backup_worker_running: {backup_worker_running}")
+    logger.info(f"backup_worker_thread exists: {backup_worker_thread is not None}")
+    if backup_worker_thread:
+        logger.info(f"backup_worker_thread alive: {backup_worker_thread.is_alive()}")
+    logger.info("=" * 80)
+    
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -1244,8 +1282,12 @@ def queue_backup(stack_name: str) -> int:
             conn.commit()
             conn.close()
             
+            logger.info(f"📝 Created backup_queue record with ID: {queue_id}")
+            
             backup_queue.put(queue_id)
-            logger.info(f"✓ Backup queued for {stack_name} (ID: {queue_id})")
+            logger.info(f"✅ Put queue_id {queue_id} into backup_queue")
+            logger.info(f"📊 Queue size after put: {backup_queue.qsize()}")
+            
             return queue_id
             
         except sqlite3.OperationalError as e:
@@ -1258,6 +1300,8 @@ def queue_backup(stack_name: str) -> int:
                 return -1
         except Exception as e:
             logger.error(f"Error queuing backup: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return -1
     
     return -1
