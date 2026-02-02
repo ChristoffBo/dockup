@@ -237,6 +237,96 @@ This method is bulletproof—it works with any Docker registry and always detect
 - Results persist across page reloads
 - Re-scan anytime to check if fixes are available
 
+### 💾 Automated Backups
+
+**Smart Backup System**
+DockUp includes a complete backup solution for your Docker stacks. Schedule automatic backups of your container data volumes, manage retention, and restore with a few clicks.
+
+**How Backups Work**
+1. **Choose what to backup**: Select which volumes from your stack to include
+2. **Set a schedule**: Daily or weekly backups at a specific time
+3. **Automatic retention**: Keeps your last N backups, deletes older ones
+4. **Get notified**: Receive notifications when backups complete or fail
+
+**Setting Up Backups**
+
+Open any stack and go to the **Backup** tab. You'll see:
+
+- **Schedule Settings**: Choose daily or weekly backups and set the time
+- **Volume Selection**: Pick which volumes to backup (very important!)
+- **Stop Before Backup**: Option to stop containers during backup (safer but causes downtime)
+- **Retention Count**: How many backups to keep (older ones auto-delete)
+
+**⚠️ Important: Volume Selection**
+
+DockUp will show all volumes from your stack. **Don't blindly backup everything!**
+
+For media apps like Radarr, Sonarr, Plex:
+- ✅ **DO backup**: Config folders (databases, settings, metadata)
+- ❌ **DON'T backup**: Media folders (movies, TV shows, music)
+
+Example for Radarr:
+```
+✅ /DATA/AppData/radarr/config    ← Backup this (your settings)
+❌ /media/movies                   ← Skip this (terabytes of movies)
+```
+
+**Why?** Media files are huge and don't need backing up—you can re-download them. Config folders are small but contain all your settings, which are irreplaceable.
+
+**Mass Scheduling**
+
+In the **Backups** tab (main dashboard), you can:
+- Select multiple stacks with checkboxes
+- Apply the same schedule to all at once
+- Choose whether to stop containers before backup
+- All stacks queue up and backup one at a time
+
+**Backup History & Restore**
+
+Each stack shows its backup history with:
+- Backup date and time (in your timezone)
+- Backup size
+- One-click restore button
+
+Click **Restore** to roll back a stack to a previous backup. The stack will be stopped, volumes replaced, and restarted automatically.
+
+**Global Backup View**
+
+The **Backups** tab shows all backups across all stacks:
+- See every backup in one place
+- Restore any backup from here
+- Scan and import backups from other sources
+- Alphabetically organized by stack name
+
+**Reset Backup Config**
+
+If you accidentally selected too many volumes (like that 5TB media folder), click the red **Reset Config** button in the stack's Backup tab. This clears everything so you can start fresh and select only the config folders.
+
+**Storage Requirements**
+
+Backups are stored in `/app/backups` inside the container (mounted to `$(pwd)/backups` on your host). Make sure you have enough disk space for your retention policy.
+
+Example: If you keep 7 backups of a 500MB config folder, you need about 3.5GB free space for that stack.
+
+**Moving Stacks Between Servers**
+
+DockUp's backup system works seamlessly with peer connections to migrate stacks between servers:
+
+1. **Backup on Source Server**: Create a backup of the stack you want to move
+2. **Connect as Peers**: Link your source and destination DockUp instances
+3. **Access Global Backups**: From the destination server, open the Backups tab
+4. **See All Backups**: You'll see backups from all connected peer servers
+5. **Restore Anywhere**: Click restore on any backup to pull it to the current server
+6. **Stack Migrated**: The stack is created on the new server with all data intact
+
+This makes it easy to:
+- **Migrate to new hardware**: Move your entire setup to a new server
+- **Balance workloads**: Shift heavy stacks to more powerful machines
+- **Test configurations**: Clone production stacks to a test server
+- **Disaster recovery**: Restore from a peer if your main server fails
+
+The backup file is transferred automatically between peers during restore—no manual file copying needed.
+
 ### 🖼️ Image Management
 
 **Image Overview**
@@ -419,16 +509,29 @@ You control exactly what triggers notifications:
 ### Quick Start with Docker Run
 
 ```bash
-docker run -d \
+docker rm -f dockup 2>/dev/null || true \
+&& docker rmi cbothma/dockup:latest 2>/dev/null || true \
+&& docker pull cbothma/dockup:latest \
+&& docker run -d \
   --name dockup \
+  --privileged \
+  --cap-add SYS_ADMIN \
   -p 5000:5000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /path/to/your/stacks:/stacks \
-  -v /DATA/AppData:/DATA/AppData:ro \
+  -v /DATA/Compose:/stacks \
+  -v /DATA/AppData:/DATA/AppData \
   -v dockup_data:/app/data \
+  -v $(pwd)/backups:/app/backups \
   --restart unless-stopped \
   cbothma/dockup:latest
 ```
+
+**Volume Explanations:**
+- `/var/run/docker.sock` - Required for Docker control
+- `/DATA/Compose:/stacks` - Your Docker Compose stacks directory
+- `/DATA/AppData:/DATA/AppData` - Container data for size calculation and backups
+- `dockup_data:/app/data` - DockUp's settings and database
+- `$(pwd)/backups:/app/backups` - Backup storage location
 
 **Optional PORT environment variable:**
 ```bash
@@ -842,6 +945,8 @@ DockUp stores all configuration in the `/app/data` volume:
 - **Settings**: Timezone, notification configs, polling intervals
 - **Schedules**: Per-stack update schedules and modes
 - **Action Schedules**: Per-stack start/stop/restart schedules
+- **Backup Configs**: Backup schedules, volume selections, retention settings
+- **Backup History**: Backup timestamps, sizes, and metadata
 - **Update Status**: Last check time, update available flags
 - **Update History**: When stacks were updated and by whom
 - **Health Status**: Consecutive failure counts, last notification time
@@ -850,6 +955,8 @@ DockUp stores all configuration in the `/app/data` volume:
 - **API Token**: This instance's authentication token
 - **Scan Results**: Trivy vulnerability scan data
 - **Template Cache**: LinuxServer.io templates and metadata
+
+Backups themselves are stored in `/app/backups` (separate volume mount recommended).
 
 If the `/app/data` volume is lost, all settings reset to defaults but your compose files (in `/stacks`) are unaffected.
 
@@ -1048,6 +1155,39 @@ Should exist and be writable.
 docker exec -it dockup trivy image --cache-dir /app/data/trivy-cache nginx:latest
 ```
 Should download database and show results.
+
+### Backups Not Running
+
+**Check Backup Schedule**
+- Open stack → Backup tab
+- Ensure backup is enabled and scheduled (not "Manual")
+- Verify time and day settings
+- Check timezone in Settings matches your location
+
+**Check Logs**
+```bash
+docker logs dockup | grep -i backup
+```
+Look for backup queue messages and completion notifications.
+
+**Check Storage Space**
+```bash
+df -h $(pwd)/backups
+```
+Ensure enough free space for your retention policy.
+
+**Test Manual Backup**
+- Open stack → Backup tab
+- Click "Backup Now"
+- Watch for notification
+- Check backup appears in history
+
+**Reset Backup Config**
+If backups aren't working or you selected wrong volumes:
+- Open stack → Backup tab
+- Click red "Reset Config" button
+- Reconfigure from scratch
+- Select only config folders (not media!)
 
 ---
 
