@@ -1031,7 +1031,7 @@ def get_dockup_container_id():
             with open('/proc/1/cgroup', 'r') as f:
                 for line in f:
                     # Look for common container runtime indicators
-                    if any(indicator in line for indicator in ['/docker/', '/containerd', '/libpod-', '/kubepods']):
+                    if any(indicator in line for indicator in ['/docker/', 'containerd', '/libpod-', '/kubepods']):
                         parts = line.split('/')
                         for part in reversed(parts):
                             part = part.strip()
