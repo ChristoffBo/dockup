@@ -1410,6 +1410,101 @@
                     </div>
                 </div>
 
+                <!-- DockUp Self Stats -->
+                <div v-if="dockupStats && dockupStats.available" class="card" style="margin-bottom: 30px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(59, 130, 246, 0.1));">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <i class="fas fa-rocket"></i>
+                            DockUp Container
+                        </div>
+                        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
+                            {{ dockupStats.container_name }} • {{ dockupStats.image }}
+                        </div>
+                    </div>
+                    
+                    <div style="padding: 30px 20px; display: flex; justify-content: center; align-items: flex-start; gap: 40px; flex-wrap: wrap;">
+                        <!-- CPU Gauge -->
+                        <div style="text-align: center; min-width: 160px;">
+                            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">
+                                <i class="fas fa-microchip"></i> CPU
+                            </div>
+                            <div class="radial-gauge">
+                                <svg width="140" height="140">
+                                    <circle class="radial-gauge-bg" cx="70" cy="70" r="60"></circle>
+                                    <circle class="radial-gauge-fill" 
+                                            cx="70" cy="70" r="60"
+                                            :stroke="dockupStats.cpu_percent > 75 ? '#f59e0b' : dockupStats.cpu_percent > 50 ? '#3b82f6' : '#10b981'"
+                                            :stroke-dasharray="376.99"
+                                            :stroke-dashoffset="376.99 - (376.99 * dockupStats.cpu_percent / 100)">
+                                    </circle>
+                                </svg>
+                                <div class="radial-gauge-center">
+                                    <div class="radial-gauge-value" :style="{color: dockupStats.cpu_percent > 75 ? '#f59e0b' : dockupStats.cpu_percent > 50 ? '#3b82f6' : '#10b981'}">
+                                        {{ dockupStats.cpu_percent }}%
+                                    </div>
+                                    <div class="radial-gauge-label">Usage</div>
+                                </div>
+                            </div>
+                            <div class="radial-gauge-subtitle">
+                                DockUp CPU
+                            </div>
+                        </div>
+                        
+                        <!-- Memory Gauge -->
+                        <div style="text-align: center; min-width: 160px;">
+                            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">
+                                <i class="fas fa-memory"></i> Memory
+                            </div>
+                            <div class="radial-gauge">
+                                <svg width="140" height="140">
+                                    <circle class="radial-gauge-bg" cx="70" cy="70" r="60"></circle>
+                                    <circle class="radial-gauge-fill" 
+                                            cx="70" cy="70" r="60"
+                                            :stroke="dockupStats.memory_percent > 75 ? '#f59e0b' : dockupStats.memory_percent > 50 ? '#3b82f6' : '#10b981'"
+                                            :stroke-dasharray="376.99"
+                                            :stroke-dashoffset="376.99 - (376.99 * dockupStats.memory_percent / 100)">
+                                    </circle>
+                                </svg>
+                                <div class="radial-gauge-center">
+                                    <div class="radial-gauge-value" :style="{color: dockupStats.memory_percent > 75 ? '#f59e0b' : dockupStats.memory_percent > 50 ? '#3b82f6' : '#10b981'}">
+                                        {{ dockupStats.memory_percent }}%
+                                    </div>
+                                    <div class="radial-gauge-label">Usage</div>
+                                </div>
+                            </div>
+                            <div class="radial-gauge-subtitle">
+                                {{ dockupStats.memory_used_mb }} / {{ dockupStats.memory_limit_mb }} MB
+                            </div>
+                        </div>
+                        
+                        <!-- Network Stats -->
+                        <div style="text-align: center; min-width: 160px;">
+                            <div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">
+                                <i class="fas fa-network-wired"></i> Network
+                            </div>
+                            <div style="margin-bottom: 12px;">
+                                <div style="font-size: 20px; font-weight: bold; color: #8b5cf6;">
+                                    {{ dockupStats.net_rx_mbps || 0 }}
+                                </div>
+                                <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-top: 2px;">
+                                    <i class="fas fa-arrow-down"></i> Mbps Down
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-size: 20px; font-weight: bold; color: #ec4899;">
+                                    {{ dockupStats.net_tx_mbps || 0 }}
+                                </div>
+                                <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-top: 2px;">
+                                    <i class="fas fa-arrow-up"></i> Mbps Up
+                                </div>
+                            </div>
+                            <div class="radial-gauge-subtitle" style="margin-top: 12px;">
+                                {{ formatUptime(dockupStats.uptime_seconds) }}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div v-if="filteredStacks.length === 0 && stacks.length === 0" class="empty-state">
                     <i class="fas fa-box-open"></i>
                     <h2>No Stacks Yet</h2>
@@ -4294,6 +4389,7 @@
                     toasts: [],
                     ws: null,
                     hostStats: null,
+                    dockupStats: null,
                     showCloneModal: false,
                     cloneStackName: '',
                     cloneNewName: '',
@@ -4340,6 +4436,7 @@
                     testingPeer: null,
                     // Polling intervals
                     hostStatsInterval: null,
+                    dockupStatsInterval: null,
                     stackRefreshInterval: null,
                     backupConfig: {type: 'local', local_path: '/app/backups', smb_host: '', smb_share: '', smb_username: '', smb_password: '', smb_mount_path: '', auto_mount: true, mount_status: 'disconnected'},
                     backupAvailableSpace: 0,
@@ -4515,6 +4612,7 @@
                 await this.loadSettings(); // Wait for settings before polling setup
                 this.checkVersion(); // Check for updates
                 this.loadHostStats();
+                this.loadDockupStats();
                 this.loadDockerHubRateLimit();
                 this.loadAppdataSizes(); // Load appdata sizes
                 this.connectWebSocket();
@@ -4530,6 +4628,10 @@
                             clearInterval(this.hostStatsInterval);
                             this.hostStatsInterval = null;
                         }
+                        if (this.dockupStatsInterval) {
+                            clearInterval(this.dockupStatsInterval);
+                            this.dockupStatsInterval = null;
+                        }
                         if (this.stackRefreshInterval) {
                             clearInterval(this.stackRefreshInterval);
                             this.stackRefreshInterval = null;
@@ -4540,6 +4642,7 @@
                         this.setupPolling();
                         // Immediate refresh when tab becomes visible
                         this.loadHostStats();
+                        this.loadDockupStats();
                         this.loadStacks();
                     }
                 });
@@ -4723,6 +4826,10 @@
                         clearInterval(this.hostStatsInterval);
                         this.hostStatsInterval = null;
                     }
+                    if (this.dockupStatsInterval) {
+                        clearInterval(this.dockupStatsInterval);
+                        this.dockupStatsInterval = null;
+                    }
                     if (this.stackRefreshInterval) {
                         clearInterval(this.stackRefreshInterval);
                         this.stackRefreshInterval = null;
@@ -4737,12 +4844,20 @@
                         this.hostStatsInterval = setInterval(() => {
                             this.loadHostStats();
                         }, 5000);
+                        // DockUp stats polling - same interval as host stats
+                        this.dockupStatsInterval = setInterval(() => {
+                            this.loadDockupStats();
+                        }, 5000);
                     } else if (hostMode === 'custom') {
                         const hostInterval = this.settings.host_stats_interval || 0;
                         if (hostInterval > 0) {
                             console.log(`Host stats polling: Custom ${hostInterval} seconds`);
                             this.hostStatsInterval = setInterval(() => {
                                 this.loadHostStats();
+                            }, hostInterval * 1000);
+                            // DockUp stats polling - same interval as host stats
+                            this.dockupStatsInterval = setInterval(() => {
+                                this.loadDockupStats();
                             }, hostInterval * 1000);
                         }
                     }
@@ -4980,6 +5095,32 @@
                         this.hostStats = response.data;
                     } catch (error) {
                         console.error('Failed to load host stats:', error);
+                    }
+                },
+                async loadDockupStats() {
+                    try {
+                        const response = await axios.get('/api/dockup/stats');
+                        if (response.data.available) {
+                            this.dockupStats = response.data;
+                        }
+                    } catch (error) {
+                        console.error('Failed to load DockUp stats:', error);
+                    }
+                },
+                formatUptime(seconds) {
+                    if (!seconds) return '0s';
+                    const days = Math.floor(seconds / 86400);
+                    const hours = Math.floor((seconds % 86400) / 3600);
+                    const mins = Math.floor((seconds % 3600) / 60);
+                    
+                    if (days > 0) {
+                        return `${days}d ${hours}h`;
+                    } else if (hours > 0) {
+                        return `${hours}h ${mins}m`;
+                    } else if (mins > 0) {
+                        return `${mins}m`;
+                    } else {
+                        return `${seconds}s`;
                     }
                 },
                 showResourceHogs(type) {
