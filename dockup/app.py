@@ -1025,8 +1025,8 @@ def get_dockup_container_id():
         if os.path.exists('/proc/1/cgroup'):
             with open('/proc/1/cgroup', 'r') as f:
                 for line in f:
-                    # Look for docker container ID in cgroup path
-                    if 'docker' in line or 'containers' in line:
+                    # Look for docker or containerd container ID in cgroup path
+                    if 'docker' in line or 'containerd' in line:
                         parts = line.split('/')
                         for part in reversed(parts):
                             part = part.strip()
