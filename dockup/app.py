@@ -1022,15 +1022,27 @@ def get_dockup_container_id():
                 return container.id
         
         # Method 2: Parse /proc/1/cgroup to get actual container ID
+        # Common cgroup paths:
+        # - Docker: /docker/<container_id>
+        # - Containerd: /system.slice/containerd.service/<container_id>
+        # - Podman: /libpod-<container_id>.scope
+        # - Kubernetes: /kubepods/.../<container_id>
         if os.path.exists('/proc/1/cgroup'):
             with open('/proc/1/cgroup', 'r') as f:
                 for line in f:
-                    # Look for docker or containerd container ID in cgroup path
-                    if 'docker' in line or 'containerd' in line:
+                    # Look for common container runtime indicators
+                    if any(indicator in line for indicator in ['/docker/', '/containerd', '/libpod-', '/kubepods']):
                         parts = line.split('/')
                         for part in reversed(parts):
                             part = part.strip()
-                            # Docker IDs are 64 hex chars, but we can match on 12+
+                            # Remove common suffixes like .scope
+                            if part.endswith('.scope'):
+                                part = part[:-6]
+                            # Remove libpod- prefix if present
+                            if part.startswith('libpod-'):
+                                part = part[7:]
+                            
+                            # Docker/containerd IDs are 64 hex chars, match on 12+ chars
                             if len(part) >= 12 and all(c in '0123456789abcdef' for c in part):
                                 # Match this ID fragment to a running container
                                 for container in containers:
