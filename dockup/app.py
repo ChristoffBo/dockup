@@ -1011,49 +1011,38 @@ docker_client = docker.from_env()
 
 # Detect DockUp's own container ID
 def get_dockup_container_id():
-    """Detect DockUp's own container ID from cgroup or hostname"""
+    """Detect DockUp's own container ID"""
     try:
-        # Method 1: Try reading from cgroup (works in most containers)
-        if os.path.exists('/proc/self/cgroup'):
-            with open('/proc/self/cgroup', 'r') as f:
-                for line in f:
-                    if 'docker' in line or 'containerd' in line:
-                        # Extract container ID from cgroup path
-                        parts = line.strip().split('/')
-                        for part in reversed(parts):
-                            if len(part) == 64 and all(c in '0123456789abcdef' for c in part):
-                                return part
-                            # Also check for shorter container IDs
-                            if len(part) >= 12 and all(c in '0123456789abcdef' for c in part):
-                                return part
+        containers = docker_client.containers.list(all=True)
         
-        # Method 2: Try hostname (often set to container ID)
-        hostname = socket.gethostname()
-        if len(hostname) >= 12:
-            # Try to find matching container by name or ID
-            containers = docker_client.containers.list(all=True)
-            for container in containers:
-                if container.id.startswith(hostname) or container.name == hostname:
-                    return container.id
-        
-        # Method 3: Look for container with mounted /stacks directory
-        containers = docker_client.containers.list()
+        # Method 1: Look for container named "dockup" (works with --name dockup)
         for container in containers:
-            try:
-                # Check if container has /stacks mount
-                mounts = container.attrs.get('Mounts', [])
-                for mount in mounts:
-                    if mount.get('Destination') == '/stacks' or mount.get('Destination') == '/app':
-                        # Additional check: see if it's running DockUp
-                        if 'dockup' in container.name.lower() or 'dockup' in str(container.image).lower():
-                            return container.id
-            except Exception:
-                continue
+            if container.name == 'dockup':
+                logger.info(f"✓ DockUp container detected: {container.id[:12]}")
+                return container.id
         
-        logger.warning("Could not detect DockUp's own container ID")
+        # Method 2: Parse /proc/1/cgroup to get actual container ID
+        if os.path.exists('/proc/1/cgroup'):
+            with open('/proc/1/cgroup', 'r') as f:
+                for line in f:
+                    # Look for docker container ID in cgroup path
+                    if 'docker' in line or 'containers' in line:
+                        parts = line.split('/')
+                        for part in reversed(parts):
+                            part = part.strip()
+                            # Docker IDs are 64 hex chars, but we can match on 12+
+                            if len(part) >= 12 and all(c in '0123456789abcdef' for c in part):
+                                # Match this ID fragment to a running container
+                                for container in containers:
+                                    if container.id.startswith(part):
+                                        logger.info(f"✓ DockUp container detected via cgroup: {container.name} ({container.id[:12]})")
+                                        return container.id
+        
+        logger.warning("⚠ Could not detect DockUp container - stats card will not appear")
         return None
+        
     except Exception as e:
-        logger.error(f"Error detecting DockUp container ID: {e}")
+        logger.error(f"Error detecting DockUp container: {e}")
         return None
 
 dockup_self_container_id = get_dockup_container_id()
