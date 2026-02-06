@@ -1009,60 +1009,6 @@ logger.info(f"Trivy cache directory: {TRIVY_CACHE_DIR}")
 # Docker client
 docker_client = docker.from_env()
 
-# Detect DockUp's own container ID
-def get_dockup_container_id():
-    """Detect DockUp's own container ID"""
-    try:
-        containers = docker_client.containers.list(all=True)
-        
-        # Method 1: Look for container named "dockup" (works with --name dockup)
-        for container in containers:
-            if container.name == 'dockup':
-                logger.info(f"✓ DockUp container detected: {container.id[:12]}")
-                return container.id
-        
-        # Method 2: Parse /proc/1/cgroup to get actual container ID
-        # Common cgroup paths:
-        # - Docker: /docker/<container_id>
-        # - Containerd: /system.slice/containerd.service/<container_id>
-        # - Podman: /libpod-<container_id>.scope
-        # - Kubernetes: /kubepods/.../<container_id>
-        if os.path.exists('/proc/1/cgroup'):
-            with open('/proc/1/cgroup', 'r') as f:
-                for line in f:
-                    # Look for common container runtime indicators
-                    if any(indicator in line for indicator in ['/docker/', 'containerd', '/libpod-', '/kubepods']):
-                        parts = line.split('/')
-                        for part in reversed(parts):
-                            part = part.strip()
-                            # Remove common suffixes like .scope
-                            if part.endswith('.scope'):
-                                part = part[:-6]
-                            # Remove libpod- prefix if present
-                            if part.startswith('libpod-'):
-                                part = part[7:]
-                            
-                            # Docker/containerd IDs are 64 hex chars, match on 12+ chars
-                            if len(part) >= 12 and all(c in '0123456789abcdef' for c in part):
-                                # Match this ID fragment to a running container
-                                for container in containers:
-                                    if container.id.startswith(part):
-                                        logger.info(f"✓ DockUp container detected via cgroup: {container.name} ({container.id[:12]})")
-                                        return container.id
-        
-        logger.warning("⚠ Could not detect DockUp container - stats card will not appear")
-        return None
-        
-    except Exception as e:
-        logger.error(f"Error detecting DockUp container: {e}")
-        return None
-
-dockup_self_container_id = get_dockup_container_id()
-if dockup_self_container_id:
-    logger.info(f"✓ DockUp running in container: {dockup_self_container_id[:12]}")
-else:
-    logger.warning("⚠ Running outside container or could not detect container ID")
-
 # Initialize backup system
 try:
     backup_manager.init_backup_database()
@@ -1117,12 +1063,6 @@ all_containers_cache = {
     'timestamp': 0,
     'ttl': 3  # Cache all containers for 3 seconds (prevents race with 5s stats update)
 }
-dockup_self_stats_cache = {
-    'data': None,
-    'timestamp': 0,
-    'ttl': 3  # Cache DockUp's own stats for 3 seconds
-}
-dockup_self_container_id = None  # Will be populated on startup
 stats_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix='stats-')  # For parallel stats collection
 
 # Initialize Apprise
@@ -4323,102 +4263,6 @@ def api_host_stats():
             return jsonify({'error': 'Failed to get stats'}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/dockup/stats')
-def api_dockup_stats():
-    """Get DockUp's own container stats - CPU, RAM, network usage"""
-    global dockup_self_stats_cache, dockup_self_container_id
-    
-    if not dockup_self_container_id:
-        return jsonify({'error': 'DockUp container ID not detected', 'available': False}), 200
-    
-    try:
-        current_time = time.time()
-        
-        # Check cache first
-        if (dockup_self_stats_cache['data'] is not None and 
-            current_time - dockup_self_stats_cache['timestamp'] < dockup_self_stats_cache['ttl']):
-            return jsonify(dockup_self_stats_cache['data'])
-        
-        # Fetch fresh stats
-        container = docker_client.containers.get(dockup_self_container_id)
-        
-        # Get container stats (stream=False for single reading)
-        stats = container.stats(stream=False)
-        
-        # Calculate CPU percentage
-        cpu_delta = stats['cpu_stats']['cpu_usage']['total_usage'] - stats['precpu_stats']['cpu_usage']['total_usage']
-        system_delta = stats['cpu_stats']['system_cpu_usage'] - stats['precpu_stats']['system_cpu_usage']
-        cpu_count = stats['cpu_stats'].get('online_cpus', len(stats['cpu_stats']['cpu_usage'].get('percpu_usage', [1])))
-        
-        cpu_percent = 0.0
-        if system_delta > 0 and cpu_delta > 0:
-            cpu_percent = (cpu_delta / system_delta) * cpu_count * 100.0
-        
-        # Calculate memory usage
-        mem_usage = stats['memory_stats'].get('usage', 0)
-        mem_limit = stats['memory_stats'].get('limit', 1)
-        mem_percent = (mem_usage / mem_limit) * 100.0 if mem_limit > 0 else 0.0
-        
-        # Get network stats
-        networks = stats.get('networks', {})
-        net_rx_bytes = 0
-        net_tx_bytes = 0
-        for net_name, net_stats in networks.items():
-            net_rx_bytes += net_stats.get('rx_bytes', 0)
-            net_tx_bytes += net_stats.get('tx_bytes', 0)
-        
-        # Calculate network rate if we have previous data
-        net_rx_mbps = 0.0
-        net_tx_mbps = 0.0
-        if hasattr(api_dockup_stats, 'last_net_stats'):
-            time_delta = current_time - api_dockup_stats.last_time
-            if time_delta > 0:
-                bytes_recv_delta = net_rx_bytes - api_dockup_stats.last_net_stats['rx_bytes']
-                bytes_sent_delta = net_tx_bytes - api_dockup_stats.last_net_stats['tx_bytes']
-                net_rx_mbps = (bytes_recv_delta * 8) / (time_delta * 1_000_000)
-                net_tx_mbps = (bytes_sent_delta * 8) / (time_delta * 1_000_000)
-        
-        # Store for next calculation
-        api_dockup_stats.last_net_stats = {'rx_bytes': net_rx_bytes, 'tx_bytes': net_tx_bytes}
-        api_dockup_stats.last_time = current_time
-        
-        # Get container info
-        container_name = container.name
-        container_status = container.status
-        container_image = container.image.tags[0] if container.image.tags else 'unknown'
-        
-        # Build response
-        stats_data = {
-            'available': True,
-            'container_id': dockup_self_container_id[:12],
-            'container_name': container_name,
-            'container_status': container_status,
-            'image': container_image,
-            'cpu_percent': round(cpu_percent, 1),
-            'memory_used_mb': round(mem_usage / (1024**2), 1),
-            'memory_limit_mb': round(mem_limit / (1024**2), 1),
-            'memory_percent': round(mem_percent, 1),
-            'net_rx_mbps': round(net_rx_mbps, 2),
-            'net_tx_mbps': round(net_tx_mbps, 2),
-            'net_rx_total_mb': round(net_rx_bytes / (1024**2), 1),
-            'net_tx_total_mb': round(net_tx_bytes / (1024**2), 1),
-            'uptime_seconds': int((datetime.now() - datetime.fromisoformat(container.attrs['State']['StartedAt'].replace('Z', '+00:00'))).total_seconds())
-        }
-        
-        # Cache the result
-        dockup_self_stats_cache['data'] = stats_data
-        dockup_self_stats_cache['timestamp'] = current_time
-        
-        return jsonify(stats_data)
-        
-    except docker.errors.NotFound:
-        dockup_self_container_id = None  # Reset if container no longer exists
-        return jsonify({'error': 'DockUp container not found', 'available': False}), 200
-    except Exception as e:
-        logger.error(f"Error getting DockUp stats: {e}")
-        return jsonify({'error': str(e), 'available': False}), 500
 
 
 @app.route('/api/docker-hub/rate-limit')
