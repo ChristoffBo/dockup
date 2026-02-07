@@ -2001,62 +2001,131 @@
                 </div>
 
                 <div class="card">
-                    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                    <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
                         <button @click="loadAllBackups()" class="btn btn-primary">
                             <i class="fas fa-sync"></i> Refresh Backups
                         </button>
                         <button @click="scanAndImportBackups()" class="btn btn-success" :disabled="scanningBackups">
                             <i class="fas fa-search"></i> {{ scanningBackups ? 'Scanning...' : 'Scan & Import from Network Share' }}
                         </button>
+                        <button @click="expandAllBackups()" class="btn btn-secondary">
+                            <i class="fas fa-chevron-down"></i> Expand All
+                        </button>
+                        <button @click="collapseAllBackups()" class="btn btn-secondary">
+                            <i class="fas fa-chevron-up"></i> Collapse All
+                        </button>
+                    </div>
+
+                    <!-- Search Filter -->
+                    <div style="margin-bottom: 20px;">
+                        <input type="text" 
+                               v-model="backupSearchFilter" 
+                               placeholder="🔍 Search stacks..." 
+                               class="form-control"
+                               style="max-width: 400px; padding: 10px;">
                     </div>
                     
-                    <div v-if="allBackups && allBackups.length > 0" style="overflow-x: auto;">
-                        <table style="width: 100%; border-collapse: collapse;">
-                            <thead>
-                                <tr style="background: rgba(255,255,255,0.05); border-bottom: 2px solid rgba(255,255,255,0.1);">
-                                    <th style="padding: 12px; text-align: left; font-weight: 600;">Stack Name</th>
-                                    <th style="padding: 12px; text-align: left; font-weight: 600;">Backup Date</th>
-                                    <th style="padding: 12px; text-align: left; font-weight: 600;">Size</th>
-                                    <th style="padding: 12px; text-align: left; font-weight: 600;">Duration</th>
-                                    <th style="padding: 12px; text-align: left; font-weight: 600;">Status</th>
-                                    <th style="padding: 12px; text-align: right; font-weight: 600;">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="backup in allBackups" :key="backup.id" 
-                                    style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                    <td style="padding: 12px;">
-                                        <strong style="color: #60a5fa;">{{ backup.stack_name }}</strong>
-                                    </td>
-                                    <td style="padding: 12px;">{{ formatBackupDate(backup.backup_date) }}</td>
-                                    <td style="padding: 12px;">{{ backup.backup_size_mb ? backup.backup_size_mb.toFixed(1) : '0' }} MB</td>
-                                    <td style="padding: 12px;">{{ backup.duration_seconds || 0 }}s</td>
-                                    <td style="padding: 12px;">
-                                        <span v-if="backup.status === 'success'" style="color: #10b981; display: flex; align-items: center;">
-                                            <i class="fas fa-check-circle" style="margin-right: 5px;"></i> Success
-                                        </span>
-                                        <span v-else style="color: #ef4444; display: flex; align-items: center;">
-                                            <i class="fas fa-times-circle" style="margin-right: 5px;"></i> Failed
-                                        </span>
-                                    </td>
-                                    <td style="padding: 12px; text-align: right;">
-                                        <button @click="restoreGlobalBackup(backup.stack_name, backup.id)" 
-                                                class="btn btn-sm" 
-                                                style="background: #3b82f6; margin-right: 5px;"
-                                                title="Restore this backup">
-                                            <i class="fas fa-undo"></i> Restore
-                                        </button>
-                                        <button @click="deleteBackup(backup.id)" 
-                                                class="btn btn-sm" 
-                                                style="background: #ef4444;"
-                                                title="Delete this backup">
-                                            <i class="fas fa-trash"></i> Delete
-                                        </button>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
+                    <div v-if="allBackups && allBackups.length > 0">
+                        <!-- Summary Stats -->
+                        <div style="display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap;">
+                            <div style="background: rgba(96, 165, 250, 0.1); padding: 15px; border-radius: 8px; border-left: 4px solid #60a5fa;">
+                                <div style="font-size: 24px; font-weight: bold; color: #60a5fa;">{{ sortedStackNames.length }}</div>
+                                <div style="opacity: 0.7; font-size: 14px;">Stacks with Backups</div>
+                            </div>
+                            <div style="background: rgba(16, 185, 129, 0.1); padding: 15px; border-radius: 8px; border-left: 4px solid #10b981;">
+                                <div style="font-size: 24px; font-weight: bold; color: #10b981;">{{ allBackups.length }}</div>
+                                <div style="opacity: 0.7; font-size: 14px;">Total Backups</div>
+                            </div>
+                            <div style="background: rgba(251, 146, 60, 0.1); padding: 15px; border-radius: 8px; border-left: 4px solid #fb923c;">
+                                <div style="font-size: 24px; font-weight: bold; color: #fb923c;">
+                                    {{ (allBackups.reduce((sum, b) => sum + (b.backup_size_mb || 0), 0) / 1024).toFixed(1) }} GB
+                                </div>
+                                <div style="opacity: 0.7; font-size: 14px;">Total Size</div>
+                            </div>
+                        </div>
+
+                        <!-- Grouped Backups -->
+                        <div v-for="stackName in sortedStackNames" :key="stackName" 
+                             style="margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; overflow: hidden;">
+                            
+                            <!-- Stack Header -->
+                            <div @click="toggleBackupStack(stackName)" 
+                                 style="background: rgba(255,255,255,0.05); padding: 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s;"
+                                 :style="{'background': expandedBackupStacks[stackName] ? 'rgba(96, 165, 250, 0.1)' : 'rgba(255,255,255,0.05)'}"
+                                 @mouseover="$event.currentTarget.style.background = 'rgba(96, 165, 250, 0.15)'"
+                                 @mouseout="$event.currentTarget.style.background = expandedBackupStacks[stackName] ? 'rgba(96, 165, 250, 0.1)' : 'rgba(255,255,255,0.05)'">
+                                
+                                <div style="display: flex; align-items: center; gap: 15px;">
+                                    <i class="fas" :class="expandedBackupStacks[stackName] ? 'fa-chevron-down' : 'fa-chevron-right'" 
+                                       style="color: #60a5fa; width: 20px;"></i>
+                                    <div>
+                                        <div style="font-size: 18px; font-weight: 600; color: #60a5fa;">
+                                            {{ stackName }}
+                                        </div>
+                                        <div style="font-size: 13px; opacity: 0.7; margin-top: 3px;">
+                                            {{ groupedBackups[stackName].length }} backup{{ groupedBackups[stackName].length !== 1 ? 's' : '' }}
+                                            · Latest: {{ formatBackupDate(groupedBackups[stackName][0].backup_date) }}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div style="display: flex; align-items: center; gap: 15px;">
+                                    <div style="text-align: right;">
+                                        <div style="font-size: 14px; font-weight: 500;">
+                                            {{ (groupedBackups[stackName].reduce((sum, b) => sum + (b.backup_size_mb || 0), 0) / 1024).toFixed(2) }} GB
+                                        </div>
+                                        <div style="font-size: 12px; opacity: 0.6;">Total Size</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Stack Backups (Expanded) -->
+                            <div v-if="expandedBackupStacks[stackName]" style="border-top: 1px solid rgba(255,255,255,0.1);">
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <thead>
+                                        <tr style="background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.1);">
+                                            <th style="padding: 10px; text-align: left; font-weight: 600; font-size: 13px; opacity: 0.8;">Backup Date</th>
+                                            <th style="padding: 10px; text-align: left; font-weight: 600; font-size: 13px; opacity: 0.8;">Size</th>
+                                            <th style="padding: 10px; text-align: left; font-weight: 600; font-size: 13px; opacity: 0.8;">Duration</th>
+                                            <th style="padding: 10px; text-align: left; font-weight: 600; font-size: 13px; opacity: 0.8;">Status</th>
+                                            <th style="padding: 10px; text-align: right; font-weight: 600; font-size: 13px; opacity: 0.8;">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="backup in groupedBackups[stackName]" :key="backup.id" 
+                                            style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                            <td style="padding: 10px;">{{ formatBackupDate(backup.backup_date) }}</td>
+                                            <td style="padding: 10px;">{{ backup.backup_size_mb ? backup.backup_size_mb.toFixed(1) : '0' }} MB</td>
+                                            <td style="padding: 10px;">{{ backup.duration_seconds || 0 }}s</td>
+                                            <td style="padding: 10px;">
+                                                <span v-if="backup.status === 'success'" style="color: #10b981; display: flex; align-items: center; gap: 5px;">
+                                                    <i class="fas fa-check-circle"></i> Success
+                                                </span>
+                                                <span v-else style="color: #ef4444; display: flex; align-items: center; gap: 5px;">
+                                                    <i class="fas fa-times-circle"></i> Failed
+                                                </span>
+                                            </td>
+                                            <td style="padding: 10px; text-align: right;">
+                                                <button @click.stop="restoreGlobalBackup(backup.stack_name, backup.id)" 
+                                                        class="btn btn-sm" 
+                                                        style="background: #3b82f6; margin-right: 5px;"
+                                                        title="Restore this backup">
+                                                    <i class="fas fa-undo"></i> Restore
+                                                </button>
+                                                <button @click.stop="deleteBackup(backup.id)" 
+                                                        class="btn btn-sm" 
+                                                        style="background: #ef4444;"
+                                                        title="Delete this backup">
+                                                    <i class="fas fa-trash"></i>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
                     </div>
+                    
                     <div v-else-if="allBackups && allBackups.length === 0" 
                          style="padding: 60px 20px; background: rgba(255,255,255,0.03); border-radius: 8px; text-align: center;">
                         <i class="fas fa-database" style="font-size: 48px; color: rgba(255,255,255,0.3); margin-bottom: 15px;"></i>
@@ -2072,7 +2141,19 @@
                 <!-- Mass Schedule Card -->
                 <div class="card" style="margin-top: 20px;">
                     <h3><i class="fas fa-calendar-alt"></i> Mass Backup Schedule</h3>
-                    <p style="margin-bottom: 20px; opacity: 0.8;">Select multiple stacks and apply the same backup schedule to all</p>
+                    <p style="margin-bottom: 15px; opacity: 0.8;">Select multiple stacks and configure backups in one go using the wizard</p>
+                    
+                    <div style="background: rgba(16, 185, 129, 0.1); border-left: 4px solid #10b981; padding: 15px; border-radius: 6px; margin-bottom: 20px;">
+                        <div style="display: flex; gap: 10px; align-items: start;">
+                            <i class="fas fa-magic" style="color: #10b981; margin-top: 2px;"></i>
+                            <div style="flex: 1;">
+                                <div style="font-weight: 600; margin-bottom: 5px; color: #10b981;">Volume Selection Wizard</div>
+                                <div style="font-size: 14px; opacity: 0.9;">
+                                    After clicking Apply, a wizard will walk you through each stack to select which volumes to backup. Skip large media volumes to save space.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                     
                     <div style="margin-bottom: 20px;">
                         <h4 style="margin-bottom: 10px;">Select Stacks:</h4>
@@ -2131,6 +2212,108 @@
                         <i class="fas fa-calendar-check"></i> 
                         Apply Schedule to {{ massScheduleStacks.length }} Stack(s)
                     </button>
+                </div>
+            </div>
+
+            <!-- Volume Selection Wizard Modal -->
+            <div class="modal" v-if="showVolumeWizard" @click.self="wizardCancel">
+                <div class="modal-content" style="max-width: 900px;">
+                    <div class="modal-header">
+                        <h2>
+                            <i class="fas fa-magic"></i> Configure Backups - 
+                            Step {{ wizardCurrentIndex + 1 }} of {{ wizardStacks.length }}
+                        </h2>
+                        <button class="close-btn" @click="wizardCancel">&times;</button>
+                    </div>
+                    
+                    <div style="padding: 20px;">
+                        <!-- Progress Bar -->
+                        <div style="background: rgba(255,255,255,0.05); height: 8px; border-radius: 4px; margin-bottom: 20px; overflow: hidden;">
+                            <div style="background: linear-gradient(90deg, #3b82f6, #60a5fa); height: 100%; transition: width 0.3s;"
+                                 :style="{width: ((wizardCurrentIndex + 1) / wizardStacks.length * 100) + '%'}"></div>
+                        </div>
+                        
+                        <!-- Current Stack Info -->
+                        <div style="background: rgba(96, 165, 250, 0.1); padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #60a5fa;">
+                            <h3 style="margin: 0 0 10px 0; color: #60a5fa; font-size: 24px;">
+                                {{ wizardStacks[wizardCurrentIndex] }}
+                            </h3>
+                            <div style="opacity: 0.8;">
+                                Select which volumes to include in backups for this stack
+                            </div>
+                        </div>
+                        
+                        <!-- Volumes List -->
+                        <div v-if="wizardCurrentVolumes.length > 0" style="max-height: 400px; overflow-y: auto;">
+                            <div v-for="volume in wizardCurrentVolumes" :key="volume.host_path"
+                                 style="background: rgba(255,255,255,0.03); padding: 15px; margin-bottom: 10px; border-radius: 8px; border: 2px solid transparent;"
+                                 :style="{'border-color': wizardVolumeSelections[wizardStacks[wizardCurrentIndex]][volume.host_path] ? '#10b981' : 'transparent'}">
+                                
+                                <label style="display: flex; align-items: start; gap: 12px; cursor: pointer;">
+                                    <input type="checkbox" 
+                                           v-model="wizardVolumeSelections[wizardStacks[wizardCurrentIndex]][volume.host_path]"
+                                           style="width: 20px; height: 20px; margin-top: 2px; flex-shrink: 0;">
+                                    <div style="flex: 1;">
+                                        <div style="font-weight: 600; margin-bottom: 5px; color: #60a5fa;">
+                                            {{ volume.host_path }}
+                                        </div>
+                                        <div style="font-size: 13px; opacity: 0.7; margin-bottom: 5px;">
+                                            → {{ volume.container_path }}
+                                        </div>
+                                        <div style="display: flex; gap: 15px; font-size: 13px;">
+                                            <span>
+                                                <i class="fas fa-hdd"></i> 
+                                                {{ volume.estimated_size_mb ? (volume.estimated_size_mb / 1024).toFixed(2) + ' GB' : 'Unknown size' }}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div v-else style="padding: 40px; text-align: center; background: rgba(255,255,255,0.03); border-radius: 8px;">
+                            <i class="fas fa-spinner fa-spin" style="font-size: 32px; color: #60a5fa; margin-bottom: 10px;"></i>
+                            <p style="opacity: 0.7;">Loading volumes...</p>
+                        </div>
+                        
+                        <!-- Helper Info -->
+                        <div style="background: rgba(251, 146, 60, 0.1); border-left: 4px solid #fb923c; padding: 12px; border-radius: 6px; margin-top: 20px;">
+                            <div style="font-size: 13px; opacity: 0.9;">
+                                <i class="fas fa-lightbulb"></i> 
+                                <strong>Tip:</strong> Uncheck large media volumes (movies, TV shows) to avoid massive backup sizes
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Navigation Buttons -->
+                    <div class="btn-group" style="padding: 0 20px 20px 20px; display: flex; gap: 10px;">
+                        <button @click="wizardPrevious()" 
+                                :disabled="wizardCurrentIndex === 0"
+                                class="btn btn-secondary"
+                                style="flex: 1;">
+                            <i class="fas fa-arrow-left"></i> Previous
+                        </button>
+                        
+                        <button v-if="wizardCurrentIndex < wizardStacks.length - 1"
+                                @click="wizardNext()" 
+                                class="btn btn-primary"
+                                style="flex: 1;">
+                            Next <i class="fas fa-arrow-right"></i>
+                        </button>
+                        
+                        <button v-else
+                                @click="wizardFinish()" 
+                                class="btn btn-success"
+                                style="flex: 1;">
+                            <i class="fas fa-check"></i> Finish & Apply
+                        </button>
+                        
+                        <button @click="wizardCancel()" 
+                                class="btn"
+                                style="background: #ef4444;">
+                            <i class="fas fa-times"></i> Cancel
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -4354,7 +4537,15 @@
                     volumesLoadingError: false,
                     volumesLoading: false,
                     volumesLoadError: null,
-                    backupInProgress: false
+                    backupInProgress: false,
+                    backupSearchFilter: '',
+                    expandedBackupStacks: {},
+                    showVolumeWizard: false,
+                    wizardStacks: [],
+                    wizardCurrentIndex: 0,
+                    wizardCurrentVolumes: [],
+                    wizardVolumeSelections: {},
+                    wizardConfig: null
                 };
             },
             computed: {
@@ -4484,6 +4675,43 @@
                 allCollapsed() {
                     // Check if all stacks are collapsed
                     return this.stacks.length > 0 && this.stacks.every(s => this.collapsedStacks[s.name]);
+                },
+                groupedBackups() {
+                    if (!this.allBackups || this.allBackups.length === 0) return {};
+                    
+                    const grouped = {};
+                    this.allBackups.forEach(backup => {
+                        if (!grouped[backup.stack_name]) {
+                            grouped[backup.stack_name] = [];
+                        }
+                        grouped[backup.stack_name].push(backup);
+                    });
+                    
+                    // Sort backups within each stack by date (newest first)
+                    Object.keys(grouped).forEach(stackName => {
+                        grouped[stackName].sort((a, b) => {
+                            return new Date(b.backup_date) - new Date(a.backup_date);
+                        });
+                    });
+                    
+                    return grouped;
+                },
+                filteredGroupedBackups() {
+                    if (!this.backupSearchFilter) return this.groupedBackups;
+                    
+                    const filtered = {};
+                    const search = this.backupSearchFilter.toLowerCase();
+                    
+                    Object.keys(this.groupedBackups).forEach(stackName => {
+                        if (stackName.toLowerCase().includes(search)) {
+                            filtered[stackName] = this.groupedBackups[stackName];
+                        }
+                    });
+                    
+                    return filtered;
+                },
+                sortedStackNames() {
+                    return Object.keys(this.filteredGroupedBackups).sort();
                 }
             },
             async mounted() {
@@ -7252,6 +7480,17 @@
                         console.error(e);
                     }
                 },
+                toggleBackupStack(stackName) {
+                    this.$set(this.expandedBackupStacks, stackName, !this.expandedBackupStacks[stackName]);
+                },
+                expandAllBackups() {
+                    this.sortedStackNames.forEach(stackName => {
+                        this.$set(this.expandedBackupStacks, stackName, true);
+                    });
+                },
+                collapseAllBackups() {
+                    this.expandedBackupStacks = {};
+                },
                 async loadStackBackupHistory(s) { 
                     if (!s) return; 
                     try { 
@@ -7388,57 +7627,99 @@
                         return;
                     }
                     
-                    if (!confirm(`Apply backup schedule to ${this.massScheduleStacks.length} stack(s)?\n\nSchedule: ${this.massScheduleConfig.schedule}\nTime: ${this.massScheduleConfig.schedule_time}\nRetention: ${this.massScheduleConfig.retention_count} backups`)) {
+                    // Start the volume selection wizard
+                    this.wizardStacks = [...this.massScheduleStacks];
+                    this.wizardCurrentIndex = 0;
+                    this.wizardVolumeSelections = {};
+                    this.wizardConfig = {...this.massScheduleConfig};
+                    this.showVolumeWizard = true;
+                    
+                    // Load volumes for first stack
+                    await this.loadWizardStackVolumes();
+                },
+                async loadWizardStackVolumes() {
+                    const stackName = this.wizardStacks[this.wizardCurrentIndex];
+                    try {
+                        const r = await fetch(`/api/backup/stack/${stackName}/volumes`);
+                        if (r.ok) {
+                            const data = await r.json();
+                            this.wizardCurrentVolumes = data.volumes || [];
+                            
+                            // Initialize selection for this stack if not already set
+                            if (!this.wizardVolumeSelections[stackName]) {
+                                this.wizardVolumeSelections[stackName] = {};
+                                this.wizardCurrentVolumes.forEach(vol => {
+                                    // Default to unchecked - user must explicitly choose
+                                    this.wizardVolumeSelections[stackName][vol.host_path] = false;
+                                });
+                            }
+                        } else {
+                            this.showToast('Failed to load volumes', 'error');
+                            this.wizardCurrentVolumes = [];
+                        }
+                    } catch(e) {
+                        this.showToast('Error loading volumes', 'error');
+                        this.wizardCurrentVolumes = [];
+                    }
+                },
+                wizardPrevious() {
+                    if (this.wizardCurrentIndex > 0) {
+                        this.wizardCurrentIndex--;
+                        this.loadWizardStackVolumes();
+                    }
+                },
+                async wizardNext() {
+                    if (this.wizardCurrentIndex < this.wizardStacks.length - 1) {
+                        this.wizardCurrentIndex++;
+                        await this.loadWizardStackVolumes();
+                    }
+                },
+                async wizardFinish() {
+                    // Apply the schedule and volume selections
+                    const totalStacks = this.wizardStacks.length;
+                    
+                    if (!confirm(`Apply backup configuration to ${totalStacks} stack(s)?`)) {
                         return;
                     }
                     
                     try {
-                        const r = await fetch('/api/backup/mass-schedule', {
+                        // Send to new endpoint that handles both schedule and volumes
+                        const r = await fetch('/api/backup/mass-schedule-with-volumes', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
-                                stacks: this.massScheduleStacks,
-                                ...this.massScheduleConfig
+                                stacks: this.wizardStacks,
+                                schedule: this.wizardConfig.schedule,
+                                schedule_time: this.wizardConfig.schedule_time,
+                                schedule_day: this.wizardConfig.schedule_day,
+                                retention_count: this.wizardConfig.retention_count,
+                                stop_before_backup: this.wizardConfig.stop_before_backup,
+                                volume_selections: this.wizardVolumeSelections
                             })
                         });
                         
                         if (r.ok) {
                             const data = await r.json();
-                            this.showToast(`✓ Scheduled ${data.count} stacks for backup`, 'success');
+                            this.showToast(`✓ Configured ${data.count} stacks with backups`, 'success');
+                            this.showVolumeWizard = false;
                             this.massScheduleStacks = [];
-                            
-                            // Refresh stacks to update UI
                             await this.refreshStacks();
                         } else {
-                            // Parse error from backend
-                            let userMsg = 'Failed to apply schedule';
-                            let debugInfo = null;
-                            
-                            try {
-                                const errorData = await r.json();
-                                debugInfo = errorData;
-                                
-                                // Sanitize: only show safe error messages to user
-                                if (errorData.error && typeof errorData.error === 'string') {
-                                    // Filter out sensitive info (paths, stack traces, SQL)
-                                    const sensitivePatterns = /(?:\/[\w\/]+\/|Error:|Traceback|line \d+|sqlite|database|\.py)/i;
-                                    if (!sensitivePatterns.test(errorData.error)) {
-                                        userMsg = errorData.error;
-                                    }
-                                }
-                            } catch(e) {
-                                debugInfo = await r.text();
-                            }
-                            
-                            // Log full error for debugging
-                            console.error('Mass schedule failed:', {
-                                status: r.status,
-                                statusText: r.statusText,
-                                response: debugInfo
-                            });
-                            
-                            this.showToast(userMsg, 'error');
+                            const err = await r.json();
+                            this.showToast(err.error || 'Failed to apply configuration', 'error');
                         }
+                    } catch(e) {
+                        this.showToast('Error applying configuration', 'error');
+                        console.error(e);
+                    }
+                },
+                wizardCancel() {
+                    if (confirm('Cancel bulk backup configuration? All selections will be lost.')) {
+                        this.showVolumeWizard = false;
+                        this.wizardStacks = [];
+                        this.wizardVolumeSelections = {};
+                    }
+                },
                     } catch(e) {
                         console.error('Mass schedule error:', e);
                         this.showToast('Error applying schedule: Network or client error', 'error');
