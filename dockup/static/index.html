@@ -7668,10 +7668,11 @@
                             this.wizardCurrentVolumes = data.volumes || [];
                             
                             if (!this.wizardVolumeSelections[stackName]) {
-                                this.wizardVolumeSelections[stackName] = {};
+                                const selections = {};
                                 this.wizardCurrentVolumes.forEach(vol => {
-                                    this.wizardVolumeSelections[stackName][vol.host_path] = false;
+                                    selections[vol.host_path] = false;
                                 });
+                                this.wizardVolumeSelections[stackName] = selections;
                             }
                         } else {
                             this.showToast('Failed to load volumes', 'error');
@@ -7680,6 +7681,7 @@
                     } catch(e) {
                         this.showToast('Error loading volumes', 'error');
                         this.wizardCurrentVolumes = [];
+                        console.error('Wizard volume load error:', e);
                     }
                 },
                 wizardPrevious() {
