@@ -2008,6 +2008,9 @@
                         <button @click="scanAndImportBackups()" class="btn btn-success" :disabled="scanningBackups">
                             <i class="fas fa-search"></i> {{ scanningBackups ? 'Scanning...' : 'Scan & Import from Network Share' }}
                         </button>
+                        <button @click="cleanupGhostBackups()" class="btn" style="background: #fb923c;">
+                            <i class="fas fa-broom"></i> Cleanup Ghost Backups
+                        </button>
                         <button @click="expandAllBackups()" class="btn btn-secondary">
                             <i class="fas fa-chevron-down"></i> Expand All
                         </button>
@@ -7490,6 +7493,25 @@
                 },
                 collapseAllBackups() {
                     this.expandedBackupStacks = {};
+                },
+                async cleanupGhostBackups() {
+                    if (!confirm('Remove database records for backups where files no longer exist?\n\nThis will clean up orphaned backup entries.')) {
+                        return;
+                    }
+                    
+                    try {
+                        const r = await fetch('/api/backup/cleanup-ghosts', {method: 'POST'});
+                        if (r.ok) {
+                            const data = await r.json();
+                            this.showToast(`Cleaned up ${data.deleted} ghost backup(s)`, 'success');
+                            await this.loadAllBackups();
+                        } else {
+                            this.showToast('Failed to cleanup', 'error');
+                        }
+                    } catch(e) {
+                        this.showToast('Error during cleanup', 'error');
+                        console.error(e);
+                    }
                 },
                 async loadStackBackupHistory(s) { 
                     if (!s) return; 
