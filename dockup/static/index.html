@@ -2008,8 +2008,9 @@
                         <button @click="scanAndImportBackups()" class="btn btn-success" :disabled="scanningBackups">
                             <i class="fas fa-search"></i> {{ scanningBackups ? 'Scanning...' : 'Scan & Import from Network Share' }}
                         </button>
-                        <button @click="cleanupGhostBackups()" class="btn" style="background: #fb923c;">
-                            <i class="fas fa-broom"></i> Cleanup Ghost Backups
+                        <button @click="cleanupGhostBackups()" class="btn" style="background: #fb923c;" :disabled="cleaningGhostBackups">
+                            <i class="fas" :class="cleaningGhostBackups ? 'fa-spinner fa-spin' : 'fa-broom'"></i> 
+                            {{ cleaningGhostBackups ? 'Cleaning...' : 'Cleanup Ghost Backups' }}
                         </button>
                         <button @click="expandAllBackups()" class="btn btn-secondary">
                             <i class="fas fa-chevron-down"></i> Expand All
@@ -4543,6 +4544,7 @@
                     backupInProgress: false,
                     backupSearchFilter: '',
                     expandedBackupStacks: {},
+                    cleaningGhostBackups: false,
                     showVolumeWizard: false,
                     wizardStacks: [],
                     wizardCurrentIndex: 0,
@@ -7495,22 +7497,29 @@
                     this.expandedBackupStacks = {};
                 },
                 async cleanupGhostBackups() {
+                    if (this.cleaningGhostBackups) return;
+                    
                     if (!confirm('Remove database records for backups where files no longer exist?\n\nThis will clean up orphaned backup entries.')) {
                         return;
                     }
                     
+                    this.cleaningGhostBackups = true;
                     try {
                         const r = await fetch('/api/backup/cleanup-ghosts', {method: 'POST'});
                         if (r.ok) {
                             const data = await r.json();
-                            this.showToast(`Cleaned up ${data.deleted} ghost backup(s)`, 'success');
+                            const deletedCount = typeof data.deleted === 'number' ? data.deleted : 0;
+                            this.showToast(`Cleaned up ${deletedCount} ghost backup${deletedCount !== 1 ? 's' : ''}`, 'success');
                             await this.loadAllBackups();
                         } else {
-                            this.showToast('Failed to cleanup', 'error');
+                            const error = await r.json().catch(() => ({}));
+                            this.showToast(error.error || 'Failed to cleanup', 'error');
                         }
                     } catch(e) {
                         this.showToast('Error during cleanup', 'error');
                         console.error(e);
+                    } finally {
+                        this.cleaningGhostBackups = false;
                     }
                 },
                 async loadStackBackupHistory(s) { 
