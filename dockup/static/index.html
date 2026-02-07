@@ -7665,7 +7665,8 @@
                         const r = await fetch(`/api/backup/stack/${stackName}/volumes`);
                         if (r.ok) {
                             const data = await r.json();
-                            this.wizardCurrentVolumes = data.volumes || [];
+                            // API returns array directly, not wrapped in {volumes: [...]}
+                            this.wizardCurrentVolumes = Array.isArray(data) ? data : [];
                             
                             if (!this.wizardVolumeSelections[stackName]) {
                                 const selections = {};
