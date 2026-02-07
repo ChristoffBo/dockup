@@ -42,7 +42,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             cbothma/dockup:latest
-            cbothma/dockup:1.4.2
+            cbothma/dockup:1.4.3
           cache-from: type=registry,ref=gitea.bothmainc.com/cbothma/dockup:buildcache
           cache-to: type=registry,ref=gitea.bothmainc.com/cbothma/dockup:buildcache,mode=max
 
