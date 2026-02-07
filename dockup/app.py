@@ -9713,7 +9713,7 @@ def debug_scheduler_jobs():
 @app.route('/api/backup/mass-schedule', methods=['POST'])
 @require_auth
 def mass_schedule_backups():
-    """Apply backup schedule to multiple stacks"""
+    """Apply backup schedule to multiple stacks - DOES NOT auto-select volumes"""
     try:
         data = request.json
         stack_names = data.get('stacks', [])
@@ -9747,12 +9747,8 @@ def mass_schedule_backups():
                 1 if data.get('stop_before_backup', True) else 0
             ))
             
-            # Auto-populate volumes from compose file
-            try:
-                backup_manager.auto_populate_volumes(stack_name)
-                logger.info(f"✓ Auto-populated volumes for {stack_name}")
-            except Exception as vol_error:
-                logger.warning(f"Could not auto-populate volumes for {stack_name}: {vol_error}")
+            # DO NOT auto-populate volumes - user must configure manually
+            # This prevents accidentally backing up massive media volumes
             
             # Schedule the backup job
             schedule_backup_job(
@@ -9765,11 +9761,100 @@ def mass_schedule_backups():
         conn.commit()
         conn.close()
         
-        logger.info(f"✓ Mass scheduled {len(stack_names)} stacks")
-        return jsonify({'success': True, 'count': len(stack_names)})
+        logger.info(f"✓ Mass scheduled {len(stack_names)} stacks - volumes need manual configuration")
+        return jsonify({
+            'success': True, 
+            'count': len(stack_names),
+            'message': 'Schedule applied. You must configure volumes for each stack individually.'
+        })
         
     except Exception as e:
         logger.error(f"Error in mass schedule: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/mass-schedule-with-volumes', methods=['POST'])
+@require_auth
+def mass_schedule_with_volumes():
+    """Apply backup schedule AND volume selections to multiple stacks"""
+    try:
+        data = request.json
+        stack_names = data.get('stacks', [])
+        volume_selections = data.get('volume_selections', {})
+        
+        if not stack_names:
+            return jsonify({'error': 'No stacks provided'}), 400
+        
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        
+        for stack_name in stack_names:
+            # Create/update backup config
+            cursor.execute("""
+                INSERT INTO backup_configs 
+                (stack_name, enabled, schedule, schedule_time, schedule_day, retention_count, stop_before_backup, updated_at)
+                VALUES (?, 1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(stack_name) DO UPDATE SET
+                    enabled = 1,
+                    schedule = excluded.schedule,
+                    schedule_time = excluded.schedule_time,
+                    schedule_day = excluded.schedule_day,
+                    retention_count = excluded.retention_count,
+                    stop_before_backup = excluded.stop_before_backup,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (
+                stack_name,
+                data.get('schedule', 'weekly'),
+                data.get('schedule_time', '03:00'),
+                data.get('schedule_day', 0),
+                data.get('retention_count', 7),
+                1 if data.get('stop_before_backup', True) else 0
+            ))
+            
+            # Parse volumes from compose file
+            volumes = backup_manager.parse_stack_volumes(stack_name)
+            
+            # Get user's selections for this stack
+            stack_selections = volume_selections.get(stack_name, {})
+            
+            # Clear existing volume selections
+            cursor.execute("DELETE FROM backup_volume_selections WHERE stack_name = ?", (stack_name,))
+            
+            # Insert volume selections based on user choices
+            for volume in volumes:
+                host_path = volume['host_path']
+                backup_enabled = stack_selections.get(host_path, False)
+                
+                cursor.execute("""
+                    INSERT INTO backup_volume_selections 
+                    (stack_name, host_path, container_path, backup_enabled, estimated_size_mb)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    stack_name,
+                    host_path,
+                    volume['container_path'],
+                    1 if backup_enabled else 0,
+                    volume.get('estimated_size_mb', 0)
+                ))
+            
+            # Schedule the backup job
+            schedule_backup_job(
+                stack_name,
+                data.get('schedule', 'weekly'),
+                data.get('schedule_time', '03:00'),
+                data.get('schedule_day', 0)
+            )
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✓ Mass scheduled {len(stack_names)} stacks with volume selections")
+        return jsonify({'success': True, 'count': len(stack_names)})
+        
+    except Exception as e:
+        logger.error(f"Error in mass schedule with volumes: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
 
