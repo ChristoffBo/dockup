@@ -1,3 +1,5 @@
+## latest (2026-02-7)
+Updated the backup page and enhaced the bulk backups
 ## latest (2026-02-01)
 Added full stack backups with their composes. Add network share in settings, and each stack can be set in its scheduler in the ui.
 Also added a new Backups tab where you can restore from. NOW also if you have a second dockup you can go to the backups tab refresh the backups if same network share was mounted and transfer full stacks via a restore.
