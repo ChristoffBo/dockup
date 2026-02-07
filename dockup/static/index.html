@@ -7475,12 +7475,14 @@
                     }
                 },
                 toggleBackupStack(stackName) {
-                    this.$set(this.expandedBackupStacks, stackName, !this.expandedBackupStacks[stackName]);
+                    this.expandedBackupStacks[stackName] = !this.expandedBackupStacks[stackName];
                 },
                 expandAllBackups() {
+                    const expanded = {};
                     this.sortedStackNames.forEach(stackName => {
-                        this.$set(this.expandedBackupStacks, stackName, true);
+                        expanded[stackName] = true;
                     });
+                    this.expandedBackupStacks = expanded;
                 },
                 collapseAllBackups() {
                     this.expandedBackupStacks = {};
