@@ -2020,7 +2020,6 @@
                         </button>
                     </div>
 
-                    <!-- Search Filter -->
                     <div style="margin-bottom: 20px;">
                         <input type="text" 
                                v-model="backupSearchFilter" 
@@ -2030,7 +2029,6 @@
                     </div>
                     
                     <div v-if="allBackups && allBackups.length > 0">
-                        <!-- Summary Stats -->
                         <div style="display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap;">
                             <div style="background: rgba(96, 165, 250, 0.1); padding: 15px; border-radius: 8px; border-left: 4px solid #60a5fa;">
                                 <div style="font-size: 24px; font-weight: bold; color: #60a5fa;">{{ sortedStackNames.length }}</div>
@@ -2048,11 +2046,9 @@
                             </div>
                         </div>
 
-                        <!-- Grouped Backups -->
                         <div v-for="stackName in sortedStackNames" :key="stackName" 
                              style="margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; overflow: hidden;">
                             
-                            <!-- Stack Header -->
                             <div @click="toggleBackupStack(stackName)" 
                                  style="background: rgba(255,255,255,0.05); padding: 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s;"
                                  :style="{'background': expandedBackupStacks[stackName] ? 'rgba(96, 165, 250, 0.1)' : 'rgba(255,255,255,0.05)'}"
@@ -2083,7 +2079,6 @@
                                 </div>
                             </div>
 
-                            <!-- Stack Backups (Expanded) -->
                             <div v-if="expandedBackupStacks[stackName]" style="border-top: 1px solid rgba(255,255,255,0.1);">
                                 <table style="width: 100%; border-collapse: collapse;">
                                     <thead>
@@ -2231,13 +2226,11 @@
                     </div>
                     
                     <div style="padding: 20px;">
-                        <!-- Progress Bar -->
                         <div style="background: rgba(255,255,255,0.05); height: 8px; border-radius: 4px; margin-bottom: 20px; overflow: hidden;">
                             <div style="background: linear-gradient(90deg, #3b82f6, #60a5fa); height: 100%; transition: width 0.3s;"
                                  :style="{width: ((wizardCurrentIndex + 1) / wizardStacks.length * 100) + '%'}"></div>
                         </div>
                         
-                        <!-- Current Stack Info -->
                         <div style="background: rgba(96, 165, 250, 0.1); padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #60a5fa;">
                             <h3 style="margin: 0 0 10px 0; color: #60a5fa; font-size: 24px;">
                                 {{ wizardStacks[wizardCurrentIndex] }}
@@ -2247,7 +2240,6 @@
                             </div>
                         </div>
                         
-                        <!-- Volumes List -->
                         <div v-if="wizardCurrentVolumes.length > 0" style="max-height: 400px; overflow-y: auto;">
                             <div v-for="volume in wizardCurrentVolumes" :key="volume.host_path"
                                  style="background: rgba(255,255,255,0.03); padding: 15px; margin-bottom: 10px; border-radius: 8px; border: 2px solid transparent;"
@@ -2280,7 +2272,6 @@
                             <p style="opacity: 0.7;">Loading volumes...</p>
                         </div>
                         
-                        <!-- Helper Info -->
                         <div style="background: rgba(251, 146, 60, 0.1); border-left: 4px solid #fb923c; padding: 12px; border-radius: 6px; margin-top: 20px;">
                             <div style="font-size: 13px; opacity: 0.9;">
                                 <i class="fas fa-lightbulb"></i> 
@@ -2289,7 +2280,6 @@
                         </div>
                     </div>
                     
-                    <!-- Navigation Buttons -->
                     <div class="btn-group" style="padding: 0 20px 20px 20px; display: flex; gap: 10px;">
                         <button @click="wizardPrevious()" 
                                 :disabled="wizardCurrentIndex === 0"
@@ -4542,9 +4532,9 @@
                     volumesLoading: false,
                     volumesLoadError: null,
                     backupInProgress: false,
+                    cleaningGhostBackups: false,
                     backupSearchFilter: '',
                     expandedBackupStacks: {},
-                    cleaningGhostBackups: false,
                     showVolumeWizard: false,
                     wizardStacks: [],
                     wizardCurrentIndex: 0,
@@ -4692,7 +4682,6 @@
                         grouped[backup.stack_name].push(backup);
                     });
                     
-                    // Sort backups within each stack by date (newest first)
                     Object.keys(grouped).forEach(stackName => {
                         grouped[stackName].sort((a, b) => {
                             return new Date(b.backup_date) - new Date(a.backup_date);
@@ -7676,11 +7665,9 @@
                             const data = await r.json();
                             this.wizardCurrentVolumes = data.volumes || [];
                             
-                            // Initialize selection for this stack if not already set
                             if (!this.wizardVolumeSelections[stackName]) {
                                 this.wizardVolumeSelections[stackName] = {};
                                 this.wizardCurrentVolumes.forEach(vol => {
-                                    // Default to unchecked - user must explicitly choose
                                     this.wizardVolumeSelections[stackName][vol.host_path] = false;
                                 });
                             }
@@ -7706,7 +7693,6 @@
                     }
                 },
                 async wizardFinish() {
-                    // Apply the schedule and volume selections
                     const totalStacks = this.wizardStacks.length;
                     
                     if (!confirm(`Apply backup configuration to ${totalStacks} stack(s)?`)) {
@@ -7714,7 +7700,6 @@
                     }
                     
                     try {
-                        // Send to new endpoint that handles both schedule and volumes
                         const r = await fetch('/api/backup/mass-schedule-with-volumes', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
@@ -7749,11 +7734,6 @@
                         this.showVolumeWizard = false;
                         this.wizardStacks = [];
                         this.wizardVolumeSelections = {};
-                    }
-                },
-                    } catch(e) {
-                        console.error('Mass schedule error:', e);
-                        this.showToast('Error applying schedule: Network or client error', 'error');
                     }
                 }
             }
