@@ -9585,14 +9585,53 @@ def get_all_backups():
         backups = [dict(row) for row in cursor.fetchall()]
         conn.close()
         
-        # Convert timestamps to user timezone
+        # Filter out backups where file doesn't actually exist (ghost backups)
+        valid_backups = []
         for backup in backups:
+            backup_file = backup.get('backup_file_path', '')
+            if backup_file and os.path.exists(backup_file):
+                valid_backups.append(backup)
+            else:
+                logger.warning(f"Ghost backup detected: {backup.get('stack_name')} - file not found: {backup_file}")
+        
+        # Convert timestamps to user timezone
+        for backup in valid_backups:
             if backup.get('backup_date'):
                 backup['backup_date'] = format_timestamp(backup['backup_date'])
         
-        return jsonify({'backups': backups})
+        return jsonify({'backups': valid_backups})
     except Exception as e:
         logger.error(f"Error getting all backups: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/cleanup-ghosts', methods=['POST'])
+@require_auth
+def cleanup_ghost_backups():
+    """Remove database records for backups where files no longer exist"""
+    try:
+        conn = backup_manager.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get all backups
+        cursor.execute("SELECT id, stack_name, backup_file_path FROM backup_history WHERE status != 'deleted'")
+        all_backups = cursor.fetchall()
+        
+        deleted_count = 0
+        for backup in all_backups:
+            backup_file = backup['backup_file_path']
+            if not backup_file or not os.path.exists(backup_file):
+                # Mark as deleted
+                cursor.execute("UPDATE backup_history SET status = 'deleted' WHERE id = ?", (backup['id'],))
+                deleted_count += 1
+                logger.info(f"Cleaned up ghost backup: {backup['stack_name']} - {backup_file}")
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'deleted': deleted_count})
+    except Exception as e:
+        logger.error(f"Error cleaning up ghost backups: {e}")
         return jsonify({'error': str(e)}), 500
 
 

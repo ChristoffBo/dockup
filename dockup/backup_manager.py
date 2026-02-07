@@ -637,7 +637,14 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             for v in disabled:
                 logger.info(f"  - {v['host_path']}")
         
+        # Save config values before closing connection
+        stop_before_backup = config['stop_before_backup']
+        retention_count = config['retention_count']
+        
+        # CRITICAL: Close database connection BEFORE file operations
+        # This prevents database locking during long backup operations (30+ min for large volumes)
         conn.close()
+        logger.info("✓ Database connection closed before file operations")
         
         if not volumes:
             logger.warning(f"No enabled volumes found for {stack_name} - backup will only include compose file")
@@ -650,10 +657,10 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             return False, '', f"Insufficient disk space. Required: {required_space_gb:.1f} GB, Available: {available_gb} GB"
         
         # Stop container if required
-        logger.info(f"Stop before backup setting: {config['stop_before_backup']}")
+        logger.info(f"Stop before backup setting: {stop_before_backup}")
         logger.info(f"Docker client available: {docker_client is not None}")
         
-        if config['stop_before_backup'] and docker_client:
+        if stop_before_backup and docker_client:
             try:
                 logger.info(f"Looking for containers with label: com.docker.compose.project={stack_name}")
                 containers = docker_client.containers.list(
@@ -756,7 +763,7 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         shutil.rmtree(temp_backup_dir)
         
         # Restart container if it was running
-        if container_was_running and config['stop_before_backup'] and docker_client:
+        if container_was_running and stop_before_backup and docker_client:
             try:
                 logger.info(f"Starting containers for {stack_name}...")
                 containers = docker_client.containers.list(
@@ -771,7 +778,7 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         
         duration = int(time.time() - start_time)
         
-        # Record in history
+        # Record in history - reopen database connection
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
@@ -782,7 +789,7 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         conn.commit()
         
         # Apply retention policy
-        if config['retention_count'] > 0:
+        if retention_count > 0:
             cursor.execute("""
                 SELECT id, backup_file_path FROM backup_history 
                 WHERE stack_name = ? AND status = 'success'
@@ -790,8 +797,8 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             """, (stack_name,))
             all_backups = cursor.fetchall()
             
-            if len(all_backups) > config['retention_count']:
-                for old_backup in all_backups[config['retention_count']:]:
+            if len(all_backups) > retention_count:
+                for old_backup in all_backups[retention_count:]:
                     # Delete file
                     try:
                         if os.path.exists(old_backup['backup_file_path']):
@@ -810,8 +817,8 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         conn.commit()
         conn.close()
         
-        kept_count = min(len(all_backups), config['retention_count'])
-        deleted_count = max(0, len(all_backups) - config['retention_count'])
+        kept_count = min(len(all_backups), retention_count)
+        deleted_count = max(0, len(all_backups) - retention_count)
         
         logger.info("=" * 80)
         logger.info(f"✅ BACKUP COMPLETED SUCCESSFULLY")
@@ -831,7 +838,7 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
                 f"Stack: {stack_name}",
                 f"Size: {backup_size_mb:.1f} MB",
                 f"Duration: {duration}s",
-                f"Retention: {kept_count}/{config['retention_count']}"
+                f"Retention: {kept_count}/{retention_count}"
             ]
             if deleted_count > 0:
                 msg_parts.append(f"Removed {deleted_count} old backup(s)")
