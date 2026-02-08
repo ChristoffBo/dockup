@@ -1613,19 +1613,19 @@
 
 
                         <div class="btn-group" style="margin-top: 15px;">
-                            <button class="btn btn-success" v-if="stack.status !== 'running'" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'up') : remoteStackOperation(stack, 'up')">
+                            <button class="btn btn-success" v-if="stack.status !== 'running' && !stack.is_system" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'up') : remoteStackOperation(stack, 'up')">
                                 <i class="fas fa-play"></i> Start
                             </button>
-                            <button class="btn btn-danger" v-if="stack.status === 'running'" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'stop') : remoteStackOperation(stack, 'stop')">
+                            <button class="btn btn-danger" v-if="stack.status === 'running' && !stack.is_system" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'stop') : remoteStackOperation(stack, 'stop')">
                                 <i class="fas fa-stop"></i> Stop
                             </button>
-                            <button class="btn btn-restart" v-if="stack.status === 'running'" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'restart') : remoteStackOperation(stack, 'restart')">
+                            <button class="btn btn-restart" v-if="stack.status === 'running' && !stack.is_system" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'restart') : remoteStackOperation(stack, 'restart')">
                                 <i class="fas fa-redo"></i> Restart
                             </button>
-                            <button class="btn btn-warning" v-if="stack.update_available" @click="updateStack(stack.name)">
+                            <button class="btn btn-warning" v-if="stack.update_available && !stack.is_system" @click="updateStack(stack.name)">
                                 <i class="fas fa-arrow-up"></i> Update Now
                             </button>
-                            <button class="btn btn-info" @click="checkUpdates(stack.name)">
+                            <button class="btn btn-info" @click="checkUpdates(stack.name)" v-if="!stack.is_system">
                                 <i class="fas fa-sync"></i> Check
                             </button>
                             <button class="btn btn-scan" @click="scanContainer(stack)" v-if="stack.containers.length > 0 && stack.is_local" title="Scan for vulnerabilities">
@@ -1635,28 +1635,28 @@
                                 <i class="fas fa-terminal"></i> Shell
                             </button>
                             
-                            <button class="btn btn-info" @click="quickSetModeWithSelector(stack, 'check')" :disabled="!stack.is_local" :title="!stack.is_local ? 'Configure on remote DockUp instance' : ''">
+                            <button class="btn btn-info" @click="quickSetModeWithSelector(stack, 'check')" :disabled="!stack.is_local || stack.is_system" :title="stack.is_system ? 'Cannot auto-update system stack' : (!stack.is_local ? 'Configure on remote DockUp instance' : '')">
                                 <i class="fas fa-search"></i> Check Only
                             </button>
-                            <button class="btn btn-success" @click="quickSetModeWithSelector(stack, 'auto')" :disabled="!stack.is_local" :title="!stack.is_local ? 'Configure on remote DockUp instance' : ''">
+                            <button class="btn btn-success" @click="quickSetModeWithSelector(stack, 'auto')" :disabled="!stack.is_local || stack.is_system" :title="stack.is_system ? 'Cannot auto-update system stack' : (!stack.is_local ? 'Configure on remote DockUp instance' : '')">
                                 <i class="fas fa-magic"></i> Auto Update
                             </button>
-                            <button class="btn btn-edit" @click="editStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Cannot edit remote stacks' : ''">
+                            <button class="btn btn-edit" @click="editStack(stack.name)" :disabled="!stack.is_local || stack.is_system" :title="stack.is_system ? 'Cannot edit system stack' : (!stack.is_local ? 'Cannot edit remote stacks' : '')">
                                 <i class="fas fa-edit"></i> Edit
                             </button>
                             <button class="btn btn-logs" @click="viewLogs(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'View logs on remote DockUp instance' : ''">
                                 <i class="fas fa-file-alt"></i> Logs
                             </button>
-                            <button class="btn btn-secondary" @click="configureSchedule(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Configure schedule on remote DockUp instance' : ''">
+                            <button class="btn btn-secondary" @click="configureSchedule(stack.name)" :disabled="!stack.is_local || stack.is_system" :title="stack.is_system ? 'Cannot schedule system stack' : (!stack.is_local ? 'Configure schedule on remote DockUp instance' : '')">
                                 <i class="fas fa-clock"></i> Schedule
                             </button>
-                            <button class="btn btn-delete-images" @click="deleteImagesOnly(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Manage images on remote DockUp instance' : ''">
+                            <button class="btn btn-delete-images" @click="deleteImagesOnly(stack.name)" :disabled="!stack.is_local || stack.is_system" :title="stack.is_system ? 'Cannot delete system images' : (!stack.is_local ? 'Manage images on remote DockUp instance' : '')">
                                 <i class="fas fa-images"></i> Delete Images
                             </button>
-                            <button class="btn btn-secondary" @click="cloneStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Cannot clone remote stacks' : ''">
+                            <button class="btn btn-secondary" @click="cloneStack(stack.name)" :disabled="!stack.is_local || stack.is_system" :title="stack.is_system ? 'Cannot clone system stack' : (!stack.is_local ? 'Cannot clone remote stacks' : '')">
                                 <i class="fas fa-clone"></i> Clone
                             </button>
-                            <button class="btn btn-danger" @click="confirmDeleteStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Delete on remote DockUp instance' : ''">
+                            <button class="btn btn-danger" @click="confirmDeleteStack(stack.name)" :disabled="!stack.is_local || stack.is_system" :title="stack.is_system ? 'Cannot delete system stack' : (!stack.is_local ? 'Delete on remote DockUp instance' : '')">
                                 <i class="fas fa-trash"></i> Delete
                             </button>
                         </div>
