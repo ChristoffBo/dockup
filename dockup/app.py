@@ -2980,6 +2980,80 @@ def get_stacks():
     # Sort alphabetically by name (case-insensitive)
     stacks.sort(key=lambda x: x['name'].lower())
     
+    # Add DockUp itself as first stack (self-monitoring)
+    try:
+        dockup_containers = [c for c in all_containers if c.name == 'dockup']
+        if dockup_containers:
+            dockup_container = dockup_containers[0]
+            
+            # Calculate uptime
+            started_at = dockup_container.attrs.get('State', {}).get('StartedAt', '')
+            uptime_str = ''
+            if started_at and dockup_container.status == 'running':
+                try:
+                    started = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
+                    uptime_delta = datetime.now(pytz.UTC) - started
+                    days = uptime_delta.days
+                    hours = uptime_delta.seconds // 3600
+                    minutes = (uptime_delta.seconds % 3600) // 60
+                    if days > 0:
+                        uptime_str = f"{days}d {hours}h"
+                    elif hours > 0:
+                        uptime_str = f"{hours}h {minutes}m"
+                    else:
+                        uptime_str = f"{minutes}m"
+                except:
+                    uptime_str = ''
+            
+            # Build DockUp stack entry
+            dockup_stack = {
+                'name': 'dockup',
+                'path': '/app',
+                'compose_file': '/app/compose.yaml',
+                'services': ['dockup'],
+                'containers': [{
+                    'id': dockup_container.id,
+                    'name': dockup_container.name,
+                    'status': dockup_container.status,
+                    'uptime': uptime_str,
+                    'health': 'healthy',
+                    'cpu': 0,
+                    'mem_usage_mb': 0,
+                    'mem_limit_mb': 0,
+                    'mem_percent': 0,
+                    'net_rx_mbps': 0,
+                    'net_tx_mbps': 0
+                }],
+                'status': 'running' if dockup_container.status == 'running' else 'stopped',
+                'health': 'healthy',
+                'running': dockup_container.status == 'running',
+                'update_mode': 'off',
+                'cron': '',
+                'last_check': '',
+                'update_available': False,
+                'stats': {
+                    'cpu': 0,
+                    'mem_usage_mb': 0,
+                    'mem_limit_mb': 0,
+                    'mem_percent': 0
+                },
+                'inactive': False,
+                'web_ui_url': '',
+                'tags': ['system'],
+                'updated_recently': False,
+                'update_age_hours': None,
+                'last_update': None,
+                'updated_by': 'system',
+                'appdata_size_gb': None,
+                'appdata_last_updated': None,
+                'is_system': True  # Flag to disable control operations
+            }
+            
+            # Prepend DockUp to the list
+            stacks.insert(0, dockup_stack)
+    except Exception as e:
+        logger.error(f"Error adding DockUp self-monitoring: {e}")
+    
     return stacks
 
 
@@ -3298,6 +3372,11 @@ def auto_update_stack(stack_name):
     FIXED: Now reads image names from compose file instead of running containers
     This prevents digest caching issues when registry URLs change
     """
+    # Skip DockUp itself - self-updates are handled separately
+    if stack_name.lower() == 'dockup':
+        logger.debug(f"[{stack_name}] Skipping auto-update for DockUp system stack")
+        return
+    
     # Check global auto-update toggle
     if not config.get('auto_update_enabled', True):
         logger.debug(f"[{stack_name}] Auto-updates globally disabled, skipping")
@@ -3736,6 +3815,11 @@ def check_stack_updates(stack_name):
     FIXED: Now reads image names from compose file instead of running containers
     This ensures correct registry URLs are used after switching registries
     """
+    # Skip DockUp itself - self-updates are handled separately
+    if stack_name.lower() == 'dockup':
+        logger.debug(f"[{stack_name}] Skipping update check for DockUp system stack")
+        return False, None
+    
     try:
         # Get stack path and compose file
         stack_path = os.path.join(STACKS_DIR, stack_name)
