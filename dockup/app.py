@@ -3010,8 +3010,6 @@ def get_stacks():
             mem_usage_mb = 0
             mem_limit_mb = 0
             mem_percent = 0
-            net_rx_mbps = 0
-            net_tx_mbps = 0
             
             if dockup_container.status == 'running':
                 try:
@@ -3033,11 +3031,6 @@ def get_stacks():
                     if mem_limit > 0:
                         mem_percent = round((mem_usage / mem_limit) * 100, 1)
                     
-                    # Network stats (basic - no rate calculation for now)
-                    networks = stats.get('networks', {})
-                    for net_name, net_stats in networks.items():
-                        net_rx_mbps += net_stats.get('rx_bytes', 0)
-                        net_tx_mbps += net_stats.get('tx_bytes', 0)
                 except Exception as e:
                     logger.error(f"Error collecting DockUp stats: {e}")
             
@@ -3068,10 +3061,12 @@ def get_stacks():
                 'last_check': '',
                 'update_available': False,
                 'stats': {
-                    'cpu': cpu_percent,
+                    'cpu_percent': cpu_percent,
                     'mem_usage_mb': mem_usage_mb,
                     'mem_limit_mb': mem_limit_mb,
-                    'mem_percent': mem_percent
+                    'mem_percent': mem_percent,
+                    'net_rx_mbps': 0,
+                    'net_tx_mbps': 0
                 },
                 'inactive': False,
                 'web_ui_url': '',
