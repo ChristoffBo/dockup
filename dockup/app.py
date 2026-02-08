@@ -2748,6 +2748,8 @@ def get_peer_session(peer_id):
 
 def get_stacks():
     """Get all Docker Compose stacks - optimized with container caching"""
+    global network_stats_cache
+    
     stacks = []
     stacks_dict = {}  # Use dict to avoid duplicates
     
@@ -3010,6 +3012,8 @@ def get_stacks():
             mem_usage_mb = 0
             mem_limit_mb = 0
             mem_percent = 0
+            net_rx_mbps = 0
+            net_tx_mbps = 0
             
             if dockup_container.status == 'running':
                 try:
@@ -3031,6 +3035,41 @@ def get_stacks():
                     if mem_limit > 0:
                         mem_percent = round((mem_usage / mem_limit) * 100, 1)
                     
+                    # Network stats with rate calculation
+                    total_net_rx_bytes = 0
+                    total_net_tx_bytes = 0
+                    networks = stats.get('networks', {})
+                    for net_name, net_stats in networks.items():
+                        total_net_rx_bytes += net_stats.get('rx_bytes', 0)
+                        total_net_tx_bytes += net_stats.get('tx_bytes', 0)
+                    
+                    # Calculate rate using cache (same method as regular stacks)
+                    current_time = time.time()
+                    cache_key = 'dockup'
+                    
+                    if cache_key in network_stats_cache:
+                        prev_data = network_stats_cache[cache_key]
+                        time_delta = current_time - prev_data['time']
+                        
+                        if time_delta > 0:
+                            rx_bytes_per_sec = (total_net_rx_bytes - prev_data['rx_bytes']) / time_delta
+                            tx_bytes_per_sec = (total_net_tx_bytes - prev_data['tx_bytes']) / time_delta
+                            
+                            # Convert to Mbps
+                            net_rx_mbps = round((rx_bytes_per_sec * 8) / 1_000_000, 2)
+                            net_tx_mbps = round((tx_bytes_per_sec * 8) / 1_000_000, 2)
+                            
+                            # Ensure non-negative
+                            net_rx_mbps = max(0, net_rx_mbps)
+                            net_tx_mbps = max(0, net_tx_mbps)
+                    
+                    # Store current values for next calculation
+                    network_stats_cache[cache_key] = {
+                        'time': current_time,
+                        'rx_bytes': total_net_rx_bytes,
+                        'tx_bytes': total_net_tx_bytes
+                    }
+                    
                 except Exception as e:
                     logger.error(f"Error collecting DockUp stats: {e}")
             
@@ -3050,8 +3089,8 @@ def get_stacks():
                     'mem_usage_mb': mem_usage_mb,
                     'mem_limit_mb': mem_limit_mb,
                     'mem_percent': mem_percent,
-                    'net_rx_mbps': 0,
-                    'net_tx_mbps': 0
+                    'net_rx_mbps': net_rx_mbps,
+                    'net_tx_mbps': net_tx_mbps
                 }],
                 'status': 'running' if dockup_container.status == 'running' else 'stopped',
                 'health': 'healthy',
@@ -3065,8 +3104,8 @@ def get_stacks():
                     'mem_usage_mb': mem_usage_mb,
                     'mem_limit_mb': mem_limit_mb,
                     'mem_percent': mem_percent,
-                    'net_rx_mbps': 0,
-                    'net_tx_mbps': 0
+                    'net_rx_mbps': net_rx_mbps,
+                    'net_tx_mbps': net_tx_mbps
                 },
                 'inactive': False,
                 'web_ui_url': '',
