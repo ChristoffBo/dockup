@@ -3007,71 +3007,15 @@ def get_stacks():
                 except:
                     uptime_str = ''
             
-            # Collect actual stats for DockUp container
-            cpu_percent = 0
-            mem_usage_mb = 0
-            mem_limit_mb = 0
-            mem_percent = 0
-            net_rx_mbps = 0
-            net_tx_mbps = 0
-            
-            if dockup_container.status == 'running':
-                try:
-                    stats = dockup_container.stats(stream=False)
-                    
-                    # Calculate CPU percentage
-                    cpu_delta = stats['cpu_stats']['cpu_usage']['total_usage'] - stats['precpu_stats']['cpu_usage']['total_usage']
-                    system_delta = stats['cpu_stats']['system_cpu_usage'] - stats['precpu_stats']['system_cpu_usage']
-                    cpu_count = stats['cpu_stats'].get('online_cpus', 1)
-                    
-                    if system_delta > 0 and cpu_delta > 0:
-                        cpu_percent = round((cpu_delta / system_delta) * cpu_count * 100.0, 1)
-                    
-                    # Calculate memory usage
-                    mem_usage = stats['memory_stats'].get('usage', 0)
-                    mem_limit = stats['memory_stats'].get('limit', 0)
-                    mem_usage_mb = round(mem_usage / (1024 * 1024), 1)
-                    mem_limit_mb = round(mem_limit / (1024 * 1024), 1)
-                    if mem_limit > 0:
-                        mem_percent = round((mem_usage / mem_limit) * 100, 1)
-                    
-                    # Network stats with rate calculation
-                    total_net_rx_bytes = 0
-                    total_net_tx_bytes = 0
-                    networks = stats.get('networks', {})
-                    for net_name, net_stats in networks.items():
-                        total_net_rx_bytes += net_stats.get('rx_bytes', 0)
-                        total_net_tx_bytes += net_stats.get('tx_bytes', 0)
-                    
-                    # Calculate rate using cache (same method as regular stacks)
-                    current_time = time.time()
-                    cache_key = 'dockup'
-                    
-                    if cache_key in network_stats_cache:
-                        prev_data = network_stats_cache[cache_key]
-                        time_delta = current_time - prev_data['time']
-                        
-                        if time_delta > 0:
-                            rx_bytes_per_sec = (total_net_rx_bytes - prev_data['rx_bytes']) / time_delta
-                            tx_bytes_per_sec = (total_net_tx_bytes - prev_data['tx_bytes']) / time_delta
-                            
-                            # Convert to Mbps
-                            net_rx_mbps = round((rx_bytes_per_sec * 8) / 1_000_000, 2)
-                            net_tx_mbps = round((tx_bytes_per_sec * 8) / 1_000_000, 2)
-                            
-                            # Ensure non-negative
-                            net_rx_mbps = max(0, net_rx_mbps)
-                            net_tx_mbps = max(0, net_tx_mbps)
-                    
-                    # Store current values for next calculation
-                    network_stats_cache[cache_key] = {
-                        'time': current_time,
-                        'rx_bytes': total_net_rx_bytes,
-                        'tx_bytes': total_net_tx_bytes
-                    }
-                    
-                except Exception as e:
-                    logger.error(f"Error collecting DockUp stats: {e}")
+            # Get stats from background thread cache (same as other stacks)
+            stats = stack_stats_cache.get('dockup', {
+                'cpu_percent': 0,
+                'mem_usage_mb': 0,
+                'mem_limit_mb': 0,
+                'mem_percent': 0,
+                'net_rx_mbps': 0,
+                'net_tx_mbps': 0
+            })
             
             # Build DockUp stack entry
             dockup_stack = {
@@ -3085,12 +3029,12 @@ def get_stacks():
                     'status': dockup_container.status,
                     'uptime': uptime_str,
                     'health': 'healthy',
-                    'cpu': cpu_percent,
-                    'mem_usage_mb': mem_usage_mb,
-                    'mem_limit_mb': mem_limit_mb,
-                    'mem_percent': mem_percent,
-                    'net_rx_mbps': net_rx_mbps,
-                    'net_tx_mbps': net_tx_mbps
+                    'cpu': stats['cpu_percent'],
+                    'mem_usage_mb': stats['mem_usage_mb'],
+                    'mem_limit_mb': stats['mem_limit_mb'],
+                    'mem_percent': stats['mem_percent'],
+                    'net_rx_mbps': stats['net_rx_mbps'],
+                    'net_tx_mbps': stats['net_tx_mbps']
                 }],
                 'status': 'running' if dockup_container.status == 'running' else 'stopped',
                 'health': 'healthy',
@@ -3099,14 +3043,7 @@ def get_stacks():
                 'cron': '',
                 'last_check': '',
                 'update_available': False,
-                'stats': {
-                    'cpu_percent': cpu_percent,
-                    'mem_usage_mb': mem_usage_mb,
-                    'mem_limit_mb': mem_limit_mb,
-                    'mem_percent': mem_percent,
-                    'net_rx_mbps': net_rx_mbps,
-                    'net_tx_mbps': net_tx_mbps
-                },
+                'stats': stats,
                 'inactive': False,
                 'web_ui_url': '',
                 'tags': ['system'],
@@ -5284,6 +5221,7 @@ def auto_prune_images():
 
 def update_stats_background():
     """Background thread to update stack stats every 5 seconds - optimized with batch processing"""
+    cleanup_counter = 0
     while True:
         try:
             # Get all containers once (uses cache)
@@ -5299,6 +5237,11 @@ def update_stats_background():
                             stack_containers[stack_name] = []
                         stack_containers[stack_name].append(container)
             
+            # Also collect stats for DockUp itself (has no compose label)
+            dockup_containers = [c for c in all_containers if c.name == 'dockup' and c.status == 'running']
+            if dockup_containers:
+                stack_containers['dockup'] = dockup_containers
+            
             # Batch fetch stats for all running stacks in parallel
             if stack_containers:
                 batch_stats = get_stack_stats_batch(stack_containers)
@@ -5310,14 +5253,26 @@ def update_stats_background():
             # Clear stats for stopped stacks (stacks that had containers but are now stopped)
             stopped_stacks = set(stack_stats_cache.keys()) - set(stack_containers.keys())
             for stack_name in stopped_stacks:
-                stack_stats_cache[stack_name] = {
-                    'cpu_percent': 0,
-                    'mem_usage_mb': 0,
-                    'mem_limit_mb': 0,
-                    'mem_percent': 0,
-                    'net_rx_mbps': 0,
-                    'net_tx_mbps': 0
-                }
+                # Remove from stack_stats_cache entirely (not just zero)
+                del stack_stats_cache[stack_name]
+                # Also remove from network_stats_cache to prevent memory leak
+                if stack_name in network_stats_cache:
+                    del network_stats_cache[stack_name]
+            
+            # Periodic cache cleanup (every ~8 minutes)
+            cleanup_counter += 1
+            if cleanup_counter >= 100:
+                cleanup_counter = 0
+                # Clean expired vulnerability scans (older than 24 hours)
+                current_time = time.time()
+                expired_scans = [
+                    img for img, data in vulnerability_scan_cache.items()
+                    if current_time - data['timestamp'] > 86400
+                ]
+                for img in expired_scans:
+                    del vulnerability_scan_cache[img]
+                if expired_scans:
+                    logger.info(f"Cleaned {len(expired_scans)} expired vulnerability scans")
             
             # Wait 5 seconds before next update
             time.sleep(5)
