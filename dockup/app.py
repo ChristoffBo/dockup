@@ -2633,8 +2633,12 @@ def get_stack_stats_batch(stack_containers_map):
                 cpu_percent = (cpu_delta / system_delta) * cpu_count * 100.0
                 stack_data[stack_name]['cpu'] += cpu_percent
             
-            # Memory
-            stack_data[stack_name]['mem'] += stats_result['memory_stats'].get('usage', 0)
+            # Memory - exclude cache to match docker stats behavior
+            mem_usage = stats_result['memory_stats'].get('usage', 0)
+            mem_cache = stats_result['memory_stats'].get('stats', {}).get('cache', 0)
+            mem_actual = mem_usage - mem_cache  # Working set (excludes cache)
+            
+            stack_data[stack_name]['mem'] += mem_actual
             stack_data[stack_name]['mem_limit'] += stats_result['memory_stats'].get('limit', 0)
             
             # Network
