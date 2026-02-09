@@ -21,6 +21,7 @@ import yaml
 import docker
 import threading
 import time
+import gc
 import subprocess
 import socket
 import io
@@ -2681,6 +2682,12 @@ def get_stack_stats_batch(stack_containers_map):
             'net_tx_mbps': net_tx_mbps
         }
     
+    # Explicitly clean up large objects to prevent memory leak
+    del stats_futures
+    del stack_data
+    del all_containers
+    del container_to_stack
+    
     return results
 
 
@@ -5273,6 +5280,9 @@ def update_stats_background():
                     del vulnerability_scan_cache[img]
                 if expired_scans:
                     logger.info(f"Cleaned {len(expired_scans)} expired vulnerability scans")
+            
+            # Force garbage collection after stats update cycle (prevents memory leak with many containers)
+            gc.collect()
             
             # Wait 5 seconds before next update
             time.sleep(5)
