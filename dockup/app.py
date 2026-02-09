@@ -5245,26 +5245,35 @@ def update_stats_background():
                 # Calculate uptime for DockUp (do it here once per cycle, not on every API poll)
                 if 'dockup' in stack_containers and 'dockup' in stack_stats_cache:
                     try:
-                        dockup_container = stack_containers['dockup'][0]
-                        started_at = dockup_container.attrs.get('State', {}).get('StartedAt', '')
-                        uptime_str = ''
-                        if started_at:
-                            started = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
-                            uptime_delta = datetime.now(pytz.UTC) - started
-                            days = uptime_delta.days
-                            hours = uptime_delta.seconds // 3600
-                            minutes = (uptime_delta.seconds % 3600) // 60
-                            if days > 0:
-                                uptime_str = f"{days}d {hours}h"
-                            elif hours > 0:
-                                uptime_str = f"{hours}h {minutes}m"
-                            else:
-                                uptime_str = f"{minutes}m"
-                        # Add uptime to the cached stats
-                        stack_stats_cache['dockup']['uptime'] = uptime_str
+                        # Defensive check: ensure cache entry is a dict
+                        if not isinstance(stack_stats_cache.get('dockup'), dict):
+                            logger.warning("DockUp stats cache is not a dict, skipping uptime calculation")
+                        else:
+                            dockup_container = stack_containers['dockup'][0]
+                            started_at = dockup_container.attrs.get('State', {}).get('StartedAt', '')
+                            uptime_str = ''
+                            if started_at:
+                                started = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
+                                uptime_delta = datetime.now(pytz.UTC) - started
+                                days = uptime_delta.days
+                                hours = uptime_delta.seconds // 3600
+                                minutes = (uptime_delta.seconds % 3600) // 60
+                                seconds = uptime_delta.seconds % 60
+                                if days > 0:
+                                    uptime_str = f"{days}d {hours}h"
+                                elif hours > 0:
+                                    uptime_str = f"{hours}h {minutes}m"
+                                elif minutes > 0:
+                                    uptime_str = f"{minutes}m"
+                                else:
+                                    uptime_str = f"{seconds}s"
+                            # Add uptime to the cached stats
+                            stack_stats_cache['dockup']['uptime'] = uptime_str
                     except Exception as e:
                         logger.error(f"Error calculating DockUp uptime: {e}")
-                        stack_stats_cache['dockup']['uptime'] = ''
+                        # Ensure uptime key exists even on error
+                        if isinstance(stack_stats_cache.get('dockup'), dict):
+                            stack_stats_cache['dockup']['uptime'] = ''
             
             # Clear stats for stopped stacks (stacks that had containers but are now stopped)
             stopped_stacks = set(stack_stats_cache.keys()) - set(stack_containers.keys())
