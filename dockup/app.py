@@ -3002,10 +3002,11 @@ def get_stacks():
                 'mem_limit_mb': 0,
                 'mem_percent': 0,
                 'net_rx_mbps': 0,
-                'net_tx_mbps': 0
+                'net_tx_mbps': 0,
+                'uptime': ''
             })
             
-            # Build DockUp stack entry (no uptime calc to avoid .attrs access)
+            # Build DockUp stack entry
             dockup_stack = {
                 'name': 'dockup',
                 'path': '/app',
@@ -3015,7 +3016,7 @@ def get_stacks():
                     'id': dockup_container.id,
                     'name': dockup_container.name,
                     'status': dockup_container.status,
-                    'uptime': '',  # Skip uptime to avoid memory leak from .attrs
+                    'uptime': stats.get('uptime', ''),  # Use cached uptime from background thread
                     'health': 'healthy',
                     'cpu': stats['cpu_percent'],
                     'mem_usage_mb': stats['mem_usage_mb'],
@@ -5228,6 +5229,9 @@ def update_stats_background():
             # Also collect stats for DockUp itself (has no compose label)
             dockup_containers = [c for c in all_containers if c.name == 'dockup' and c.status == 'running']
             if dockup_containers:
+                # Defensive check for multiple dockup containers
+                if len(dockup_containers) > 1:
+                    logger.warning(f"Multiple containers named 'dockup' found ({len(dockup_containers)}). Stats might be ambiguous.")
                 stack_containers['dockup'] = dockup_containers
             
             # Batch fetch stats for all running stacks in parallel
@@ -5237,6 +5241,30 @@ def update_stats_background():
                 # Update cache with batch results
                 for stack_name, stats in batch_stats.items():
                     stack_stats_cache[stack_name] = stats
+                
+                # Calculate uptime for DockUp (do it here once per cycle, not on every API poll)
+                if 'dockup' in stack_containers and 'dockup' in stack_stats_cache:
+                    try:
+                        dockup_container = stack_containers['dockup'][0]
+                        started_at = dockup_container.attrs.get('State', {}).get('StartedAt', '')
+                        uptime_str = ''
+                        if started_at:
+                            started = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
+                            uptime_delta = datetime.now(pytz.UTC) - started
+                            days = uptime_delta.days
+                            hours = uptime_delta.seconds // 3600
+                            minutes = (uptime_delta.seconds % 3600) // 60
+                            if days > 0:
+                                uptime_str = f"{days}d {hours}h"
+                            elif hours > 0:
+                                uptime_str = f"{hours}h {minutes}m"
+                            else:
+                                uptime_str = f"{minutes}m"
+                        # Add uptime to the cached stats
+                        stack_stats_cache['dockup']['uptime'] = uptime_str
+                    except Exception as e:
+                        logger.error(f"Error calculating DockUp uptime: {e}")
+                        stack_stats_cache['dockup']['uptime'] = ''
             
             # Clear stats for stopped stacks (stacks that had containers but are now stopped)
             stopped_stacks = set(stack_stats_cache.keys()) - set(stack_containers.keys())
