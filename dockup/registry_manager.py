@@ -19,6 +19,40 @@ LOCK_SYNC = "SYNC"
 LOCK_GC = "GC"
 LOCK_DELETE = "DELETE"
 
+def _normalize_image_name(image_name):
+    """
+    Normalize image name to (repository, tag) tuple.
+    
+    Args:
+        image_name: Image name (e.g., "linuxserver/plex:latest" or "nginx")
+    
+    Returns:
+        tuple: (repository, tag)
+    
+    Examples:
+        "linuxserver/plex:latest" -> ("linuxserver/plex", "latest")
+        "nginx" -> ("nginx", "latest")
+        "ghcr.io/user/app:v1.0" -> ("ghcr.io/user/app", "v1.0")
+    
+    Note:
+        Currently does NOT handle digest pinning (e.g., "nginx@sha256:abc...").
+        If digest pinning is added in the future, this should detect "@sha256:"
+        and bypass tag logic. For now, digests are treated as tags (acceptable
+        since UI doesn't expose digest pinning and Skopeo uses tags).
+    """
+    # TODO: Add digest support when digest pinning is implemented
+    # if "@sha256:" in image_name:
+    #     return parse_digest_reference(image_name)
+    
+    if ":" in image_name:
+        # Split on last colon to handle registry URLs with ports
+        repo, tag = image_name.rsplit(":", 1)
+    else:
+        repo = image_name
+        tag = "latest"
+    
+    return (repo, tag)
+
 class RegistryManager:
     def __init__(self, config_path="/DATA/AppData/dockup/config.json"):
         self.client = docker.from_env()
@@ -52,11 +86,16 @@ class RegistryManager:
         """Internal config loader with safety defaults."""
         default_config = {
             "registry": {
-                "enabled": False, 
+                "enabled": False,
+                "mode": "hybrid",  # "mirror", "proxy", or "hybrid"
                 "watched_images": [], 
                 "host": "127.0.0.1", 
                 "port": 5500,
-                "storage_path": "/DATA/AppData/Registry"
+                "storage_path": "/DATA/AppData/Registry",
+                "proxy_upstream": "https://registry-1.docker.io",  # Docker Hub
+                "auto_gc_after_operations": True,
+                "gc_schedule_cron": "0 4 * * 0",  # 4 AM Sundays
+                "update_check_cron": "0 3 * * *"  # 3 AM daily
             }
         }
         
@@ -238,12 +277,18 @@ class RegistryManager:
             if not skip_lock:
                 self._release_lock()
 
-    def delete_tag(self, name, tag, skip_lock=False):
+    def delete_tag(self, name, tag, skip_lock=False, auto_gc=None):
         """Standard delete-by-digest."""
         if not skip_lock:
             logger.info(f"Deleting tag: {name}:{tag}")
             if not self._acquire_lock(LOCK_DELETE):
                 return {"status": "busy", "message": "Mutation lock active"}
+        
+        # Check if auto-GC should run (from config or parameter)
+        if auto_gc is None:
+            config = self._get_config()
+            auto_gc = config.get("registry", {}).get("auto_gc_after_operations", True)
+        
         try:
             headers = {"Accept": "application/vnd.docker.distribution.manifest.v2+json"}
             head = self.session.head(f"{self.registry_url}/{name}/manifests/{tag}", headers=headers, timeout=5)
@@ -254,10 +299,19 @@ class RegistryManager:
             
             r = self.session.delete(f"{self.registry_url}/{name}/manifests/{digest}", timeout=5)
             
+            result = {}
             if r.status_code == 202:
-                return {"status": "success", "message": f"Deleted {name}:{tag}"}
+                result = {"status": "success", "message": f"Deleted {name}:{tag}"}
+                
+                # Auto-GC after delete
+                if auto_gc and not skip_lock:
+                    logger.info("Running auto-GC after delete...")
+                    gc_result = self.run_gc(skip_lock=True)
+                    result["gc"] = gc_result
             else:
-                return {"status": "error", "message": f"Delete failed: HTTP {r.status_code}"}
+                result = {"status": "error", "message": f"Delete failed: HTTP {r.status_code}"}
+            
+            return result
         except Exception as e:
             logger.error(f"Delete failed for {name}:{tag}: {e}")
             return {"status": "error", "message": str(e)}
@@ -265,7 +319,7 @@ class RegistryManager:
             if not skip_lock: 
                 self._release_lock()
 
-    def delete_image(self, name):
+    def delete_image(self, name, auto_gc=None):
         """
         Delete all tags for an image (entire image).
         ⚠️ DESTRUCTIVE - Use with UI confirmation only
@@ -273,6 +327,11 @@ class RegistryManager:
         logger.warning(f"Deleting entire image: {name} (all tags)")
         if not self._acquire_lock(LOCK_DELETE):
             return {"status": "busy", "message": "Mutation lock active"}
+        
+        # Check if auto-GC should run (from config or parameter)
+        if auto_gc is None:
+            config = self._get_config()
+            auto_gc = config.get("registry", {}).get("auto_gc_after_operations", True)
         
         try:
             # Get all tags for this image
@@ -284,14 +343,22 @@ class RegistryManager:
             deleted_count = 0
             
             for tag in tags:
-                result = self.delete_tag(name, tag, skip_lock=True)
+                result = self.delete_tag(name, tag, skip_lock=True, auto_gc=False)
                 if result["status"] == "success":
                     deleted_count += 1
             
-            return {
+            result = {
                 "status": "success", 
                 "message": f"Deleted {deleted_count} tag(s) for {name}"
             }
+            
+            # Auto-GC after delete
+            if auto_gc:
+                logger.info("Running auto-GC after image deletion...")
+                gc_result = self.run_gc(skip_lock=True)
+                result["gc"] = gc_result
+            
+            return result
         except Exception as e:
             logger.error(f"Delete image failed for {name}: {e}")
             return {"status": "error", "message": str(e)}
@@ -335,7 +402,7 @@ class RegistryManager:
             logger.error(f"Retention failed for {name}: {e}")
             return {"status": "error", "message": str(e)}
 
-    def pull_image(self, image_name):
+    def pull_image(self, image_name, auto_gc=None):
         """
         Pull image from Docker Hub to registry using Skopeo.
         Format: linuxserver/plex:latest or ghcr.io/owner/repo:tag
@@ -343,6 +410,11 @@ class RegistryManager:
         logger.info(f"Manual pull requested: {image_name}")
         if not self._acquire_lock(LOCK_SYNC):
             return {"status": "busy", "message": "Mutation lock active"}
+        
+        # Check if auto-GC should run (from config or parameter)
+        if auto_gc is None:
+            config = self._get_config()
+            auto_gc = config.get("registry", {}).get("auto_gc_after_operations", True)
         
         try:
             remote = f"docker://{image_name}"
@@ -358,16 +430,25 @@ class RegistryManager:
                 text=True
             )
             
+            response = {}
             if result.returncode == 0:
-                return {
+                response = {
                     "status": "success",
                     "message": f"Successfully pulled {image_name}"
                 }
+                
+                # Auto-GC after pull
+                if auto_gc:
+                    logger.info("Running auto-GC after pull...")
+                    gc_result = self.run_gc(skip_lock=True)
+                    response["gc"] = gc_result
             else:
-                return {
+                response = {
                     "status": "error",
                     "message": f"Pull failed: {result.stderr}"
                 }
+            
+            return response
         except subprocess.TimeoutExpired:
             return {"status": "error", "message": "Pull timeout (15 min) - image too large or slow connection"}
         except Exception as e:
@@ -491,3 +572,187 @@ class RegistryManager:
         except Exception as e:
             logger.error(f"Size calculation failed: {e}")
             return {"error": str(e)}
+
+    def list_images_with_status(self):
+        """
+        List images with watch status and source.
+        Enriches basic image list with:
+        - is_watched: boolean
+        - source: "proxy", "manual", or "watched"
+        - retention_policy: if watched
+        """
+        images_result = self.list_images()
+        if images_result.get("error"):
+            return images_result
+        
+        config = self._get_config()
+        watched_images = config.get("registry", {}).get("watched_images", [])
+        
+        # Normalize watched images to (repository, tag) tuples using helper
+        watched_set = set()
+        watched_policies = {}
+        for item in watched_images:
+            repo, tag = _normalize_image_name(item["image"])
+            watched_set.add((repo, tag))
+            watched_policies[(repo, tag)] = item.get("retention", "latest")
+        
+        enriched_images = []
+        for img in images_result["images"]:
+            # Compare repository and tag separately (not concatenated strings)
+            repo = img["name"]
+            tag = img["tag"]
+            is_watched = (repo, tag) in watched_set
+            
+            enriched = {
+                **img,
+                "is_watched": is_watched,
+                "source": "watched" if is_watched else "proxy",
+                "retention_policy": watched_policies.get((repo, tag)) if is_watched else None
+            }
+            enriched_images.append(enriched)
+        
+        return {"error": None, "images": enriched_images}
+
+    def add_to_watch_list(self, image_name, retention="latest"):
+        """
+        Add an image to the watch list for auto-updates.
+        
+        Args:
+            image_name: Image name (e.g., "linuxserver/plex:latest" or "nginx")
+            retention: Retention policy ("latest", "keep_3", "keep_5", "keep_all")
+        
+        Returns:
+            dict with status and message
+        """
+        # Normalize image name to ensure consistent format
+        repo, tag = _normalize_image_name(image_name)
+        normalized_name = f"{repo}:{tag}"
+        
+        config = self._get_config()
+        watched_images = config.get("registry", {}).get("watched_images", [])
+        
+        # Check if already watched (using normalized name)
+        if any(item["image"] == normalized_name for item in watched_images):
+            return {"status": "error", "message": f"{normalized_name} is already watched"}
+        
+        # Add to watch list
+        watched_images.append({
+            "image": normalized_name,
+            "retention": retention,
+            "source": "promoted"  # Indicates it was promoted from proxy cache
+        })
+        
+        # Save config
+        config["registry"]["watched_images"] = watched_images
+        try:
+            with open(self.config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+            
+            logger.info(f"Added {normalized_name} to watch list with retention: {retention}")
+            return {
+                "status": "success",
+                "message": f"Now watching {normalized_name}",
+                "retention": retention
+            }
+        except Exception as e:
+            logger.error(f"Failed to save config: {e}")
+            return {"status": "error", "message": f"Failed to save: {str(e)}"}
+
+    def remove_from_watch_list(self, image_name):
+        """
+        Remove an image from the watch list.
+        
+        Args:
+            image_name: Image name (e.g., "linuxserver/plex:latest" or "nginx")
+        
+        Returns:
+            dict with status and message
+        """
+        # Normalize image name to ensure consistent matching
+        repo, tag = _normalize_image_name(image_name)
+        normalized_name = f"{repo}:{tag}"
+        
+        config = self._get_config()
+        watched_images = config.get("registry", {}).get("watched_images", [])
+        
+        # Find and remove (using normalized name)
+        original_count = len(watched_images)
+        watched_images = [item for item in watched_images if item["image"] != normalized_name]
+        
+        if len(watched_images) == original_count:
+            return {"status": "error", "message": f"{normalized_name} is not in watch list"}
+        
+        # Save config
+        config["registry"]["watched_images"] = watched_images
+        try:
+            with open(self.config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+            
+            logger.info(f"Removed {normalized_name} from watch list")
+            return {
+                "status": "success",
+                "message": f"No longer watching {normalized_name}"
+            }
+        except Exception as e:
+            logger.error(f"Failed to save config: {e}")
+            return {"status": "error", "message": f"Failed to save: {str(e)}"}
+
+    def update_watch_retention(self, image_name, retention):
+        """
+        Update retention policy for a watched image.
+        
+        Args:
+            image_name: Image name (e.g., "linuxserver/plex:latest" or "nginx")
+            retention: New retention policy ("latest", "keep_3", "keep_5", "keep_all")
+        
+        Returns:
+            dict with status and message
+        """
+        # Normalize image name to ensure consistent matching
+        repo, tag = _normalize_image_name(image_name)
+        normalized_name = f"{repo}:{tag}"
+        
+        config = self._get_config()
+        watched_images = config.get("registry", {}).get("watched_images", [])
+        
+        # Find and update (using normalized name)
+        found = False
+        for item in watched_images:
+            if item["image"] == normalized_name:
+                item["retention"] = retention
+                found = True
+                break
+        
+        if not found:
+            return {"status": "error", "message": f"{normalized_name} is not in watch list"}
+        
+        # Save config
+        config["registry"]["watched_images"] = watched_images
+        try:
+            with open(self.config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+            
+            logger.info(f"Updated retention for {normalized_name}: {retention}")
+            return {
+                "status": "success",
+                "message": f"Updated retention to {retention}",
+                "retention": retention
+            }
+        except Exception as e:
+            logger.error(f"Failed to save config: {e}")
+            return {"status": "error", "message": f"Failed to save: {str(e)}"}
+
+    def get_watched_images(self):
+        """Get list of watched images with their settings."""
+        config = self._get_config()
+        watched_images = config.get("registry", {}).get("watched_images", [])
+        return {"watched_images": watched_images}
+
+    def get_registry_mode(self):
+        """Get current registry operating mode."""
+        config = self._get_config()
+        return {
+            "mode": config.get("registry", {}).get("mode", "hybrid"),
+            "proxy_upstream": config.get("registry", {}).get("proxy_upstream", "https://registry-1.docker.io")
+        }
+
