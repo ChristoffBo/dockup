@@ -23,14 +23,17 @@ class RegistryManager:
     def __init__(self, config_path="/DATA/AppData/dockup/config.json"):
         self.client = docker.from_env()
         self.config_path = config_path
-        self.storage_path = "/DATA/Registry"
-        self.lock_file = "/tmp/dockup_registry_write.lock"
         
         # Initial config load
         config = self._get_config()
-        self.registry_host = config.get("registry", {}).get("host", "127.0.0.1")
-        self.registry_port = config.get("registry", {}).get("port", 5500)
+        registry_config = config.get("registry", {})
+        
+        # Configurable settings with defaults
+        self.registry_host = registry_config.get("host", "127.0.0.1")
+        self.registry_port = registry_config.get("port", 5500)
+        self.storage_path = registry_config.get("storage_path", "/DATA/AppData/Registry")
         self.registry_url = f"http://{self.registry_host}:{self.registry_port}/v2"
+        self.lock_file = "/tmp/dockup_registry_write.lock"
 
         # Robust API Session with Retries
         self.session = requests.Session()
@@ -52,7 +55,8 @@ class RegistryManager:
                 "enabled": False, 
                 "watched_images": [], 
                 "host": "127.0.0.1", 
-                "port": 5500
+                "port": 5500,
+                "storage_path": "/DATA/AppData/Registry"
             }
         }
         
