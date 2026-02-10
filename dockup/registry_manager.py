@@ -47,14 +47,24 @@ class RegistryManager:
 
     def _get_config(self):
         """Internal config loader with safety defaults."""
+        default_config = {
+            "registry": {
+                "enabled": False, 
+                "watched_images": [], 
+                "host": "127.0.0.1", 
+                "port": 5500
+            }
+        }
+        
         if not os.path.exists(self.config_path):
-            return {"registry": {"enabled": False, "watched_images": [], "host": "127.0.0.1", "port": 5500}}
+            return default_config
+        
         try:
             with open(self.config_path, 'r') as f:
                 return json.load(f)
         except Exception as e:
             logger.error(f"Failed to read config: {e}")
-            return {"registry": {"enabled": False, "watched_images": []}}
+            return default_config
 
     def get_detailed_status(self):
         """
@@ -178,41 +188,51 @@ class RegistryManager:
             logger.error(f"Error listing images: {e}")
             return {"error": str(e), "images": []}
 
-    def run_gc(self):
-        """Executes Garbage Collection to reclaim disk space."""
-        if not self._acquire_lock(LOCK_GC):
-            return {"status": "busy", "message": "Mutation lock active"}
+    def run_gc(self, skip_lock=False):
+        """
+        Executes Garbage Collection to reclaim disk space.
+        Returns accurate reclaimed space by comparing before/after disk usage.
+        """
+        if not skip_lock:
+            logger.info("Starting garbage collection")
+            if not self._acquire_lock(LOCK_GC):
+                return {"status": "busy", "message": "Mutation lock active"}
         
-        logger.info("Starting garbage collection")
         try:
             container = self.client.containers.get("dockup-registry")
-            # Purge unreferenced blobs
+            
+            # Get disk usage BEFORE GC
+            size_before = self.get_total_size()
+            before_bytes = size_before.get("size_bytes", 0)
+            
+            # Run garbage collection
             result = container.exec_run("registry garbage-collect /etc/docker/registry/config.yml", timeout=600)
             
-            # Parse output to find reclaimed space
+            # Log full output for debugging
             output = result.output.decode()
             logger.debug(f"GC Output: {output}")
             
-            # Try to extract reclaimed space from output
-            reclaimed_bytes = 0
-            for line in output.split('\n'):
-                if 'deleted' in line.lower() or 'removed' in line.lower():
-                    # Parse any byte counts in the line
-                    numbers = re.findall(r'\d+', line)
-                    if numbers:
-                        reclaimed_bytes += int(numbers[0])
+            # Get disk usage AFTER GC
+            size_after = self.get_total_size()
+            after_bytes = size_after.get("size_bytes", 0)
+            
+            # Calculate actual reclaimed space
+            reclaimed_bytes = before_bytes - after_bytes
             
             return {
                 "status": "success", 
                 "output": output,
-                "reclaimed_mb": round(reclaimed_bytes / (1024 * 1024), 2) if reclaimed_bytes > 0 else None,
-                "reclaimed_estimate": True  # Flag for UI: GC output parsing is not authoritative
+                "reclaimed_bytes": reclaimed_bytes,
+                "reclaimed_mb": round(reclaimed_bytes / (1024 * 1024), 2) if reclaimed_bytes > 0 else 0,
+                "before_mb": size_before.get("size_mb", 0),
+                "after_mb": size_after.get("size_mb", 0)
             }
         except Exception as e:
             logger.error(f"GC failed: {e}")
             return {"status": "error", "message": str(e)}
         finally:
-            self._release_lock()
+            if not skip_lock:
+                self._release_lock()
 
     def delete_tag(self, name, tag, skip_lock=False):
         """Standard delete-by-digest."""
@@ -427,13 +447,14 @@ class RegistryManager:
                         "message": str(e)
                     })
         finally:
-            self._release_lock()
-            
             # Perform GC if space-reclaiming actions occurred
+            # Important: Run GC BEFORE releasing lock to prevent race condition
             if updates_performed:
                 logger.info("Running GC after updates...")
-                gc_result = self.run_gc()
+                gc_result = self.run_gc(skip_lock=True)
                 results.append({"gc": gc_result})
+            
+            self._release_lock()
         
         return {
             "status": "success",
