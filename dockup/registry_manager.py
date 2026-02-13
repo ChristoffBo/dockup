@@ -425,7 +425,9 @@ class RegistryManager:
             return {"status": "up_to_date", "digest": local_digest}
 
         logger.info(f"Update required for {image_name}. New digest: {remote_digest}")
-        pull_status = self.pull_image(image_name)
+        # IMPORTANT: Disable auto_gc during update cycle
+        # GC will run ONCE at the end of check_all_watched_updates
+        pull_status = self.pull_image(image_name, auto_gc=False)
         
         if pull_status["status"] == "success" and local_digest:
             try:
@@ -692,7 +694,7 @@ class RegistryManager:
         return sorted(impact_results, key=lambda x: x["unique_size"], reverse=True)
 
     def run_gc(self, skip_lock=False):
-        """Executes Registry Garbage Collection."""
+        """Executes Registry Garbage Collection - MUST STOP REGISTRY FIRST."""
         if not skip_lock and not self._acquire_lock(LOCK_GC): return {"status": "busy"}
         try:
             logger.info("[Registry] Starting garbage collection")
@@ -700,11 +702,36 @@ class RegistryManager:
             size_before = self.get_total_size().get("size_bytes", 0)
             logger.info(f"[Registry] Size before GC: {self._format_size(size_before)}")
             
-            # Run GC with --delete-untagged to actually remove blobs
-            result = container.exec_run("registry garbage-collect --delete-untagged /etc/docker/registry/config.yml")
-            logger.info(f"[Registry] GC command exit code: {result.exit_code}")
-            if result.exit_code != 0:
-                logger.warning(f"[Registry] GC stderr: {result.output.decode()}")
+            # CRITICAL: Stop registry before GC (required by Docker Registry spec)
+            logger.info("[Registry] Stopping registry for GC...")
+            container.stop(timeout=10)
+            
+            try:
+                # Run GC with --delete-untagged to actually remove blobs
+                result = container.exec_run("registry garbage-collect --delete-untagged /etc/docker/registry/config.yml")
+                logger.info(f"[Registry] GC command exit code: {result.exit_code}")
+                if result.exit_code != 0:
+                    logger.warning(f"[Registry] GC stderr: {result.output.decode()}")
+            finally:
+                # ALWAYS restart registry
+                logger.info("[Registry] Restarting registry...")
+                container.start()
+                
+                # Wait for registry to be fully ready (health check)
+                import time
+                max_wait = 10  # seconds
+                for i in range(max_wait):
+                    time.sleep(1)
+                    try:
+                        # Quick health check
+                        health = self.get_detailed_status()
+                        if health.get("api_ready"):
+                            logger.info(f"[Registry] Registry ready after {i+1}s")
+                            break
+                    except:
+                        pass
+                else:
+                    logger.warning(f"[Registry] Registry may not be fully ready after {max_wait}s wait")
             
             # Clean up empty directories after GC
             self._cleanup_empty_dirs()
@@ -726,6 +753,14 @@ class RegistryManager:
             }
         except Exception as e: 
             logger.error(f"[Registry] GC error: {e}")
+            # Try to restart registry if it's stopped
+            try:
+                container = self.client.containers.get("dockup-registry")
+                if container.status != "running":
+                    logger.warning("[Registry] Restarting registry after GC error...")
+                    container.start()
+            except:
+                pass
             return {"status": "error", "message": str(e)}
         finally:
             if not skip_lock: self._release_lock()
