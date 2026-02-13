@@ -425,9 +425,7 @@ class RegistryManager:
             return {"status": "up_to_date", "digest": local_digest}
 
         logger.info(f"Update required for {image_name}. New digest: {remote_digest}")
-        # IMPORTANT: Disable auto_gc during update cycle
-        # GC will run ONCE at the end of check_all_watched_updates
-        pull_status = self.pull_image(image_name, auto_gc=False)
+        pull_status = self.pull_image(image_name)
         
         if pull_status["status"] == "success" and local_digest:
             try:
@@ -694,151 +692,43 @@ class RegistryManager:
         return sorted(impact_results, key=lambda x: x["unique_size"], reverse=True)
 
     def run_gc(self, skip_lock=False):
-        """Executes Registry Garbage Collection safely.
-        
-        CRITICAL: GC MUST run while registry is stopped to prevent data corruption.
-        We stop the main registry, run GC in a separate container with same volumes,
-        then restart the registry.
-        """
+        """Executes Registry Garbage Collection."""
         if not skip_lock and not self._acquire_lock(LOCK_GC): return {"status": "busy"}
-        
-        registry_container = None
         try:
-            logger.info("[Registry] Starting garbage collection (SAFE MODE)")
-            registry_container = self.client.containers.get("dockup-registry")
+            logger.info("[Registry] Starting garbage collection")
+            container = self.client.containers.get("dockup-registry")
             size_before = self.get_total_size().get("size_bytes", 0)
             logger.info(f"[Registry] Size before GC: {self._format_size(size_before)}")
             
-            # Get volume mounts before stopping - include BOTH data and config
-            mounts = registry_container.attrs.get('Mounts', [])
-            volumes = {}
-            config_path = None
+            # Run GC with --delete-untagged to actually remove blobs
+            result = container.exec_run("registry garbage-collect --delete-untagged /etc/docker/registry/config.yml")
+            logger.info(f"[Registry] GC command exit code: {result.exit_code}")
+            if result.exit_code != 0:
+                logger.warning(f"[Registry] GC stderr: {result.output.decode()}")
             
-            for mount in mounts:
-                if mount['Type'] == 'bind':
-                    source = mount['Source']
-                    dest = mount['Destination']
-                    mode = mount.get('Mode', 'rw')
-                    volumes[source] = {'bind': dest, 'mode': mode}
-                    
-                    # Track config file location
-                    if 'config.yml' in dest:
-                        config_path = dest
-            
-            # Determine which config path to use for GC command
-            # Try to detect from container's Cmd or default locations
-            cmd_config = None
-            container_cmd = registry_container.attrs.get('Config', {}).get('Cmd', [])
-            if container_cmd and len(container_cmd) > 0:
-                cmd_config = container_cmd[0]  # First arg is usually config path
-            
-            # Use detected config path, or fall back to common locations
-            gc_config_path = cmd_config or config_path or '/etc/docker/registry/config.yml'
-            
-            logger.info(f"[Registry] Using config path for GC: {gc_config_path}")
-            
-            # Get image name
-            image_name = registry_container.attrs['Config']['Image']
-            
-            # CRITICAL: Stop the registry to prevent concurrent access during GC
-            logger.info("[Registry] Stopping registry for safe garbage collection...")
-            registry_container.stop(timeout=10)
-            logger.info("[Registry] Registry stopped successfully")
-            
-            gc_output = ""
-            gc_exit_code = 0
-            
-            try:
-                # Run GC in a separate container with same volumes
-                # This is the SAFE way to run GC per Docker Registry docs
-                logger.info("[Registry] Running GC in separate container...")
-                gc_result = self.client.containers.run(
-                    image_name,
-                    command=f"garbage-collect --delete-untagged {gc_config_path}",
-                    volumes=volumes,  # This now includes the config file mount!
-                    remove=True,  # Auto-remove after completion
-                    detach=False  # Wait for completion
-                )
-                
-                # containers.run returns output bytes when detach=False
-                gc_output = gc_result.decode('utf-8') if isinstance(gc_result, bytes) else str(gc_result)
-                logger.info("[Registry] GC completed successfully")
-                logger.debug(f"[Registry] GC output: {gc_output}")
-                
-            except Exception as gc_error:
-                logger.error(f"[Registry] GC execution error: {gc_error}")
-                gc_exit_code = 1
-                gc_output = str(gc_error)
-                
-            finally:
-                # ALWAYS restart the registry, even if GC failed
-                logger.info("[Registry] Restarting registry...")
-                try:
-                    registry_container.start()
-                    logger.info("[Registry] Registry container started")
-                    
-                    # Wait for registry to become healthy
-                    import time
-                    max_wait = 15
-                    for i in range(max_wait):
-                        time.sleep(1)
-                        try:
-                            health = self.get_detailed_status()
-                            if health.get("api_ready"):
-                                logger.info(f"[Registry] Registry API ready after {i+1}s")
-                                break
-                        except:
-                            pass
-                    else:
-                        logger.warning(f"[Registry] Registry may not be fully ready after {max_wait}s")
-                        
-                except Exception as start_error:
-                    logger.error(f"[Registry] CRITICAL: Failed to restart registry: {start_error}")
-                    raise RuntimeError(f"Registry failed to restart after GC: {start_error}")
-            
-            # Clean up empty directories after successful GC
-            if gc_exit_code == 0:
-                self._cleanup_empty_dirs()
+            # Clean up empty directories after GC
+            self._cleanup_empty_dirs()
             
             size_after = self.get_total_size().get("size_bytes", 0)
             reclaimed = size_before - size_after
             logger.info(f"[Registry] Size after GC: {self._format_size(size_after)}")
             logger.info(f"[Registry] Reclaimed: {self._format_size(reclaimed)}")
             
-            with self._cache_lock: 
-                self._images_cache = None
+            with self._cache_lock: self._images_cache = None
             
             return {
-                "status": "success" if gc_exit_code == 0 else "error",
-                "output": gc_output,
-                "reclaimed_bytes": reclaimed,
+                "status": "success", 
+                "output": result.output.decode(), 
+                "reclaimed_bytes": reclaimed, 
                 "reclaimed_formatted": self._format_size(reclaimed),
                 "size_before": size_before,
                 "size_after": size_after
             }
-            
-        except Exception as e:
-            logger.error(f"[Registry] GC critical error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            
-            # Emergency recovery: try to restart registry if it's stopped
-            try:
-                if registry_container:
-                    status = registry_container.status
-                    registry_container.reload()  # Refresh status
-                    if registry_container.status != "running":
-                        logger.error("[Registry] EMERGENCY: Registry is stopped, attempting restart...")
-                        registry_container.start()
-                        logger.info("[Registry] Emergency restart successful")
-            except Exception as recovery_error:
-                logger.error(f"[Registry] CRITICAL: Emergency recovery failed: {recovery_error}")
-            
+        except Exception as e: 
+            logger.error(f"[Registry] GC error: {e}")
             return {"status": "error", "message": str(e)}
-            
         finally:
-            if not skip_lock: 
-                self._release_lock()
+            if not skip_lock: self._release_lock()
 
     def delete_tag(self, name, tag, skip_lock=False, auto_gc=None):
         """Deletes a tag and cleans up physical directories."""
