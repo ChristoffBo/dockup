@@ -709,12 +709,33 @@ class RegistryManager:
             size_before = self.get_total_size().get("size_bytes", 0)
             logger.info(f"[Registry] Size before GC: {self._format_size(size_before)}")
             
-            # Get volume mounts before stopping
+            # Get volume mounts before stopping - include BOTH data and config
             mounts = registry_container.attrs.get('Mounts', [])
             volumes = {}
+            config_path = None
+            
             for mount in mounts:
                 if mount['Type'] == 'bind':
-                    volumes[mount['Source']] = {'bind': mount['Destination'], 'mode': 'rw'}
+                    source = mount['Source']
+                    dest = mount['Destination']
+                    mode = mount.get('Mode', 'rw')
+                    volumes[source] = {'bind': dest, 'mode': mode}
+                    
+                    # Track config file location
+                    if 'config.yml' in dest:
+                        config_path = dest
+            
+            # Determine which config path to use for GC command
+            # Try to detect from container's Cmd or default locations
+            cmd_config = None
+            container_cmd = registry_container.attrs.get('Config', {}).get('Cmd', [])
+            if container_cmd and len(container_cmd) > 0:
+                cmd_config = container_cmd[0]  # First arg is usually config path
+            
+            # Use detected config path, or fall back to common locations
+            gc_config_path = cmd_config or config_path or '/etc/docker/registry/config.yml'
+            
+            logger.info(f"[Registry] Using config path for GC: {gc_config_path}")
             
             # Get image name
             image_name = registry_container.attrs['Config']['Image']
@@ -733,8 +754,8 @@ class RegistryManager:
                 logger.info("[Registry] Running GC in separate container...")
                 gc_result = self.client.containers.run(
                     image_name,
-                    command="garbage-collect --delete-untagged /etc/docker/registry/config.yml",
-                    volumes=volumes,
+                    command=f"garbage-collect --delete-untagged {gc_config_path}",
+                    volumes=volumes,  # This now includes the config file mount!
                     remove=True,  # Auto-remove after completion
                     detach=False  # Wait for completion
                 )
