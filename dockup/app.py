@@ -48,6 +48,8 @@ import backup_manager
 import pytz
 import logging
 from logging.handlers import TimedRotatingFileHandler
+import registry_manager
+import registry_deployment
 
 import shlex
 import re
@@ -1019,6 +1021,25 @@ try:
 except Exception as e:
     logger.error(f"Error initializing backup system: {e}")
 
+# Initialize registry manager (lazy load - only if enabled in config)
+registry_mgr = None
+registry_deploy = None
+
+def init_registry():
+    """Initialize registry manager and deployment if enabled in config"""
+    global registry_mgr, registry_deploy
+    
+    if not config.get('registry', {}).get('enabled', False):
+        return
+    
+    try:
+        registry_mgr = registry_manager.RegistryManager(CONFIG_FILE)
+        registry_config = config.get('registry', {})
+        registry_deploy = registry_deployment.RegistryDeployment(registry_config)
+        logger.info("✓ Registry manager initialized")
+    except Exception as e:
+        logger.error(f"Error initializing registry: {e}")
+
 
 # Global state
 config = {}
@@ -1112,6 +1133,19 @@ def load_config():
             # Auto-update settings
             'auto_update_enabled': True,  # Global auto-update toggle
             'auto_update_check_schedule': 'daily_2am',  # When to check for updates
+            # Registry settings (nested structure)
+            'registry': {
+                'enabled': False,
+                'version': '2',
+                'mode': 'hybrid',
+                'port': 5500,
+                'storage_path': '/DATA/AppData/Registry',
+                'proxy_upstream': 'https://registry-1.docker.io',
+                'auto_gc_after_operations': True,
+                'gc_schedule_cron': '0 4 * * 0',
+                'update_check_cron': '0 3 * * *',
+                'watched_images': []
+            }
         }
         save_config()
     
@@ -1144,6 +1178,22 @@ def load_config():
         config['host_disk_threshold'] = 85
     if 'host_alert_threshold' not in config:
         config['host_alert_threshold'] = 3
+        save_config()
+    
+    # Add registry defaults if missing
+    if 'registry' not in config:
+        config['registry'] = {
+            'enabled': False,
+            'version': '2',
+            'mode': 'hybrid',
+            'port': 5500,
+            'storage_path': '/DATA/AppData/Registry',
+            'proxy_upstream': 'https://registry-1.docker.io',
+            'auto_gc_after_operations': True,
+            'gc_schedule_cron': '0 4 * * 0',
+            'update_check_cron': '0 3 * * *',
+            'watched_images': []
+        }
         save_config()
     if 'templates_enabled' not in config:
         config['templates_enabled'] = True
@@ -1705,17 +1755,39 @@ def send_notification(title, message, notify_type='info'):
     logger.info(f"Message: {message}")
     logger.info(f"Type: {notify_type}")
     
-    # Check if backup notification
+    # Check notification type
     is_backup = 'backup' in title.lower()
+    is_registry_backup = 'registry' in title.lower() and is_backup
+    is_registry_update = 'registry' in title.lower() and ('update' in title.lower() or 'updated' in message.lower())
+    is_registry_check = 'registry' in title.lower() and 'no update' in title.lower()
+    
     logger.info(f"Is backup notification: {is_backup}")
+    logger.info(f"Is registry backup: {is_registry_backup}")
+    logger.info(f"Is registry update: {is_registry_update}")
+    logger.info(f"Is registry check: {is_registry_check}")
     
     # Check notification preferences
     logger.info(f"notify_on_backup setting: {config.get('notify_on_backup', True)}")
+    logger.info(f"notify_on_registry_backup setting: {config.get('notify_on_registry_backup', True)}")
+    logger.info(f"notify_on_registry_update setting: {config.get('notify_on_registry_update', True)}")
+    logger.info(f"notify_on_registry_check setting: {config.get('notify_on_registry_check', False)}")
     logger.info(f"notify_on_check setting: {config.get('notify_on_check')}")
     logger.info(f"notify_on_update setting: {config.get('notify_on_update')}")
     logger.info(f"notify_on_error setting: {config.get('notify_on_error')}")
     
-    if is_backup and not config.get('notify_on_backup', True):
+    # Check registry-specific notifications
+    if is_registry_backup and not config.get('notify_on_registry_backup', True):
+        logger.info(f"Registry backup notification skipped: {title}")
+        return
+    if is_registry_update and not config.get('notify_on_registry_update', True):
+        logger.info(f"Registry update notification skipped: {title}")
+        return
+    if is_registry_check and not config.get('notify_on_registry_check', False):
+        logger.info(f"Registry check notification skipped: {title}")
+        return
+    
+    # Check general backup notifications (non-registry)
+    if is_backup and not is_registry_backup and not config.get('notify_on_backup', True):
         logger.info(f"Backup notification skipped (notify_on_backup=False): {title}")
         return
         
@@ -1755,6 +1827,13 @@ def send_notification(title, message, notify_type='info'):
             logger.info(f"No notification services configured. Title: {title}")
     
     logger.info("=" * 80)
+
+
+# Alias for backward compatibility with registry_manager.py
+def notify(title, message, notify_type='info'):
+    """Alias to send_notification for backward compatibility"""
+    return send_notification(title, message, notify_type)
+
 
 
 # ============================================================================
@@ -5587,8 +5666,43 @@ def api_config_set():
         data.get('timezone') != config.get('timezone')
     )
     
-    # Update config
+    # Extract registry settings from flat structure
+    registry_flat_settings = {
+        'enabled': data.get('registry_enabled'),
+        'version': data.get('registry_version'),
+        'mode': data.get('registry_mode'),
+        'port': data.get('registry_port'),
+        'storage_path': data.get('registry_storage_path'),
+        'proxy_upstream': data.get('registry_proxy_upstream')
+    }
+    
+    # Check if registry settings changed
+    old_registry = config.get('registry', {})
+    registry_was_enabled = old_registry.get('enabled', False)
+    registry_now_enabled = registry_flat_settings.get('enabled', False)
+    registry_settings_changed = (
+        registry_flat_settings.get('version') != old_registry.get('version') or
+        registry_flat_settings.get('mode') != old_registry.get('mode') or
+        registry_flat_settings.get('port') != old_registry.get('port') or
+        registry_flat_settings.get('storage_path') != old_registry.get('storage_path') or
+        registry_flat_settings.get('proxy_upstream') != old_registry.get('proxy_upstream')
+    )
+    
+    # Remove flat registry settings from data before update
+    for key in ['registry_enabled', 'registry_version', 'registry_mode', 'registry_port', 'registry_storage_path', 'registry_proxy_upstream']:
+        data.pop(key, None)
+    
+    # Update config with non-registry settings
     config.update(data)
+    
+    # Set nested registry structure (only if any registry setting provided)
+    if any(v is not None for v in registry_flat_settings.values()):
+        if 'registry' not in config:
+            config['registry'] = {}
+        # Update only provided registry settings
+        for key, value in registry_flat_settings.items():
+            if value is not None:
+                config['registry'][key] = value
     
     # Restore preserved fields
     config['api_token'] = preserved['api_token']
@@ -5602,6 +5716,70 @@ def api_config_set():
     if schedule_changed:
         setup_scheduler()
         logger.info("Scheduler refreshed due to config changes")
+    
+    # Handle registry deployment/update/disable
+    global registry_mgr, registry_deploy
+    
+    if registry_now_enabled and not registry_was_enabled:
+        # Registry was just enabled - deploy it
+        logger.info("[Registry] Deployment triggered - registry enabled in settings")
+        try:
+            logger.info("[Registry] Creating RegistryManager...")
+            registry_mgr = registry_manager.RegistryManager(CONFIG_FILE)
+            logger.info("[Registry] Creating RegistryDeployment...")
+            registry_deploy = registry_deployment.RegistryDeployment(config['registry'])
+            logger.info("[Registry] Calling deploy()...")
+            result = registry_deploy.deploy()
+            
+            logger.info(f"[Registry] Deploy result: {result}")
+            if result['status'] == 'success':
+                setup_registry_scheduler()
+                logger.info("✓ Registry deployed successfully")
+            else:
+                logger.error(f"✗ Registry deployment failed: {result.get('message')}")
+        except Exception as e:
+            logger.error(f"✗ Registry deployment error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    elif registry_now_enabled and registry_was_enabled and registry_settings_changed:
+        # Registry is enabled and settings changed - restart with new config
+        logger.info("[Registry] Restart triggered - settings changed")
+        try:
+            if registry_deploy:
+                # Update deployment config
+                registry_deploy.config = config['registry']
+                
+                # Reinitialize registry manager with new settings (updates URL/port)
+                registry_mgr = registry_manager.RegistryManager(CONFIG_FILE)
+                
+                # Restart (will recreate if port changed)
+                result = registry_deploy.restart()
+                setup_registry_scheduler()
+                logger.info("✓ Registry restarted with new settings")
+            else:
+                logger.warn("[Registry] registry_deploy is None, cannot restart")
+        except Exception as e:
+            logger.error(f"✗ Registry restart error: {e}")
+    
+    elif not registry_now_enabled and registry_was_enabled:
+        # Registry was disabled - stop and remove it
+        logger.info("[Registry] Stop triggered - registry disabled in settings")
+        try:
+            if registry_deploy:
+                registry_deploy.stop(remove=True)  # Stop AND remove container
+                logger.info("✓ Registry stopped and removed")
+                # Remove scheduler jobs
+                try:
+                    scheduler.remove_job('registry_auto_update')
+                    scheduler.remove_job('registry_gc')
+                    logger.info("✓ Registry scheduler jobs removed")
+                except JobLookupError:
+                    logger.info("[Registry] No scheduler jobs to remove")
+            else:
+                logger.warn("[Registry] registry_deploy is None, cannot stop")
+        except Exception as e:
+            logger.error(f"✗ Registry stop error: {e}")
     
     return jsonify({'success': True})
 
@@ -10082,6 +10260,693 @@ def reset_stack_backup_config(stack_name):
         return jsonify({'error': str(e)}), 500
 
 
+# ============================================================================
+# REGISTRY API ROUTES
+# ============================================================================
+
+@app.route('/api/registry/enable', methods=['POST'])
+@require_auth
+def registry_enable():
+    """Enable and deploy the registry container"""
+    global registry_mgr, registry_deploy
+    
+    try:
+        data = request.json or {}
+        
+        # Update config
+        config.setdefault('registry', {})
+        config['registry']['enabled'] = True
+        config['registry']['mode'] = data.get('mode', 'hybrid')
+        config['registry']['port'] = data.get('port', 5500)
+        config['registry']['storage_path'] = data.get('storage_path', '/DATA/AppData/Registry')
+        config['registry']['proxy_upstream'] = data.get('proxy_upstream', 'https://registry-1.docker.io')
+        
+        save_config()
+        
+        # Initialize registry manager and deployment
+        registry_mgr = registry_manager.RegistryManager(CONFIG_FILE)
+        registry_deploy = registry_deployment.RegistryDeployment(config['registry'])
+        
+        # Deploy container
+        result = registry_deploy.deploy()
+        
+        if result['status'] == 'success':
+            # Add scheduler jobs
+            setup_registry_scheduler()
+            return jsonify(result)
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        logger.error(f"Registry enable failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/disable', methods=['POST'])
+@require_auth
+def registry_disable():
+    """Disable and stop the registry container"""
+    global registry_mgr, registry_deploy
+    
+    try:
+        if not registry_deploy:
+            return jsonify({'status': 'error', 'message': 'Registry not initialized'}), 400
+        
+        # Stop container
+        result = registry_deploy.stop()
+        
+        # Update config
+        config['registry']['enabled'] = False
+        save_config()
+        
+        # Remove scheduler jobs
+        try:
+            scheduler.remove_job('registry_auto_update')
+            scheduler.remove_job('registry_gc')
+        except JobLookupError:
+            pass
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry disable failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/status', methods=['GET'])
+@require_auth
+def registry_status():
+    """Get registry status"""
+    try:
+        if not registry_mgr or not registry_deploy:
+            return jsonify({
+                'enabled': False,
+                'container_status': 'not_deployed'
+            })
+        
+        # Get container status (fast - no API call)
+        container_status = registry_deploy.get_status()
+        
+        # Only check detailed status if container exists and is running
+        # This prevents hanging on connection refused errors
+        if container_status.get('status') == 'success' and container_status.get('container_status') == 'running':
+            try:
+                detailed_status = registry_mgr.get_detailed_status()
+            except Exception as e:
+                logger.warn(f"Registry API check failed (container may be starting): {e}")
+                detailed_status = {
+                    'status': 'starting',
+                    'api_ready': False,
+                    'message': 'Container starting, API not ready yet'
+                }
+        elif container_status.get('status') == 'success':
+            # Container exists but not running (exited, created, etc)
+            detailed_status = {
+                'status': container_status.get('container_status', 'unknown'),
+                'api_ready': False,
+                'message': f"Container {container_status.get('container_status', 'stopped')}"
+            }
+        else:
+            # Container not found or error
+            detailed_status = {
+                'status': container_status.get('status', 'unknown'),
+                'api_ready': False,
+                'message': container_status.get('message', 'Container not deployed')
+            }
+        
+        return jsonify({
+            'enabled': config.get('registry', {}).get('enabled', False),
+            'container': container_status,
+            'registry': detailed_status
+        })
+        
+    except Exception as e:
+        logger.error(f"Registry status failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/registry/settings', methods=['PUT'])
+@require_auth
+def registry_settings():
+    """Update registry settings"""
+    try:
+        if not registry_deploy:
+            return jsonify({'status': 'error', 'message': 'Registry not initialized'}), 400
+        
+        data = request.json or {}
+        
+        # Update config
+        if 'mode' in data:
+            config['registry']['mode'] = data['mode']
+        if 'port' in data:
+            config['registry']['port'] = data['port']
+        if 'storage_path' in data:
+            config['registry']['storage_path'] = data['storage_path']
+        if 'proxy_upstream' in data:
+            config['registry']['proxy_upstream'] = data['proxy_upstream']
+        if 'auto_gc_after_operations' in data:
+            config['registry']['auto_gc_after_operations'] = data['auto_gc_after_operations']
+        if 'gc_schedule_cron' in data:
+            config['registry']['gc_schedule_cron'] = data['gc_schedule_cron']
+        if 'update_check_cron' in data:
+            config['registry']['update_check_cron'] = data['update_check_cron']
+        
+        save_config()
+        
+        # Restart container to apply changes
+        result = registry_deploy.restart()
+        
+        # Update scheduler
+        setup_registry_scheduler()
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry settings update failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/images', methods=['GET'])
+@require_auth
+def registry_images():
+    """List all images with watch status"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        # Check for force parameter to bypass cache
+        force = request.args.get('force', '0') == '1'
+        result = registry_mgr.list_images_with_status(force=force)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry images list failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/registry/pull', methods=['POST'])
+@require_auth
+def registry_pull():
+    """Pull image to registry with optional progress tracking"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        data = request.json or {}
+        image_name = data.get('image')
+        add_to_watch = data.get('add_to_watch', False)
+        retention = data.get('retention', 'latest')
+        background = data.get('background', True)  # Default to background for progress tracking
+        
+        if not image_name:
+            return jsonify({'status': 'error', 'message': 'Image name required'}), 400
+        
+        # Pull image with atomic watch/retention handling
+        result = registry_mgr.pull_image(
+            image_name, 
+            background=background,
+            add_to_watch=add_to_watch,
+            retention=retention
+        )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry pull failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/pull-progress/<path:image_name>', methods=['GET'])
+@require_auth
+def registry_pull_progress(image_name):
+    """Get pull progress for an image"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        progress = registry_mgr.get_pull_progress(image_name)
+        return jsonify(progress)
+        
+    except Exception as e:
+        logger.error(f"Registry pull progress failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/pull-progress/<path:image_name>', methods=['DELETE'])
+@require_auth
+def registry_clear_pull_progress(image_name):
+    """Clear pull progress for an image"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.clear_pull_progress(image_name)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry clear progress failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/pull-cancel/<path:image_name>', methods=['POST'])
+@require_auth
+def registry_cancel_pull(image_name):
+    """Cancel an ongoing pull operation"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.cancel_pull(image_name)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry cancel pull failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/images/<path:name>', methods=['DELETE'])
+@require_auth
+def registry_delete_image(name):
+    """Delete entire image (all tags)"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.delete_image(name)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry delete image failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/images/<path:name>/tags/<tag>', methods=['DELETE'])
+@require_auth
+def registry_delete_tag(name, tag):
+    """Delete specific tag"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.delete_tag(name, tag)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry delete tag failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/gc', methods=['POST'])
+@require_auth
+def registry_gc():
+    """Run garbage collection"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.run_gc()
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry GC failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/size', methods=['GET'])
+@require_auth
+def registry_size():
+    """Get total registry size"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.get_total_size()
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry size check failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/registry/logs', methods=['GET'])
+@require_auth
+def registry_logs():
+    """Get registry container logs"""
+    try:
+        container = docker_client.containers.get("dockup-registry")
+        logs = container.logs(tail=500).decode('utf-8', errors='replace')
+        return jsonify({'logs': logs})
+    except docker.errors.NotFound:
+        return jsonify({'logs': 'Registry container not found'}), 404
+    except Exception as e:
+        logger.error(f"Registry logs failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/registry/start', methods=['POST'])
+@require_auth
+def registry_start():
+    """Start registry container"""
+    try:
+        container = docker_client.containers.get("dockup-registry")
+        container.start()
+        logger.info("Registry container started")
+        return jsonify({'status': 'success', 'message': 'Registry container started'})
+    except docker.errors.NotFound:
+        return jsonify({'status': 'error', 'message': 'Registry container not found'}), 404
+    except Exception as e:
+        logger.error(f"Registry start failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/stop', methods=['POST'])
+@require_auth
+def registry_stop():
+    """Stop registry container"""
+    try:
+        container = docker_client.containers.get("dockup-registry")
+        container.stop(timeout=10)
+        logger.info("Registry container stopped")
+        return jsonify({'status': 'success', 'message': 'Registry container stopped'})
+    except docker.errors.NotFound:
+        return jsonify({'status': 'error', 'message': 'Registry container not found'}), 404
+    except Exception as e:
+        logger.error(f"Registry stop failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/restart', methods=['POST'])
+@require_auth
+def registry_restart():
+    """Restart registry container"""
+    try:
+        container = docker_client.containers.get("dockup-registry")
+        container.restart(timeout=10)
+        logger.info("Registry container restarted")
+        return jsonify({'status': 'success', 'message': 'Registry container restarted'})
+    except docker.errors.NotFound:
+        return jsonify({'status': 'error', 'message': 'Registry container not found'}), 404
+    except Exception as e:
+        logger.error(f"Registry restart failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/deploy', methods=['POST'])
+@require_auth
+def registry_deploy():
+    """Deploy registry container (create if doesn't exist)"""
+    global registry_mgr, registry_deploy
+    
+    try:
+        # Initialize if needed
+        if not registry_deploy:
+            registry_mgr = registry_manager.RegistryManager(CONFIG_FILE)
+            registry_deploy = registry_deployment.RegistryDeployment(config.get('registry', {}))
+        
+        # Deploy (will create or start existing)
+        result = registry_deploy.deploy()
+        
+        if result['status'] == 'success':
+            logger.info("Registry container deployed via API")
+            return jsonify(result)
+        else:
+            logger.error(f"Registry deploy failed: {result.get('message')}")
+            return jsonify(result), 500
+            
+    except Exception as e:
+        logger.error(f"Registry deploy failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/watch', methods=['POST'])
+@require_auth
+def registry_watch():
+    """Add image to watch list"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        data = request.json or {}
+        image_name = data.get('image')
+        retention = data.get('retention', 'latest')
+        
+        if not image_name:
+            return jsonify({'status': 'error', 'message': 'Image name required'}), 400
+        
+        result = registry_mgr.add_to_watch_list(image_name, retention)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry watch failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/watch/<path:image_name>', methods=['DELETE'])
+@require_auth
+def registry_unwatch(image_name):
+    """Remove image from watch list"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.remove_from_watch_list(image_name)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry unwatch failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/watch/<path:image_name>', methods=['PUT'])
+@require_auth
+def registry_update_retention(image_name):
+    """Update retention policy for watched image"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        data = request.json or {}
+        retention = data.get('retention')
+        
+        if not retention:
+            return jsonify({'status': 'error', 'message': 'Retention policy required'}), 400
+        
+        result = registry_mgr.update_watch_retention(image_name, retention)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry retention update failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/watched', methods=['GET'])
+@require_auth
+def registry_watched():
+    """Get list of watched images"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.get_watched_images()
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry watched list failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/registry/mode', methods=['GET'])
+@require_auth
+def registry_get_mode():
+    """Get current registry mode"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.get_registry_mode()
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry mode check failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/registry/check-updates', methods=['POST'])
+@require_auth
+def registry_check_updates():
+    """Manual trigger to check all watched images for updates"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.check_all_watched_updates()
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry update check failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/cleanup-orphans', methods=['POST'])
+@require_auth
+def registry_cleanup_orphans():
+    """Remove watched images that no longer exist in registry"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.cleanup_watched_orphans()
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry cleanup failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/sync-watched', methods=['POST'])
+@require_auth
+def registry_sync_watched():
+    """Pull all watched images that don't exist in registry yet"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.sync_watched_images()
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry sync failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# Registry Backup & Restore Routes
+@app.route('/api/registry/backup', methods=['POST'])
+@require_auth
+def registry_backup():
+    """Create a backup of the registry"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.backup_registry()
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry backup failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/backups', methods=['GET'])
+@require_auth
+def registry_list_backups():
+    """List all registry backups"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.list_registry_backups()
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry list backups failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/restore', methods=['POST'])
+@require_auth
+def registry_restore():
+    """Restore registry from backup"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        data = request.json
+        backup_path = data.get('backup_path')
+        
+        if not backup_path:
+            return jsonify({'error': 'backup_path required'}), 400
+        
+        result = registry_mgr.restore_registry(backup_path)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry restore failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/backups/<path:filename>', methods=['DELETE'])
+@require_auth
+def registry_delete_backup(filename):
+    """Delete a registry backup"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        backup_path = os.path.join('/app/backups', filename)
+        result = registry_mgr.delete_registry_backup(backup_path)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry delete backup failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# Registry scheduler setup
+def setup_registry_scheduler():
+    """Setup registry scheduler jobs"""
+    global registry_mgr
+    
+    if not registry_mgr or not config.get('registry', {}).get('enabled', False):
+        return
+    
+    try:
+        # Remove existing jobs
+        try:
+            scheduler.remove_job('registry_auto_update')
+        except JobLookupError:
+            pass
+        try:
+            scheduler.remove_job('registry_gc')
+        except JobLookupError:
+            pass
+        
+        registry_config = config.get('registry', {})
+        user_tz = pytz.timezone(config.get('timezone', 'UTC'))
+        
+        # Auto-update job
+        update_cron = registry_config.get('update_check_cron', '0 3 * * *')
+        if update_cron:
+            try:
+                trigger = CronTrigger.from_crontab(update_cron, timezone=user_tz)
+                scheduler.add_job(
+                    registry_mgr.check_all_watched_updates,
+                    trigger,
+                    id='registry_auto_update',
+                    replace_existing=True
+                )
+                logger.info(f"[Registry] Added auto-update job: {update_cron}")
+            except Exception as e:
+                logger.error(f"[Registry] Error scheduling auto-update: {e}")
+        
+        # GC job
+        gc_cron = registry_config.get('gc_schedule_cron', '0 4 * * 0')
+        if gc_cron:
+            try:
+                trigger = CronTrigger.from_crontab(gc_cron, timezone=user_tz)
+                scheduler.add_job(
+                    registry_mgr.run_gc,
+                    trigger,
+                    id='registry_gc',
+                    replace_existing=True
+                )
+                logger.info(f"[Registry] Added GC job: {gc_cron}")
+            except Exception as e:
+                logger.error(f"[Registry] Error scheduling GC: {e}")
+                
+    except Exception as e:
+        logger.error(f"[Registry] Scheduler setup failed: {e}")
+
+
 
 if __name__ == '__main__':
     try:
@@ -10151,6 +11016,15 @@ if __name__ == '__main__':
             logger.info(f"✓ Restored {len(scheduled_backups)} backup schedules")
         except Exception as e:
             logger.error(f"Error loading backup schedules: {e}")
+        
+        # Initialize registry if enabled
+        logger.info("Initializing registry...")
+        init_registry()
+        if registry_mgr:
+            setup_registry_scheduler()
+            logger.info("✓ Registry initialized and scheduled")
+        else:
+            logger.info("Registry disabled, skipping")
         
         # Run orphan import on startup
         logger.info("Scanning for orphan containers to import...")

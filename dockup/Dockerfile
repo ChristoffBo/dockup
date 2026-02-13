@@ -40,6 +40,12 @@ RUN echo "Target architecture: ${TARGETARCH:-unknown}" && \
     fi && \
     chmod +x /usr/local/bin/trivy
 
+# Install Skopeo for registry operations
+RUN apt-get update && \
+    apt-get install -y skopeo && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 # Set working directory
 WORKDIR /app
 
@@ -66,6 +72,8 @@ RUN mkdir -p /app/static /app/data /app/logs /stacks /config/trivy-cache /app/ba
 COPY app.py /app/
 COPY backup_manager.py /app/
 COPY linuxserver_templates.py /app/
+COPY registry_manager.py /app/
+COPY registry_deployment.py /app/
 COPY static/index.html /app/static/
 COPY static/login.html /app/static/
 COPY static/setup.html /app/static/
