@@ -1081,6 +1081,10 @@
                     <i class="fas fa-database"></i>
                     Backups
                 </div>
+                <div class="nav-item" :class="{active: currentView === 'registry'}" @click="currentView = 'registry'; loadRegistryStatus()" v-if="settings.registry_enabled">
+                    <i class="fas fa-box"></i>
+                    Registry
+                </div>
                 <div class="nav-item" :class="{active: currentView === 'settings'}" @click="currentView = 'settings'">
                     <i class="fas fa-cog"></i>
                     Settings
@@ -2311,6 +2315,363 @@
                 </div>
             </div>
 
+            <!-- Registry View -->
+            <div v-if="currentView === 'registry'">
+                <div class="header">
+                    <h1>Container Registry</h1>
+                    <p>Manage your local container registry with auto-updates</p>
+                </div>
+
+                <!-- Registry Status Card -->
+                <div class="card">
+                    <h3><i class="fas fa-info-circle"></i> Registry Status</h3>
+                    
+                    <div v-if="!settings.registry_enabled" style="padding: 20px; text-align: center;">
+                        <p style="margin-bottom: 20px;">Registry is currently disabled. Enable it in Settings to start using the local registry.</p>
+                        <button @click="currentView = 'settings'" class="btn btn-primary">
+                            <i class="fas fa-cog"></i> Go to Settings
+                        </button>
+                    </div>
+
+                    <div v-else>
+                        <!-- Container Status Card -->
+                        <div style="margin-bottom: 20px; padding: 20px; background: #1e1e1e; border-radius: 8px; border-left: 4px solid #10b981;" v-if="registryStatus && registryStatus.container">
+                            <h4 style="margin: 0 0 15px 0;"><i class="fas fa-box"></i> Registry Container</h4>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                <div>
+                                    <div style="font-size: 12px; color: #888;">Name</div>
+                                    <div style="font-size: 14px; font-weight: 600;">dockup-registry</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 12px; color: #888;">Image</div>
+                                    <div style="font-size: 14px; font-weight: 600;">{{ registryStatus.container.image || 'registry:2' }}</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 12px; color: #888;">Container ID</div>
+                                    <div style="font-size: 14px; font-family: monospace;">{{ registryStatus.container.id || 'N/A' }}</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 12px; color: #888;">Docker Command</div>
+                                    <div style="font-size: 12px; font-family: monospace; color: #888;">docker ps | grep registry</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Stats Cards -->
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                            <div style="padding: 15px; background: #1e1e1e; border-radius: 8px;">
+                                <div style="font-size: 12px; color: #888; margin-bottom: 5px;">Status</div>
+                                <div style="font-size: 18px; font-weight: 600;">
+                                    <!-- Check registry.status (detailed status from backend) -->
+                                    <span v-if="registryStatus && registryStatus.registry && registryStatus.registry.status === 'running' && registryStatus.registry.api_ready" style="color: #10b981;">
+                                        <i class="fas fa-check-circle"></i> Running
+                                    </span>
+                                    <span v-else-if="registryStatus && registryStatus.registry && (registryStatus.registry.status === 'starting' || (registryStatus.registry.status === 'running' && !registryStatus.registry.api_ready))" style="color: #f59e0b;">
+                                        <i class="fas fa-spinner fa-spin"></i> Starting
+                                    </span>
+                                    <span v-else-if="registryStatus && registryStatus.registry && registryStatus.registry.status === 'not_found'" style="color: #ef4444;">
+                                        <i class="fas fa-exclamation-triangle"></i> Not Deployed
+                                    </span>
+                                    <span v-else-if="registryStatus && registryStatus.registry && registryStatus.registry.status === 'error'" style="color: #ef4444;">
+                                        <i class="fas fa-times-circle"></i> Error
+                                    </span>
+                                    <span v-else style="color: #ef4444;">
+                                        <i class="fas fa-times-circle"></i> {{ (registryStatus && registryStatus.registry && registryStatus.registry.status) || 'Stopped' }}
+                                    </span>
+                                </div>
+                            </div>
+                            
+                            <div style="padding: 15px; background: #1e1e1e; border-radius: 8px;">
+                                <div style="font-size: 12px; color: #888; margin-bottom: 5px;">Mode</div>
+                                <div style="font-size: 18px; font-weight: 600; text-transform: capitalize;">{{ settings.registry_mode || 'hybrid' }}</div>
+                            </div>
+                            
+                            <div style="padding: 15px; background: #1e1e1e; border-radius: 8px;">
+                                <div style="font-size: 12px; color: #888; margin-bottom: 5px;">Port</div>
+                                <div style="font-size: 18px; font-weight: 600;">{{ settings.registry_port || 5500 }}</div>
+                            </div>
+                            
+                            <div style="padding: 15px; background: #1e1e1e; border-radius: 8px;">
+                                <div style="font-size: 12px; color: #888; margin-bottom: 5px;">Images</div>
+                                <div style="font-size: 18px; font-weight: 600;">{{ registryImages.length }}</div>
+                            </div>
+                            
+                            <div style="padding: 15px; background: #1e1e1e; border-radius: 8px;">
+                                <div style="font-size: 12px; color: #888; margin-bottom: 5px;">Total Size</div>
+                                <div style="font-size: 18px; font-weight: 600;">{{ formatBytes(registryTotalSize) }}</div>
+                            </div>
+                        </div>
+
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px;">
+                            <button @click="refreshRegistryImages" class="btn btn-primary">
+                                <i class="fas fa-sync"></i> Refresh
+                            </button>
+                            <button @click="showRegistryPullModal = true" class="btn btn-success" :disabled="!registryStatus || registryStatus.registry?.status !== 'running'">
+                                <i class="fas fa-download"></i> Pull Image
+                            </button>
+                            <button @click="runRegistryGC" class="btn btn-warning" :disabled="!registryStatus || registryStatus.registry?.status !== 'running'">
+                                <i class="fas fa-broom"></i> Garbage Collection
+                            </button>
+                            <button @click="checkRegistryUpdates" class="btn" style="background: #8b5cf6;" :disabled="!registryStatus || registryStatus.registry?.status !== 'running' || registryCheckingUpdates">
+                                <i class="fas fa-sync" :class="{'fa-spin': registryCheckingUpdates}"></i> {{ registryCheckingUpdates ? 'Checking...' : 'Check Updates Now' }}
+                            </button>
+                            <button @click="showRegistryBackupModal = true; loadRegistryBackups()" class="btn" style="background: #10b981;">
+                                <i class="fas fa-archive"></i> Backup
+                            </button>
+                            <button @click="syncWatchedImages" class="btn" style="background: #f59e0b;" :disabled="!registryStatus || registryStatus.registry?.status !== 'running' || registrySyncing">
+                                <i class="fas fa-cloud-download-alt" :class="{'fa-spin': registrySyncing}"></i> {{ registrySyncing ? 'Syncing...' : 'Sync Watched' }}
+                            </button>
+                            
+                            <!-- Container Controls -->
+                            <div style="margin-left: auto; display: flex; gap: 10px;">
+                                <button @click="viewRegistryLogs" class="btn btn-secondary">
+                                    <i class="fas fa-file-alt"></i> View Logs
+                                </button>
+                                <!-- Deploy button if container not found -->
+                                <button @click="deployRegistryContainer" class="btn btn-success" v-if="registryStatus && registryStatus.container && registryStatus.container.status === 'not_found'">
+                                    <i class="fas fa-rocket"></i> Deploy
+                                </button>
+                                <!-- Start button if container exists but not running -->
+                                <button @click="startRegistryContainer" class="btn btn-success" v-else-if="registryStatus && registryStatus.container && registryStatus.container.status === 'success' && registryStatus.container.container_status !== 'running'">
+                                    <i class="fas fa-play"></i> Start
+                                </button>
+                                <!-- Stop/Restart only if running -->
+                                <button @click="stopRegistryContainer" class="btn btn-danger" v-if="registryStatus && registryStatus.container && registryStatus.container.container_status === 'running'">
+                                    <i class="fas fa-stop"></i> Stop
+                                </button>
+                                <button @click="restartRegistryContainer" class="btn btn-warning" v-if="registryStatus && registryStatus.container && registryStatus.container.container_status === 'running'">
+                                    <i class="fas fa-redo"></i> Restart
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Container Logs Modal -->
+                        <div v-if="showRegistryLogsModal" class="modal-overlay" @click="showRegistryLogsModal = false">
+                            <div class="modal-content" @click.stop style="max-width: 900px; max-height: 80vh;">
+                                <div class="modal-header">
+                                    <h3><i class="fas fa-file-alt"></i> Registry Container Logs</h3>
+                                    <button class="close-btn" @click="showRegistryLogsModal = false">&times;</button>
+                                </div>
+                                <div class="modal-body" style="padding: 0;">
+                                    <div style="background: #1e1e1e; padding: 20px; font-family: monospace; font-size: 12px; white-space: pre-wrap; overflow-y: auto; max-height: 60vh; color: #e0e0e0;">{{ registryLogs || 'Loading logs...' }}</div>
+                                </div>
+                                <div class="modal-footer">
+                                    <button @click="viewRegistryLogs" class="btn btn-primary">
+                                        <i class="fas fa-sync"></i> Refresh Logs
+                                    </button>
+                                    <button @click="showRegistryLogsModal = false" class="btn btn-secondary">Close</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Backup Modal -->
+                        <div v-if="showRegistryBackupModal" class="modal-overlay" @click="showRegistryBackupModal = false">
+                            <div class="modal-content" @click.stop style="max-width: 800px;">
+                                <div class="modal-header">
+                                    <h3><i class="fas fa-archive"></i> Registry Backup & Restore</h3>
+                                    <button class="close-btn" @click="showRegistryBackupModal = false">&times;</button>
+                                </div>
+                                <div class="modal-body">
+                                    <div style="margin-bottom: 20px;">
+                                        <button @click="createRegistryBackup" :disabled="registryBackupInProgress" class="btn btn-success">
+                                            <i class="fas" :class="registryBackupInProgress ? 'fa-spinner fa-spin' : 'fa-archive'"></i>
+                                            {{ registryBackupInProgress ? 'Creating Backup...' : 'Create Backup Now' }}
+                                        </button>
+                                    </div>
+
+                                    <h4 style="margin-top: 20px; margin-bottom: 10px;">Available Backups</h4>
+                                    <div v-if="registryBackups.length === 0" style="text-align: center; padding: 40px; color: #888;">
+                                        <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 10px;"></i>
+                                        <div>No backups found</div>
+                                    </div>
+                                    <table v-else style="width: 100%; border-collapse: collapse;">
+                                        <thead>
+                                            <tr style="border-bottom: 1px solid #333;">
+                                                <th style="padding: 10px; text-align: left;">Filename</th>
+                                                <th style="padding: 10px; text-align: right;">Size</th>
+                                                <th style="padding: 10px; text-align: left;">Created</th>
+                                                <th style="padding: 10px; text-align: right;">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <tr v-for="backup in registryBackups" :key="backup.filename" style="border-bottom: 1px solid #2a2a2a;">
+                                                <td style="padding: 10px;">
+                                                    <code style="font-size: 12px;">{{ backup.filename }}</code>
+                                                </td>
+                                                <td style="padding: 10px; text-align: right;">
+                                                    {{ backup.size_formatted }}
+                                                </td>
+                                                <td style="padding: 10px;">
+                                                    {{ formatRelativeTime(backup.created) }}
+                                                </td>
+                                                <td style="padding: 10px; text-align: right;">
+                                                    <button @click="restoreRegistryBackup(backup)" class="btn btn-primary btn-sm" style="margin-right: 5px;">
+                                                        <i class="fas fa-undo"></i> Restore
+                                                    </button>
+                                                    <button @click="deleteRegistryBackup(backup)" class="btn btn-danger btn-sm">
+                                                        <i class="fas fa-trash"></i>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div class="modal-footer">
+                                    <button @click="loadRegistryBackups" class="btn btn-primary">
+                                        <i class="fas fa-sync"></i> Refresh
+                                    </button>
+                                    <button @click="showRegistryBackupModal = false" class="btn btn-secondary">Close</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Edit Retention Modal -->
+                        <div v-if="showEditRetentionModal" class="modal-overlay" @click="showEditRetentionModal = false">
+                            <div class="modal-content" @click.stop style="max-width: 500px;">
+                                <div class="modal-header">
+                                    <h3><i class="fas fa-history"></i> Edit Retention Policy</h3>
+                                    <button class="close-btn" @click="showEditRetentionModal = false">&times;</button>
+                                </div>
+                                <div class="modal-body">
+                                    <div style="margin-bottom: 15px;">
+                                        <strong>Image:</strong> <code>{{ editRetentionImage }}</code>
+                                    </div>
+                                    
+                                    <div class="form-group">
+                                        <label class="form-label">Retention Policy</label>
+                                        <select v-model="editRetentionPolicy" class="form-control">
+                                            <option value="latest">Latest (Keep only most recent)</option>
+                                            <option value="keep_2">Keep 2 versions</option>
+                                            <option value="keep_3">Keep 3 versions</option>
+                                            <option value="keep_5">Keep 5 versions</option>
+                                            <option value="keep_10">Keep 10 versions</option>
+                                            <option value="keep_all">Keep all versions</option>
+                                        </select>
+                                        <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                            How many versions to keep when newer versions are pulled
+                                        </small>
+                                    </div>
+                                </div>
+                                <div class="modal-footer">
+                                    <button @click="saveRetentionPolicy" class="btn btn-success">
+                                        <i class="fas fa-save"></i> Save
+                                    </button>
+                                    <button @click="showEditRetentionModal = false" class="btn btn-secondary">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Images List -->
+                <div v-if="settings.registry_enabled && registryImages.length > 0" class="card">
+                    <h3><i class="fas fa-images"></i> Images ({{ filteredRegistryImages.length }})</h3>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <input 
+                            type="text" 
+                            v-model="registryImageSearch" 
+                            placeholder="Search images..." 
+                            class="form-input"
+                            style="max-width: 400px;">
+                    </div>
+
+                    <div style="overflow-x: auto; position: relative;">
+                        <!-- Loading Overlay -->
+                        <div v-if="registryImagesLoading" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10; border-radius: 8px;">
+                            <div style="text-align: center;">
+                                <i class="fas fa-spinner fa-spin" style="font-size: 32px; color: #3b82f6; margin-bottom: 10px;"></i>
+                                <div style="color: #fff;">Loading images...</div>
+                            </div>
+                        </div>
+                        
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="border-bottom: 1px solid #333;">
+                                    <th style="padding: 12px; text-align: left;">Image</th>
+                                    <th style="padding: 12px; text-align: left;">Tag</th>
+                                    <th style="padding: 12px; text-align: right;">Size</th>
+                                    <th style="padding: 12px; text-align: left;">Status</th>
+                                    <th style="padding: 12px; text-align: left;">Last Updated</th>
+                                    <th style="padding: 12px; text-align: left;">Retention</th>
+                                    <th style="padding: 12px; text-align: right;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="image in filteredRegistryImages" :key="image.name + ':' + image.tag" style="border-bottom: 1px solid #2a2a2a;">
+                                    <td style="padding: 12px;">
+                                        <code style="font-size: 13px;">{{ image.name }}</code>
+                                    </td>
+                                    <td style="padding: 12px;">
+                                        <code style="font-size: 13px;">{{ image.tag }}</code>
+                                    </td>
+                                    <td style="padding: 12px; text-align: right;">
+                                        {{ formatBytes(image.size) }}
+                                    </td>
+                                    <td style="padding: 12px;">
+                                        <span v-if="image.is_watched" style="color: #10b981;">
+                                            <i class="fas fa-eye"></i> Watched
+                                        </span>
+                                        <span v-else style="color: #888;">
+                                            <i class="fas fa-box"></i> Cached
+                                        </span>
+                                    </td>
+                                    <td style="padding: 12px;">
+                                        <span v-if="image.last_updated" style="font-size: 12px; color: #10b981;">
+                                            <i class="fas fa-clock"></i> {{ formatRelativeTime(image.last_updated) }}
+                                        </span>
+                                        <span v-else-if="image.is_watched" style="font-size: 12px; color: #888;">
+                                            Never
+                                        </span>
+                                        <span v-else style="color: #888;">-</span>
+                                    </td>
+                                    <td style="padding: 12px;">
+                                        <span v-if="image.retention_policy" style="font-size: 12px; cursor: pointer;" @click="editRetention(image)" title="Click to edit">
+                                            {{ image.retention_policy.replace('_', ' ') }}
+                                            <i class="fas fa-edit" style="margin-left: 5px; opacity: 0.6;"></i>
+                                        </span>
+                                        <span v-else style="color: #888;">-</span>
+                                    </td>
+                                    <td style="padding: 12px; text-align: right;">
+                                        <button 
+                                            v-if="!image.is_watched" 
+                                            @click="watchImage(image.name + ':' + image.tag)"
+                                            class="btn btn-sm"
+                                            style="background: #6b7280; margin-right: 5px;"
+                                            title="Add to watch list">
+                                            <i class="fas fa-eye"></i>
+                                        </button>
+                                        <button 
+                                            v-else
+                                            @click="unwatchImage(image.name + ':' + image.tag)"
+                                            class="btn btn-sm"
+                                            style="background: #10b981; margin-right: 5px;"
+                                            title="Remove from watch list">
+                                            <i class="fas fa-eye-slash"></i>
+                                        </button>
+                                        <button 
+                                            @click="deleteRegistryImage(image.name, image.tag)"
+                                            class="btn btn-sm"
+                                            style="background: #ef4444;"
+                                            title="Delete image">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div v-else-if="settings.registry_enabled && registryImages.length === 0" class="empty-state">
+                    <i class="fas fa-box-open" style="font-size: 64px; color: #444; margin-bottom: 20px;"></i>
+                    <p>No images in registry yet</p>
+                    <button @click="showRegistryPullModal = true" class="btn btn-primary">
+                        <i class="fas fa-download"></i> Pull Your First Image
+                    </button>
+                </div>
+            </div>
+
             <div v-if="currentView === 'settings'">
                 <div class="header">
                     <h1>Settings</h1>
@@ -2614,6 +2975,83 @@
                     </div>
 
                     <div class="settings-section">
+                        <h3><i class="fas fa-box"></i> Container Registry</h3>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.registry_enabled">
+                                <span>Enable local container registry</span>
+                            </label>
+                            <small style="color: #94a3b8; display: block; margin-top: 5px;">
+                                Run a local Docker registry with automatic caching and updates
+                            </small>
+                        </div>
+                        
+                        <div v-if="settings.registry_enabled" style="margin-top: 20px; padding: 20px; background: rgba(15, 23, 42, 0.5); border-radius: 8px;">
+                            <div class="form-group">
+                                <label class="form-label">Registry Version</label>
+                                <select class="form-input" v-model="settings.registry_version">
+                                    <option value="2">Version 2 (Recommended - Stable)</option>
+                                    <option value="3">Version 3 (Beta - Latest Features)</option>
+                                </select>
+                                <small style="color: #888; display: block; margin-top: 5px;">
+                                    Version 2 is stable and recommended for production use
+                                </small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Registry Mode</label>
+                                <div style="padding: 10px; background: #1e293b; border-radius: 8px; border: 1px solid #334155;">
+                                    <strong style="color: #10b981;">Hybrid Mode</strong> (Always Enabled)
+                                    <div style="color: #888; font-size: 12px; margin-top: 5px;">
+                                        Automatically caches pulled images and monitors watched images for updates
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Registry Port</label>
+                                <input type="number" class="form-input" v-model.number="settings.registry_port" min="1024" max="65535">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Storage Path</label>
+                                <input type="text" class="form-input" v-model="settings.registry_storage_path" placeholder="/DATA/AppData/Registry">
+                                <small style="color: #888; display: block; margin-top: 5px;">
+                                    Default: /DATA/AppData/Registry
+                                </small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Proxy Upstream (for cache mode)</label>
+                                <input type="text" class="form-input" v-model="settings.registry_proxy_upstream" placeholder="https://registry-1.docker.io">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Auto-Update Schedule (Cron)</label>
+                                <input type="text" class="form-input" v-model="settings.registry_update_cron" placeholder="0 3 * * *">
+                                <small style="color: #888; display: block; margin-top: 5px;">
+                                    Default: 0 3 * * * (3 AM daily). When watched images are checked for updates.
+                                </small>
+                            </div>
+                            
+                            <div v-if="!registryHttpWarningShown" style="margin-top: 15px; padding: 15px; background: #dc2626; border-radius: 8px;">
+                                <h4 style="margin: 0 0 10px 0;"><i class="fas fa-exclamation-triangle"></i> HTTP Registry Configuration Required</h4>
+                                <p style="margin-bottom: 10px;">Run this command on ALL servers that will use the registry:</p>
+                                <pre style="background: #1e1e1e; padding: 15px; border-radius: 4px; overflow-x: auto; font-size: 12px;">sudo bash -c 'cat &gt;&gt; /etc/docker/daemon.json &lt;&lt;EOF
+{
+  "insecure-registries": ["{{ getRegistryHost() }}:{{ settings.registry_port || 5500 }}"]
+}
+EOF'
+
+sudo systemctl restart docker</pre>
+                                <button @click="registryHttpWarningShown = true" class="btn btn-primary" style="margin-top: 10px;">
+                                    <i class="fas fa-check"></i> I've Done This
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
                         <h3><i class="fas fa-toggle-on"></i> Notification Preferences</h3>
                         <div class="form-group">
                             <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
@@ -2643,6 +3081,24 @@
                             <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
                                 <input type="checkbox" v-model="settings.notify_on_backup">
                                 <span>Notify on backup completion/failure</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.notify_on_registry_check">
+                                <span>Notify when registry checks for updates (no updates available)</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.notify_on_registry_update">
+                                <span>Notify when registry images are updated</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" v-model="settings.notify_on_registry_backup">
+                                <span>Notify on registry backup/restore completion/failure</span>
                             </label>
                         </div>
                         <div class="form-group" v-if="settings.notify_on_health_failure">
@@ -4026,6 +4482,109 @@
             </div>
         </div>
 
+        <!-- Registry Pull Image Modal -->
+        <div class="modal" v-if="showRegistryPullModal" @click.self="showRegistryPullModal = false">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Pull Image to Registry</h2>
+                    <button class="close-btn" @click="showRegistryPullModal = false">&times;</button>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Image Name</label>
+                    <input 
+                        type="text" 
+                        class="form-input" 
+                        v-model="registryPullImage"
+                        placeholder="linuxserver/plex:latest">
+                    <small style="color: #888; display: block; margin-top: 5px;">
+                        Examples: linuxserver/plex:latest, nginx:alpine, ghcr.io/home-assistant/home-assistant:stable
+                    </small>
+                </div>
+                
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input 
+                            type="checkbox" 
+                            v-model="registryPullAddToWatch"
+                            style="margin-right: 10px;">
+                        <span>Add to watch list (auto-update)</span>
+                    </label>
+                </div>
+                
+                <div v-if="registryPullAddToWatch" class="form-group">
+                    <label class="form-label">Retention Policy</label>
+                    <select class="form-input" v-model="registryPullRetention">
+                        <option value="latest">Keep latest only</option>
+                        <option value="keep_3">Keep last 3 versions</option>
+                        <option value="keep_5">Keep last 5 versions</option>
+                        <option value="keep_all">Keep all versions</option>
+                    </select>
+                </div>
+                
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button class="btn btn-primary" @click="pullImageToRegistry" :disabled="!registryPullImage">
+                        <i class="fas fa-download"></i> Pull Image
+                    </button>
+                    <button class="btn btn-secondary" @click="showRegistryPullModal = false">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Registry Pull Progress Modal -->
+        <div class="modal" v-if="showRegistryPullProgress" @click.self="cancelPullProgress">
+            <div class="modal-content" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h2><i class="fas fa-download"></i> Pulling Image</h2>
+                    <button class="close-btn" @click="cancelPullProgress">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div style="margin-bottom: 20px;">
+                        <strong>Image:</strong> <code>{{ registryPullingImage }}</code>
+                    </div>
+                    
+                    <!-- Progress Bar -->
+                    <div style="margin-bottom: 20px;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                            <span>{{ registryPullStatus.message || 'Pulling...' }}</span>
+                            <span><strong>{{ registryPullStatus.percent || 0 }}%</strong></span>
+                        </div>
+                        <div style="width: 100%; height: 30px; background: #1e293b; border-radius: 8px; overflow: hidden;">
+                            <div style="height: 100%; background: linear-gradient(90deg, #3b82f6, #10b981); transition: width 0.3s;" :style="{width: (registryPullStatus.percent || 0) + '%'}"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Layer Progress -->
+                    <div v-if="registryPullStatus.total_layers > 0" style="color: #94a3b8; font-size: 14px;">
+                        Layers: {{ registryPullStatus.current_layer || 0 }} / {{ registryPullStatus.total_layers }}
+                    </div>
+                    
+                    <!-- Status Messages -->
+                    <div style="margin-top: 15px; padding: 10px; background: #1e293b; border-radius: 8px; font-size: 13px; color: #94a3b8;">
+                        <div v-if="registryPullStatus.status === 'starting'">
+                            <i class="fas fa-spinner fa-spin"></i> Initializing pull...
+                        </div>
+                        <div v-else-if="registryPullStatus.status === 'pulling'">
+                            <i class="fas fa-download"></i> Downloading layers...
+                        </div>
+                        <div v-else-if="registryPullStatus.status === 'finalizing'">
+                            <i class="fas fa-cog fa-spin"></i> Finalizing...
+                        </div>
+                        <div v-else-if="registryPullStatus.status === 'completing'">
+                            <i class="fas fa-check"></i> Almost done...
+                        </div>
+                        <div v-else-if="registryPullStatus.status === 'success'">
+                            <i class="fas fa-check-circle" style="color: #10b981;"></i> Pull completed successfully!
+                        </div>
+                        <div v-else-if="registryPullStatus.status === 'error'">
+                            <i class="fas fa-exclamation-circle" style="color: #ef4444;"></i> {{ registryPullStatus.message || 'Pull failed' }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Clone Stack Modal -->
         <div class="modal" v-if="showCloneModal" @click.self="showCloneModal = false">
             <div class="modal-content">
@@ -4391,7 +4950,17 @@
                         host_cpu_threshold: 90,
                         host_memory_threshold: 90,
                         host_disk_threshold: 85,
-                        host_alert_threshold: 3
+                        host_alert_threshold: 3,
+                        registry_enabled: false,
+                        registry_version: '2',
+                        registry_mode: 'hybrid',
+                        registry_port: 5500,
+                        registry_storage_path: '/DATA/AppData/Registry',
+                        registry_proxy_upstream: 'https://registry-1.docker.io',
+                        registry_update_cron: '0 3 * * *',
+                        notify_on_registry_check: false,
+                        notify_on_registry_update: true,
+                        notify_on_registry_backup: true
                     },
                     showChangePassword: false,
                     passwordChange: {
@@ -4540,7 +5109,32 @@
                     wizardCurrentIndex: 0,
                     wizardCurrentVolumes: [],
                     wizardVolumeSelections: {},
-                    wizardConfig: null
+                    wizardConfig: null,
+                    // Registry
+                    registryStatus: null,
+                    registryImages: [],
+                    registryTotalSize: 0,
+                    registryCheckingUpdates: false,
+                    registryImagesLoading: false,
+                    showRegistryBackupModal: false,
+                    registryBackups: [],
+                    registryBackupInProgress: false,
+                    registrySyncing: false,
+                    showEditRetentionModal: false,
+                    editRetentionImage: '',
+                    editRetentionPolicy: 'latest',
+                    registryImageSearch: '',
+                    showRegistryPullModal: false,
+                    registryPullImage: '',
+                    registryPullAddToWatch: false,
+                    registryPullRetention: 'latest',
+                    showRegistryPullProgress: false,
+                    registryPullingImage: '',
+                    registryPullStatus: {},
+                    registryPullInterval: null,
+                    registryHttpWarningShown: false,
+                    showRegistryLogsModal: false,
+                    registryLogs: ''
                 };
             },
             computed: {
@@ -4706,6 +5300,25 @@
                 },
                 sortedStackNames() {
                     return Object.keys(this.filteredGroupedBackups).sort();
+                },
+                filteredRegistryImages() {
+                    let images = this.registryImages;
+                    
+                    // Apply search filter if search term exists
+                    if (this.registryImageSearch) {
+                        const search = this.registryImageSearch.toLowerCase();
+                        images = images.filter(img => 
+                            img.name.toLowerCase().includes(search) || 
+                            img.tag.toLowerCase().includes(search)
+                        );
+                    }
+                    
+                    // Sort alphabetically by name, then by tag
+                    return images.sort((a, b) => {
+                        const nameCompare = a.name.localeCompare(b.name);
+                        if (nameCompare !== 0) return nameCompare;
+                        return a.tag.localeCompare(b.tag);
+                    });
                 }
             },
             async mounted() {
@@ -4766,6 +5379,35 @@
                     }
                 });
                 
+                // MODAL UX: Close modals with Escape key
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape') {
+                        // Close any open modals
+                        if (this.showRegistryLogsModal) {
+                            this.showRegistryLogsModal = false;
+                        }
+                        if (this.showRegistryPullModal) {
+                            this.showRegistryPullModal = false;
+                        }
+                        // Add other modals here as needed
+                        if (this.showAddStackModal) {
+                            this.showAddStackModal = false;
+                        }
+                        if (this.showComposeModal) {
+                            this.showComposeModal = false;
+                        }
+                        if (this.showEnvModal) {
+                            this.showEnvModal = false;
+                        }
+                        if (this.showImportModal) {
+                            this.showImportModal = false;
+                        }
+                        if (this.showTemplateModal) {
+                            this.showTemplateModal = false;
+                        }
+                    }
+                });
+                
                 // Setup polling based on configured intervals (runs after settings loaded)
                 this.setupPolling();
                 
@@ -4789,6 +5431,46 @@
                 }
             },
             methods: {
+                // Utility method for formatting bytes
+                formatBytes(bytes) {
+                    if (!bytes || bytes === 0) return '0 B';
+                    const k = 1024;
+                    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                    const i = Math.floor(Math.log(bytes) / Math.log(k));
+                    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+                },
+                
+                formatRelativeTime(timestamp) {
+                    if (!timestamp) return '';
+                    try {
+                        const now = new Date();
+                        const then = new Date(timestamp);
+                        
+                        // Check for Invalid Date
+                        if (isNaN(then.getTime())) {
+                            console.warn('Invalid timestamp:', timestamp);
+                            return 'Unknown';
+                        }
+                        
+                        const diffMs = now - then;
+                        const diffMins = Math.floor(diffMs / 60000);
+                        const diffHours = Math.floor(diffMs / 3600000);
+                        const diffDays = Math.floor(diffMs / 86400000);
+                        
+                        if (diffMins < 1) return 'Just now';
+                        if (diffMins < 60) return `${diffMins}m ago`;
+                        if (diffHours < 24) return `${diffHours}h ago`;
+                        if (diffDays === 1) return 'Yesterday';
+                        if (diffDays < 7) return `${diffDays}d ago`;
+                        if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
+                        if (diffDays < 365) return `${Math.floor(diffDays / 30)}mo ago`;
+                        return `${Math.floor(diffDays / 365)}y ago`;
+                    } catch (e) {
+                        console.error('Error formatting timestamp:', timestamp, e);
+                        return 'Unknown';
+                    }
+                },
+                
                 // Template methods
                 async loadTemplates() {
                     // Don't load if templates are disabled
@@ -5167,6 +5849,16 @@
                         // Merge with defaults to preserve new settings
                         this.settings = { ...this.settings, ...response.data };
                         
+                        // Flatten nested registry structure for Vue
+                        if (response.data.registry) {
+                            this.settings.registry_enabled = response.data.registry.enabled || false;
+                            this.settings.registry_version = response.data.registry.version || '2';
+                            this.settings.registry_mode = response.data.registry.mode || 'hybrid';
+                            this.settings.registry_port = response.data.registry.port || 5500;
+                            this.settings.registry_storage_path = response.data.registry.storage_path || '/DATA/AppData/Registry';
+                            this.settings.registry_proxy_upstream = response.data.registry.proxy_upstream || 'https://registry-1.docker.io';
+                        }
+                        
                         // Migrate old format to new format
                         if (!this.settings.host_stats_mode) {
                             // Old format - convert interval to mode
@@ -5192,6 +5884,13 @@
                         this.apiToken = response.data.api_token ? response.data.api_token.substring(0, 16) + '...' : '';
                         this.fullApiToken = response.data.api_token || '';
                         this.isPasswordEnabled = response.data.password_enabled || false;
+                        
+                        // Load registry status if enabled (non-blocking - don't await)
+                        if (this.settings.registry_enabled) {
+                            this.loadRegistryStatus().catch(err => {
+                                console.warn('Registry status check failed on page load:', err);
+                            });
+                        }
                     } catch (error) {
                         this.showToast('Error', 'Failed to load settings', 'error');
                     }
@@ -5256,6 +5955,11 @@
                 },
                 async saveSettings() {
                     try {
+                        // Force registry mode to hybrid (only mode supported)
+                        if (this.settings.registry_enabled) {
+                            this.settings.registry_mode = 'hybrid';
+                        }
+                        
                         await axios.post('/api/config', this.settings);
                         this.showToast('Success', 'Settings saved successfully', 'success');
                         
@@ -7740,6 +8444,584 @@
                         this.wizardStacks = [];
                         this.wizardVolumeSelections = {};
                     }
+                },
+                
+                // Registry Methods
+                async loadRegistryStatus() {
+                    try {
+                        // Add timeout to prevent hanging
+                        const controller = new AbortController();
+                        const timeout = setTimeout(() => controller.abort(), 3000); // 3 second timeout
+                        
+                        const response = await fetch('/api/registry/status', {
+                            signal: controller.signal
+                        });
+                        clearTimeout(timeout);
+                        
+                        const data = await response.json();
+                        this.registryStatus = data;
+                        
+                        if (data.enabled) {
+                            // Non-blocking - let it load in background
+                            this.loadRegistryImages().catch(err => {
+                                console.warn('Registry images load failed:', err);
+                            });
+                        }
+                    } catch (error) {
+                        if (error.name === 'AbortError') {
+                            console.warn('Registry status check timed out');
+                        } else {
+                            console.error('Registry status error:', error);
+                        }
+                        // Set default empty status so UI doesn't break
+                        this.registryStatus = { enabled: false, container_status: 'error' };
+                    }
+                },
+                
+                async loadRegistryImages(force = false) {
+                    this.registryImagesLoading = true;
+                    try {
+                        const url = force ? '/api/registry/images?force=1' : '/api/registry/images';
+                        const response = await fetch(url);
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                        }
+                        const data = await response.json();
+                        if (data.error) {
+                            throw new Error(data.error);
+                        }
+                        this.registryImages = data.images || [];
+                        // Calculate total size
+                        this.registryTotalSize = this.registryImages.reduce((sum, img) => sum + (img.size || 0), 0);
+                    } catch (error) {
+                        console.error('Registry images error:', error);
+                        throw error; // Re-throw so caller can handle
+                    } finally {
+                        this.registryImagesLoading = false;
+                    }
+                },
+                
+                async refreshRegistryImages() {
+                    try {
+                        await this.loadRegistryImages();
+                        // Only show success if we actually got images
+                        if (this.registryImages && this.registryImages.length >= 0) {
+                            this.showToast('Registry Refreshed', `Loaded ${this.registryImages.length} image(s)`, 'success');
+                        }
+                    } catch (error) {
+                        console.error('Refresh error:', error);
+                        this.showToast('Error', 'Failed to refresh registry images', 'error');
+                    }
+                },
+                
+                async checkRegistryUpdates() {
+                    if (this.registryCheckingUpdates) return;
+                    
+                    this.registryCheckingUpdates = true;
+                    try {
+                        const response = await fetch('/api/registry/check-updates', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'}
+                        });
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            // Reload images to show updated timestamps
+                            await this.loadRegistryImages(true); // Force refresh after updates
+                            
+                            // Show toast with results
+                            if (data.updated && data.updated.length > 0) {
+                                this.showToast('Registry Updates', 
+                                    `Updated ${data.updated.length} image(s): ${data.updated.join(', ')}`, 
+                                    'success');
+                            } else {
+                                this.showToast('Registry Check Complete', 
+                                    `No updates available for ${data.total_checked} watched image(s)`, 
+                                    'info');
+                            }
+                        } else {
+                            this.showToast('Error', data.message || 'Failed to check updates', 'error');
+                        }
+                    } catch (error) {
+                        console.error('Registry update check error:', error);
+                        this.showToast('Error', 'Failed to check for updates', 'error');
+                    } finally {
+                        this.registryCheckingUpdates = false;
+                    }
+                },
+                
+                async pullImageToRegistry() {
+                    if (!this.registryPullImage) return;
+                    
+                    try {
+                        const imageName = this.registryPullImage;
+                        const addToWatch = this.registryPullAddToWatch;
+                        const retention = this.registryPullRetention;
+                        
+                        // Start pull in background with atomic watch/retention handling
+                        const response = await fetch('/api/registry/pull', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                image: imageName,
+                                background: true,
+                                add_to_watch: addToWatch,  // Backend handles this atomically
+                                retention: retention        // Backend handles this atomically
+                            })
+                        });
+                        const data = await response.json();
+                        
+                        if (data.status === 'started') {
+                            // Close pull modal, show progress modal
+                            this.showRegistryPullModal = false;
+                            this.showRegistryPullProgress = true;
+                            this.registryPullingImage = imageName;
+                            this.registryPullStatus = {status: 'starting', percent: 0};
+                            
+                            // Start polling for progress (no longer needs to add to watch)
+                            this.startPullProgressPolling(imageName);
+                        } else {
+                            this.showToast('Failed to start pull: ' + (data.message || 'Unknown error'), 'error');
+                        }
+                    } catch (error) {
+                        console.error('Registry pull error:', error);
+                        this.showToast('Failed to pull image', 'error');
+                    }
+                },
+                
+                startPullProgressPolling(imageName) {
+                    // Clear any existing interval
+                    if (this.registryPullInterval) {
+                        clearInterval(this.registryPullInterval);
+                    }
+                    
+                    // Poll every 500ms for progress
+                    this.registryPullInterval = setInterval(async () => {
+                        try {
+                            const response = await fetch(`/api/registry/pull-progress/${encodeURIComponent(imageName)}`);
+                            const progress = await response.json();
+                            
+                            this.registryPullStatus = progress;
+                            
+                            // Check if completed
+                            if (progress.status === 'success') {
+                                clearInterval(this.registryPullInterval);
+                                this.registryPullInterval = null;
+                                
+                                // Wait a moment to show 100%, then close
+                                setTimeout(async () => {
+                                    this.showRegistryPullProgress = false;
+                                    this.registryPullImage = '';
+                                    await this.loadRegistryImages(true);
+                                    
+                                    // Show appropriate message
+                                    if (progress.watched) {
+                                        this.showToast('Image pulled and added to watch list', 'success');
+                                    } else {
+                                        this.showToast('Image pulled successfully', 'success');
+                                    }
+                                    
+                                    // Clear progress with error handling
+                                    try {
+                                        const deleteResp = await fetch(`/api/registry/pull-progress/${encodeURIComponent(imageName)}`, {
+                                            method: 'DELETE'
+                                        });
+                                        if (!deleteResp.ok) {
+                                            console.error('Failed to clear pull progress:', await deleteResp.text());
+                                        }
+                                    } catch (e) {
+                                        console.error('Error clearing pull progress:', e);
+                                    }
+                                }, 1500);
+                            } else if (progress.status === 'error') {
+                                clearInterval(this.registryPullInterval);
+                                this.registryPullInterval = null;
+                                
+                                setTimeout(() => {
+                                    this.showRegistryPullProgress = false;
+                                    this.showToast('Pull failed: ' + (progress.message || 'Unknown error'), 'error');
+                                }, 2000);
+                            } else if (progress.status === 'cancelled') {
+                                clearInterval(this.registryPullInterval);
+                                this.registryPullInterval = null;
+                                this.showRegistryPullProgress = false;
+                                this.showToast('Pull cancelled', 'info');
+                            }
+                        } catch (error) {
+                            console.error('Progress poll error:', error);
+                        }
+                    }, 500);
+                },
+                
+                async cancelPullProgress() {
+                    const imageName = this.registryPullingImage;
+                    
+                    // Clear client-side polling
+                    if (this.registryPullInterval) {
+                        clearInterval(this.registryPullInterval);
+                        this.registryPullInterval = null;
+                    }
+                    
+                    // Actually cancel the server-side pull
+                    try {
+                        const response = await fetch(`/api/registry/pull-cancel/${encodeURIComponent(imageName)}`, {
+                            method: 'POST'
+                        });
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            this.showToast('Pull cancelled', 'info');
+                        } else {
+                            this.showToast('Cancel failed: ' + (data.message || 'Pull may have already completed'), 'warning');
+                        }
+                    } catch (error) {
+                        console.error('Cancel error:', error);
+                        this.showToast('Failed to cancel pull (process may continue)', 'warning');
+                    }
+                    
+                    this.showRegistryPullProgress = false;
+                },
+                
+                async watchImage(imageName) {
+                    try {
+                        this.showToast('Adding to watch list...', 'info');
+                        const response = await fetch('/api/registry/watch', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({image: imageName, retention: 'latest'})
+                        });
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            if (data.pulled) {
+                                this.showToast(`Pulled and now watching ${imageName}`, 'success');
+                            } else {
+                                this.showToast(`Now watching ${imageName}`, 'success');
+                            }
+                            await this.loadRegistryImages(true); // Force refresh after watch
+                        } else {
+                            this.showToast('Failed to watch: ' + data.message, 'error');
+                        }
+                    } catch (error) {
+                        console.error('Registry watch error:', error);
+                        this.showToast('Failed to watch image', 'error');
+                    }
+                },
+                
+                async unwatchImage(imageName) {
+                    try {
+                        const response = await fetch(`/api/registry/watch/${encodeURIComponent(imageName)}`, {
+                            method: 'DELETE'
+                        });
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            this.showToast('Stopped watching ' + imageName, 'success');
+                            await this.loadRegistryImages(true); // Force refresh after unwatch
+                        } else {
+                            this.showToast('Failed to unwatch: ' + data.message, 'error');
+                        }
+                    } catch (error) {
+                        console.error('Registry unwatch error:', error);
+                        this.showToast('Failed to unwatch image', 'error');
+                    }
+                },
+                
+                async deleteRegistryImage(name, tag) {
+                    if (!confirm(`Delete ${name}:${tag}?\n\nThis will remove the image and run garbage collection.`)) return;
+                    
+                    try {
+                        this.showToast('Deleting image...', 'info');
+                        const response = await fetch(`/api/registry/images/${encodeURIComponent(name)}/tags/${encodeURIComponent(tag)}`, {
+                            method: 'DELETE'
+                        });
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            let message = `Deleted ${name}:${tag}`;
+                            if (data.gc && data.gc.reclaimed_formatted) {
+                                message += ` - Freed ${data.gc.reclaimed_formatted}`;
+                            }
+                            this.showToast(message, 'success');
+                            await this.loadRegistryImages(true); // Force refresh after delete
+                        } else {
+                            this.showToast('Delete failed: ' + (data.message || 'Unknown error'), 'error');
+                        }
+                    } catch (error) {
+                        console.error('Registry delete error:', error);
+                        this.showToast('Failed to delete image', 'error');
+                    }
+                },
+                
+                async runRegistryGC() {
+                    try {
+                        this.showToast('Running garbage collection...', 'info');
+                        const response = await fetch('/api/registry/gc', {method: 'POST'});
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            const freed = data.reclaimed_formatted || '0 B';
+                            this.showToast(`Garbage collection complete - Freed ${freed}`, 'success');
+                            await this.loadRegistryImages();
+                        } else {
+                            this.showToast('GC failed: ' + (data.message || 'Unknown error'), 'error');
+                        }
+                    } catch (error) {
+                        console.error('Registry GC error:', error);
+                        this.showToast('Garbage collection failed', 'error');
+                    }
+                },
+                
+                async viewRegistryLogs() {
+                    try {
+                        this.showRegistryLogsModal = true;
+                        this.registryLogs = 'Loading logs...';
+                        
+                        const response = await fetch('/api/registry/logs');
+                        const data = await response.json();
+                        
+                        if (data.logs) {
+                            this.registryLogs = data.logs;
+                        } else {
+                            this.registryLogs = 'No logs available';
+                        }
+                    } catch (error) {
+                        console.error('Registry logs error:', error);
+                        this.registryLogs = 'Error loading logs: ' + error.message;
+                    }
+                },
+                
+                async startRegistryContainer() {
+                    try {
+                        this.showToast('Starting registry container...', 'info');
+                        const response = await fetch('/api/registry/start', {method: 'POST'});
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            this.showToast('Registry container started', 'success');
+                            await this.loadRegistryStatus();
+                        } else {
+                            this.showToast('Start failed: ' + data.message, 'error');
+                        }
+                    } catch (error) {
+                        console.error('Registry start error:', error);
+                        this.showToast('Start failed', 'error');
+                    }
+                },
+                
+                async stopRegistryContainer() {
+                    try {
+                        this.showToast('Stopping registry container...', 'info');
+                        const response = await fetch('/api/registry/stop', {method: 'POST'});
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            this.showToast('Registry container stopped', 'success');
+                            await this.loadRegistryStatus();
+                        } else {
+                            this.showToast('Stop failed: ' + data.message, 'error');
+                        }
+                    } catch (error) {
+                        console.error('Registry stop error:', error);
+                        this.showToast('Stop failed', 'error');
+                    }
+                },
+                
+                async restartRegistryContainer() {
+                    try {
+                        this.showToast('Restarting registry container...', 'info');
+                        const response = await fetch('/api/registry/restart', {method: 'POST'});
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            this.showToast('Registry container restarted', 'success');
+                            await this.loadRegistryStatus();
+                        } else {
+                            this.showToast('Restart failed: ' + data.message, 'error');
+                        }
+                    } catch (error) {
+                        console.error('Registry restart error:', error);
+                        this.showToast('Restart failed', 'error');
+                    }
+                },
+                
+                async deployRegistryContainer() {
+                    try {
+                        this.showToast('Deploying registry container...', 'info');
+                        const response = await fetch('/api/registry/deploy', {method: 'POST'});
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            this.showToast('Registry container deployed', 'success');
+                            await this.loadRegistryStatus();
+                        } else {
+                            this.showToast('Deploy failed: ' + data.message, 'error');
+                        }
+                    } catch (error) {
+                        console.error('Registry deploy error:', error);
+                        this.showToast('Deploy failed', 'error');
+                    }
+                },
+                
+                // Registry Backup Methods
+                async loadRegistryBackups() {
+                    try {
+                        const response = await fetch('/api/registry/backups');
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            this.registryBackups = data.backups || [];
+                        } else {
+                            console.error('Failed to load backups:', data.message);
+                        }
+                    } catch (error) {
+                        console.error('Load backups error:', error);
+                    }
+                },
+                
+                async createRegistryBackup() {
+                    if (this.registryBackupInProgress) return;
+                    
+                    this.registryBackupInProgress = true;
+                    try {
+                        this.showToast('Creating registry backup...', 'info');
+                        const response = await fetch('/api/registry/backup', {method: 'POST'});
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            this.showToast(`Backup created: ${data.backup_filename}`, 'success');
+                            await this.loadRegistryBackups();
+                        } else {
+                            this.showToast('Backup failed: ' + (data.message || 'Unknown error'), 'error');
+                        }
+                    } catch (error) {
+                        console.error('Backup error:', error);
+                        this.showToast('Backup failed', 'error');
+                    } finally {
+                        this.registryBackupInProgress = false;
+                    }
+                },
+                
+                async restoreRegistryBackup(backup) {
+                    if (!confirm(`Restore registry from backup?\n\nFile: ${backup.filename}\nSize: ${backup.size_formatted}\nCreated: ${this.formatRelativeTime(backup.created)}\n\n⚠️ This will STOP the registry, REPLACE all data, and RESTART the registry.\n\nContinue?`)) {
+                        return;
+                    }
+                    
+                    try {
+                        this.showToast('Restoring registry...', 'info');
+                        const response = await fetch('/api/registry/restore', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({backup_path: backup.path})
+                        });
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            this.showToast('Registry restored successfully', 'success');
+                            this.showRegistryBackupModal = false;
+                            await this.loadRegistryStatus();
+                            await this.loadRegistryImages();
+                        } else {
+                            this.showToast('Restore failed: ' + (data.message || 'Unknown error'), 'error');
+                        }
+                    } catch (error) {
+                        console.error('Restore error:', error);
+                        this.showToast('Restore failed', 'error');
+                    }
+                },
+                
+                async deleteRegistryBackup(backup) {
+                    if (!confirm(`Delete backup?\n\n${backup.filename}\n${backup.size_formatted}`)) {
+                        return;
+                    }
+                    
+                    try {
+                        const response = await fetch(`/api/registry/backups/${encodeURIComponent(backup.filename)}`, {
+                            method: 'DELETE'
+                        });
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            this.showToast('Backup deleted', 'success');
+                            await this.loadRegistryBackups();
+                        } else {
+                            this.showToast('Delete failed: ' + (data.message || 'Unknown error'), 'error');
+                        }
+                    } catch (error) {
+                        console.error('Delete backup error:', error);
+                        this.showToast('Delete failed', 'error');
+                    }
+                },
+                
+                async syncWatchedImages() {
+                    if (this.registrySyncing) return;
+                    
+                    this.registrySyncing = true;
+                    try {
+                        this.showToast('Syncing watched images...', 'info');
+                        const response = await fetch('/api/registry/sync-watched', {method: 'POST'});
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            const pulled = data.pulled || [];
+                            const failed = data.failed || [];
+                            
+                            let message = '';
+                            if (pulled.length > 0) {
+                                message += `Pulled ${pulled.length} image(s): ${pulled.join(', ')}`;
+                            }
+                            if (failed.length > 0) {
+                                if (message) message += '\n';
+                                message += `Failed: ${failed.length} image(s)`;
+                            }
+                            if (!pulled.length && !failed.length) {
+                                message = 'All watched images already present';
+                            }
+                            
+                            this.showToast(message || 'Sync complete', pulled.length > 0 ? 'success' : 'info');
+                            await this.loadRegistryImages(true); // Force refresh after sync
+                        } else {
+                            this.showToast('Sync failed: ' + (data.message || 'Unknown error'), 'error');
+                        }
+                    } catch (error) {
+                        console.error('Sync error:', error);
+                        this.showToast('Sync failed', 'error');
+                    } finally {
+                        this.registrySyncing = false;
+                    }
+                },
+                
+                // Registry Retention Editing
+                editRetention(image) {
+                    this.editRetentionImage = `${image.name}:${image.tag}`;
+                    this.editRetentionPolicy = image.retention_policy || 'latest';
+                    this.showEditRetentionModal = true;
+                },
+                
+                async saveRetentionPolicy() {
+                    try {
+                        const response = await fetch(`/api/registry/watch/${encodeURIComponent(this.editRetentionImage)}`, {
+                            method: 'PUT',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({retention: this.editRetentionPolicy})
+                        });
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            this.showToast('Retention policy updated', 'success');
+                            this.showEditRetentionModal = false;
+                            await this.loadRegistryImages();
+                        } else {
+                            this.showToast('Update failed: ' + (data.message || 'Unknown error'), 'error');
+                        }
+                    } catch (error) {
+                        console.error('Update retention error:', error);
+                        this.showToast('Failed to update retention policy', 'error');
+                    }
+                },
+                
+                getRegistryHost() {
+                    return window.location.hostname;
                 }
             }
         });
