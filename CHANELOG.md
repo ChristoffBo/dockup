@@ -1,3 +1,5 @@
+## latest (2026-02-14)
+Implemented a full docker registry, v2 and v3 supported. so all my servers pulls from a single location. registry can be switced on from settings. and notifications added. 
 ## latest (2026-02-7)
 Updated the backup page and enhaced the bulk backups
 ## latest (2026-02-01)
