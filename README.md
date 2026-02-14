@@ -1,8 +1,8 @@
 # 🚀 DockUp — Complete Docker Stack Management
 
-**DockUp** is a self-hosted web interface for managing all your Docker containers and stacks. It combines visual stack management with automatic update detection, health monitoring, vulnerability scanning, and multi-server support—all from one clean dashboard.
+**DockUp** is a self-hosted web interface for managing all your Docker containers and stacks. It combines visual stack management with automatic update detection, health monitoring, vulnerability scanning, a built-in Docker Registry v3, and multi-server support—all from one clean dashboard.
 
-Think of it as your Docker control center: manage 30+ stacks across multiple servers, schedule automatic updates like Watchtower, get notified when containers go down, and keep track of security vulnerabilities. All without touching the command line.
+Think of it as your Docker control center: manage 30+ stacks across multiple servers, cache images in your private registry, schedule automatic updates like Watchtower, get notified when containers go down, and keep track of security vulnerabilities. All without touching the command line.
 
 <p align="center">
   <img src="dockup-demo.gif" alt="DockUp Interface Demo" />
@@ -348,6 +348,109 @@ The backup file is transferred automatically between peers during restore—no m
 - Notifications when pruning completes (optional)
 - Example: `0 3 * * 0` prunes unused images every Sunday at 3 AM
 
+### 📦 Built-in Docker Registry v3
+
+**Complete Registry Solution**
+DockUp includes a full Docker Registry v3 server with smart automation features. Pull images from Docker Hub once, cache them locally, and automatically keep them updated. Perfect for homelabs with multiple servers or air-gapped environments.
+
+**How It Works**
+- Built-in Registry v3 runs on port 5500
+- Pull images to your local registry instead of always hitting Docker Hub
+- Automatically watches upstream for new versions
+- Updates your cached images on schedule (default: 4 AM daily)
+- All your servers pull from this one central cache
+- Faster deployments, less bandwidth usage, offline capability
+
+**Watched Images**
+- Add any image to your watch list
+- DockUp monitors Docker Hub (or other registries) for updates
+- Compares local digest vs upstream digest
+- Automatically pulls new versions when available
+- Configurable retention policies per image:
+  - **Latest Only**: Keep only the newest version
+  - **Keep All**: Never delete old versions
+  - **Keep N**: Keep last 3, 5, 10, etc. versions
+
+**Smart Garbage Collection**
+- Automatic cleanup of orphaned image layers
+- Runs once after all batch updates complete (no race conditions)
+- Can be triggered manually anytime
+- Shows space reclaimed after each run
+- Integrated with backup system
+
+**Registry Features**
+- Browse all cached images in your registry
+- See image sizes, tags, and last updated timestamps
+- Add/remove images from watch list with one click
+- Manual pull button to cache new images immediately
+- View which images are being watched
+- See when each image was last updated
+- "Never" status means no upstream updates detected yet
+
+**Multi-Server Setup**
+Perfect for distributed homelabs:
+```
+Main Server (DockUp + Registry):
+├── Runs Registry on port 5500
+├── Watches 48 public images
+├── Auto-updates at 4 AM daily
+└── Serves all other servers
+
+Media Server (DockUp):
+├── Pulls from Main Server registry
+├── Faster image pulls (local network)
+└── No Docker Hub rate limits
+
+Home Assistant Server (DockUp):
+├── Pulls from Main Server registry
+├── Works offline
+└── Consistent image versions
+```
+
+**Backup Integration**
+- Registry data automatically included in DockUp backups
+- Or use separate registry for custom images (Gitea pattern)
+- Restore registry from backup if needed
+- Watched image list preserved
+
+**Scheduled Updates**
+- Configure check schedule per image (default: 4 AM daily)
+- Uses same cron format as stack schedules
+- Notifications when updates are found and pulled
+- Update history shows when images were last updated
+- Bulk configure multiple images at once
+
+**Registry Management**
+- View total registry size
+- See how much space each image uses
+- One-click garbage collection
+- Delete specific images from registry
+- Clear watch list
+- Reset registry completely if needed
+
+**Why Use the Registry?**
+- **Speed**: Pull from LAN instead of internet
+- **Bandwidth**: Download each image version once, use everywhere
+- **Offline**: Deploy containers without internet access
+- **Consistency**: All servers use same image versions
+- **Rate Limits**: Avoid Docker Hub rate limiting
+- **Auto-Update**: Images stay current automatically
+- **Air-Gap**: Perfect for isolated networks
+
+**Registry vs Docker Hub**
+- Docker Hub: Always download from internet, rate limited, requires connectivity
+- DockUp Registry: Download once, cache locally, serve to all servers, work offline
+
+**Supported Registries**
+DockUp can watch and pull from:
+- Docker Hub (docker.io)
+- GitHub Container Registry (ghcr.io)
+- Linux Server Container Registry (lscr.io)
+- Quay.io
+- Google Container Registry
+- Any Docker Registry v2/v3 compatible registry
+- Private registries with authentication
+
 ### 🌐 Network Management
 
 **View Networks**
@@ -393,6 +496,7 @@ You control exactly what triggers notifications:
 - **Health failures**: When containers become unhealthy (after threshold)
 - **Recovery**: When previously unhealthy stacks become healthy again
 - **Scheduled actions**: When scheduled start/stop/restart actions complete
+- **Registry updates**: When watched images are updated in the registry
 
 **Health Alert Threshold**
 - Set how many consecutive health check failures before alerting
@@ -423,6 +527,7 @@ You control exactly what triggers notifications:
 - Action schedules
 - Stack-specific settings
 - Health check history
+- Registry watched images list (if using built-in registry)
 
 **What's NOT Included**
 - Container volumes (data inside containers)
@@ -430,6 +535,7 @@ You control exactly what triggers notifications:
 - Global DockUp settings
 - Notification configurations
 - Peer connections
+- Registry image data (only watched list)
 
 ### 🔒 Password Protection
 
@@ -506,6 +612,10 @@ You control exactly what triggers notifications:
 
 ## 🚀 Installation
 
+**⚠️ Important: Host Network Required for Registry**
+
+DockUp must run on the host network for the built-in Docker Registry to work properly. This allows the registry container to communicate with DockUp's API.
+
 ### Quick Start with Docker Run
 
 ```bash
@@ -514,9 +624,9 @@ docker rm -f dockup 2>/dev/null || true \
 && docker pull cbothma/dockup:latest \
 && docker run -d \
   --name dockup \
+  --network host \
   --privileged \
   --cap-add SYS_ADMIN \
-  -p 5000:5000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /DATA/Compose:/stacks \
   -v /DATA/AppData:/DATA/AppData \
@@ -525,6 +635,8 @@ docker rm -f dockup 2>/dev/null || true \
   --restart unless-stopped \
   cbothma/dockup:latest
 ```
+
+**Note:** When using `--network host`, the `-p` port mapping is not needed. DockUp will listen on port 5000 by default (or use the PORT environment variable).
 
 **Volume Explanations:**
 - `/var/run/docker.sock` - Required for Docker control
@@ -537,8 +649,8 @@ docker rm -f dockup 2>/dev/null || true \
 ```bash
 docker run -d \
   --name dockup \
-  -e PORT=80 \
-  -p 80:80 \
+  --network host \
+  -e PORT=8080 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /path/to/your/stacks:/stacks \
   -v dockup_data:/app/data \
@@ -554,17 +666,29 @@ services:
   dockup:
     image: cbothma/dockup:latest
     container_name: dockup
-    ports:
-      - "5000:5000"
+    network_mode: host
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      - PORT=5000  # Optional: change DockUp's port (default: 5000)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /path/to/your/stacks:/stacks
+      - /path/to/appdata:/DATA/AppData  # For backup size calculations
       - dockup_data:/app/data
+      - ./backups:/app/backups
     restart: unless-stopped
 
 volumes:
   dockup_data:
 ```
+
+**Important Notes:**
+- `network_mode: host` is **required** for the built-in registry to work
+- When using host network, remove the `ports:` section
+- DockUp will be accessible on `http://your-server-ip:5000` (or your custom PORT)
+- The built-in registry will be accessible on `http://your-server-ip:5500`
 
 ### What Each Mount Does
 
@@ -573,6 +697,8 @@ volumes:
 | `/var/run/docker.sock` | Docker API access—lets DockUp control containers | **Yes** |
 | `/stacks` | Your compose files directory—where your stacks live | **Yes** |
 | `/app/data` | Settings, schedules, metadata, tokens—everything DockUp remembers | **Yes** |
+| `/DATA/AppData` | Access to container data for backup size calculations | Recommended |
+| `/app/backups` | Stack backup storage location | Recommended |
 
 **Important Notes:**
 - The `/stacks` directory is where DockUp looks for compose files
@@ -580,6 +706,7 @@ volumes:
 - Each subdirectory needs a `compose.yaml` (or `docker-compose.yml`) file
 - The `/app/data` volume must persist—losing it means losing all your settings
 - The `PORT` environment variable allows running DockUp on any port (default: 5000)
+- **Host network mode is required** for the built-in Docker Registry v3 to function
 
 ---
 
@@ -591,6 +718,50 @@ volumes:
 2. Dashboard loads immediately—no password required by default
 3. If you want password protection, go to Settings and enable it
 4. Otherwise, you're ready to go
+
+### Registry Tab
+
+**Accessing the Registry**
+1. Click the "Registry" tab in the main navigation
+2. See all images currently cached in your local registry
+3. View image sizes, tags, and last updated timestamps
+4. "Never" means the image was pulled but no upstream updates detected yet
+
+**Adding Images to Watch**
+1. Click "Add Image" button
+2. Enter image name (e.g., `linuxserver/plex` or `nginx:alpine`)
+3. Choose retention policy:
+   - Latest Only: Keep only newest version
+   - Keep All: Never delete old versions
+   - Keep Last 3/5/10: Keep N most recent versions
+4. Click Add—image is pulled and added to watch list
+
+**Configuring Registry Updates**
+1. Each watched image has its own schedule
+2. Default: 4 AM daily (`0 4 * * *`)
+3. Click schedule icon to customize
+4. Notifications sent when updates are found and pulled
+
+**Using Your Registry**
+Point your stacks to use your local registry:
+```yaml
+services:
+  plex:
+    image: localhost:5500/linuxserver/plex:latest
+```
+
+Or configure other servers to pull from your registry:
+```yaml
+services:
+  sonarr:
+    image: 192.168.1.100:5500/linuxserver/sonarr:latest
+```
+
+**Managing Registry**
+- Click "Run GC" to reclaim space from deleted images
+- View space reclaimed after garbage collection
+- Delete individual images from watch list
+- Pull updates manually with "Pull Now" button
 
 ### Your First Stack
 
@@ -785,6 +956,7 @@ Control how often DockUp checks various things:
 - Notify on errors (failed operations)
 - Notify on health failures (after threshold reached)
 - Notify on scheduled actions (when start/stop/restart completes)
+- Notify on registry updates (when watched images are updated)
 
 **Health Check Threshold**
 - How many consecutive failures before sending alert
@@ -844,6 +1016,23 @@ Control how often DockUp checks various things:
 - Re-scrapes documentation for current configs
 - Cache refreshes automatically every 7 days
 
+### Registry Settings
+
+**Enable/Disable Registry**
+- Toggle built-in Docker Registry on/off
+- When disabled, Registry tab is hidden
+- Existing watched images preserved
+
+**Default Update Schedule**
+- Set default cron schedule for newly watched images
+- Example: `0 4 * * *` = Every day at 4 AM
+- Individual images can override this
+
+**Notification Preferences**
+- Notify when registry updates are pulled
+- Notify on registry errors
+- Included in general notification settings
+
 ---
 
 ## 🔧 How It Works
@@ -864,8 +1053,21 @@ This works with:
 - Quay.io
 - Google Container Registry
 - Private registries
-- Local registries
-- Any Docker Registry v2 compatible registry
+- Local registries (including DockUp's built-in registry)
+- Any Docker Registry v2/v3 compatible registry
+
+### Registry Update Process
+
+When the scheduled time arrives for registry checks:
+
+1. **Check Each Watched Image**: For every image in the watch list
+2. **Query Upstream**: Contact Docker Hub (or other registry) for latest digest
+3. **Compare Digests**: Check if upstream digest differs from local
+4. **Pull If Different**: Download new version to local registry
+5. **Apply Retention**: Delete old versions based on retention policy
+6. **Run GC**: Garbage collect orphaned layers (once after all updates)
+7. **Notify**: Send notification of what was updated
+8. **Update Status**: Mark image as updated with timestamp
 
 ### Auto-Update Process (Auto Mode)
 
@@ -938,6 +1140,18 @@ When you connect DockUp instances as peers:
 
 Each instance remains independent—peer connections only provide read/control access, not synchronization.
 
+### Registry Architecture
+
+DockUp's built-in registry consists of:
+
+1. **Registry Container**: Standard Docker Registry v3 running on port 5500
+2. **Registry Manager**: Python module that wraps the registry with automation
+3. **Watch Scheduler**: Cron-based system that checks for upstream updates
+4. **GC Orchestrator**: Manages garbage collection after batch updates
+5. **Retention Engine**: Applies version retention policies per image
+
+The registry runs as a separate container managed by DockUp, communicating via the Docker socket and DockUp's API.
+
 ### Data Persistence
 
 DockUp stores all configuration in the `/app/data` volume:
@@ -955,6 +1169,9 @@ DockUp stores all configuration in the `/app/data` volume:
 - **API Token**: This instance's authentication token
 - **Scan Results**: Trivy vulnerability scan data
 - **Template Cache**: LinuxServer.io templates and metadata
+- **Registry Data**: Watched images list, retention policies, update schedules
+
+Registry image data is stored separately in the registry container's volume.
 
 Backups themselves are stored in `/app/backups` (separate volume mount recommended).
 
@@ -985,9 +1202,42 @@ ls -l /var/run/docker.sock
 ```
 Must be readable by container. If not, check volume mount.
 
+**Check Host Network**
+```bash
+docker inspect dockup | grep NetworkMode
+```
+Should show `"NetworkMode": "host"`. If not, recreate with `--network host`.
+
 **Check Logs**
 ```bash
 docker logs dockup
+```
+Look for startup errors or permission issues.
+
+### Registry Not Working
+
+**Verify Host Network**
+Registry requires host network mode to communicate with DockUp:
+```bash
+docker inspect dockup | grep NetworkMode
+```
+Should be `"host"`. Recreate container with `--network host` if not.
+
+**Check Registry Container**
+```bash
+docker ps | grep registry
+```
+Should show a registry container running on port 5500.
+
+**Test Registry Connectivity**
+```bash
+curl http://localhost:5500/v2/
+```
+Should return `{}`. If not, check firewall or registry logs.
+
+**Check Registry Logs**
+```bash
+docker logs dockup-registry
 ```
 Look for startup errors or permission issues.
 
@@ -1009,6 +1259,24 @@ Should see: `Scheduled update check for <stack>: 0 2 * * *`
 - Set cron to `*/2 * * * *` (every 2 minutes)
 - Watch logs for execution
 - Change back to normal schedule after testing
+
+### Registry Updates Not Running
+
+**Check Registry Tab**
+- Open Registry tab
+- Verify images are in watch list
+- Check each image has a schedule configured
+
+**Check Logs**
+```bash
+docker logs dockup | grep -i "registry\|watch"
+```
+Look for scheduled registry checks and update messages.
+
+**Test Manual Update**
+- Click "Pull Now" on a watched image
+- Should see pull progress and notification
+- Check "Last Updated" timestamp changes
 
 ### Action Schedules Not Running
 
@@ -1205,10 +1473,11 @@ Built with inspiration from:
 - **Portainer** — Comprehensive Docker management
 - **Trivy** — Industry-standard vulnerability scanning
 - **LinuxServer.io** — Excellent container templates and documentation
+- **Docker Distribution** — Docker Registry v3 implementation
 - Created with the assistance of AI. 
 
 DockUp aims to be lightweight, focused, and genuinely useful for homelabs and small deployments.
 
 ---
 
-**Simple. Powerful. Multi-Server. Just Works.** 🚀
+**Simple. Powerful. Multi-Server. Registry-Enabled. Just Works.** 🚀
