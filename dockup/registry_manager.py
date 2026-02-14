@@ -389,7 +389,7 @@ class RegistryManager:
                                 orphan_summary["size_bytes"] += b_size
                         except Exception: pass
 
-        result = {"error": None, "images": results, "orphans": orphan_summary, "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        result = {"error": None, "images": results, "orphans": orphan_summary, "scan_time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S") + " UTC"}
         with self._cache_lock:
             self._images_cache = result
             self._images_cache_time = time.time()
@@ -425,7 +425,8 @@ class RegistryManager:
             return {"status": "up_to_date", "digest": local_digest}
 
         logger.info(f"Update required for {image_name}. New digest: {remote_digest}")
-        pull_status = self.pull_image(image_name)
+        # Disable auto_gc during batch updates - GC runs once at end in check_all_watched_updates
+        pull_status = self.pull_image(image_name, auto_gc=False)
         
         if pull_status["status"] == "success" and local_digest:
             try:
@@ -483,27 +484,42 @@ class RegistryManager:
                 failed_images.append({"image": image_name, "error": str(e)})
                 logger.error(f"✗ Exception checking {image_name}: {e}")
         
-        # Send notifications
+        # Send notifications via HTTP like backup module does
         notify_on_check = config.get("notify_on_registry_check", False)
         notify_on_update = config.get("notify_on_registry_update", True)
         
         if updated_images and notify_on_update:
-            # Images were updated - send success notification
+            # Images were updated - send success notification via HTTP
             try:
-                from app import notify
+                import requests
                 message = f"Updated {len(updated_images)} image(s):\n" + "\n".join(f"✓ {img}" for img in updated_images)
                 if failed_images:
                     message += f"\n\nFailed: {len(failed_images)}"
-                notify("Docker Registry - Updates Applied", message, "success")
+                
+                requests.post(
+                    'http://localhost:5000/api/internal/backup-notification',
+                    json={
+                        'title': 'Docker Registry - Updates Applied',
+                        'message': message,
+                        'type': 'success'
+                    },
+                    timeout=5
+                )
             except Exception as e:
                 logger.error(f"Failed to send update notification: {e}")
         elif not updated_images and notify_on_check:
-            # No updates found - send info notification
+            # No updates found - send info notification via HTTP
             try:
-                from app import notify
-                notify("Docker Registry - No Updates Found", 
-                       f"Checked {len(watched_images)} image(s) - All up to date", 
-                       "info")
+                import requests
+                requests.post(
+                    'http://localhost:5000/api/internal/backup-notification',
+                    json={
+                        'title': 'Docker Registry - No Updates Found',
+                        'message': f"Checked {len(watched_images)} image(s) - All up to date",
+                        'type': 'info'
+                    },
+                    timeout=5
+                )
             except Exception as e:
                 logger.error(f"Failed to send check notification: {e}")
         
@@ -540,7 +556,7 @@ class RegistryManager:
             
             for item in watched_images:
                 if item["image"] == image_name:
-                    item["last_updated"] = datetime.now().isoformat()
+                    item["last_updated"] = datetime.utcnow().isoformat() + "Z"  # UTC timestamp
                     break
             
             config["registry"]["watched_images"] = watched_images
