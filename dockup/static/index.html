@@ -2506,6 +2506,87 @@
                             </div>
                         </div>
 
+                        <!-- Version History Modal -->
+                        <div v-if="showVersionHistoryModal" class="modal-overlay" @click="showVersionHistoryModal = false">
+                            <div class="modal-content" @click.stop style="max-width: 900px;">
+                                <div class="modal-header">
+                                    <h3><i class="fas fa-history"></i> Version History - {{ versionHistoryImageName }}</h3>
+                                    <button class="close-btn" @click="showVersionHistoryModal = false">&times;</button>
+                                </div>
+                                <div class="modal-body">
+                                    <div v-if="versionHistoryLoading" style="text-align: center; padding: 40px;">
+                                        <i class="fas fa-spinner fa-spin" style="font-size: 48px; color: #888;"></i>
+                                        <p style="margin-top: 20px; color: #888;">Loading versions...</p>
+                                    </div>
+                                    
+                                    <div v-else-if="versionHistoryData && versionHistoryData.status === 'success'">
+                                        <div v-if="versionHistoryData.versions.length === 0" style="text-align: center; padding: 40px;">
+                                            <i class="fas fa-inbox" style="font-size: 48px; color: #888;"></i>
+                                            <p style="margin-top: 20px; color: #888;">No version history found</p>
+                                        </div>
+                                        
+                                        <div v-else>
+                                            <p style="margin-bottom: 20px; color: #888;">
+                                                <i class="fas fa-info-circle"></i> 
+                                                Showing {{ versionHistoryData.versions.length }} stored version(s). 
+                                                Click "Rollback" to revert to a previous version.
+                                            </p>
+                                            
+                                            <div v-for="(version, index) in versionHistoryData.versions" :key="version.digest"
+                                                 style="padding: 15px; background: #1e1e1e; border-radius: 8px; margin-bottom: 15px;"
+                                                 :style="version.is_current ? 'border-left: 4px solid #10b981;' : 'border-left: 4px solid #374151;'">
+                                                <div style="display: flex; justify-content: space-between; align-items: start;">
+                                                    <div style="flex: 1;">
+                                                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                                                            <span v-if="version.is_current" style="background: #10b981; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">
+                                                                CURRENT
+                                                            </span>
+                                                            <span v-else style="background: #6b7280; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px;">
+                                                                Version {{ index + 1 }}
+                                                            </span>
+                                                            <span style="font-family: monospace; color: #888; font-size: 12px;">
+                                                                {{ version.digest_short }}
+                                                            </span>
+                                                        </div>
+                                                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 10px;">
+                                                            <div>
+                                                                <div style="font-size: 11px; color: #888;">Digest</div>
+                                                                <div style="font-size: 12px; font-family: monospace; word-break: break-all;">{{ version.digest }}</div>
+                                                            </div>
+                                                            <div>
+                                                                <div style="font-size: 11px; color: #888;">Size</div>
+                                                                <div style="font-size: 13px;">{{ version.size_formatted }}</div>
+                                                            </div>
+                                                            <div>
+                                                                <div style="font-size: 11px; color: #888;">Stored</div>
+                                                                <div style="font-size: 13px;">{{ new Date(version.timestamp * 1000).toLocaleString() }}</div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div style="margin-left: 15px;">
+                                                        <button v-if="!version.is_current"
+                                                                @click="rollbackToVersion(versionHistoryImageName, version.digest)"
+                                                                class="btn btn-sm btn-warning"
+                                                                style="margin-bottom: 5px;">
+                                                            <i class="fas fa-undo"></i> Rollback
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div v-else-if="versionHistoryData && versionHistoryData.status === 'error'" style="text-align: center; padding: 40px;">
+                                        <i class="fas fa-exclamation-triangle" style="font-size: 48px; color: #f59e0b;"></i>
+                                        <p style="margin-top: 20px; color: #f59e0b;">{{ versionHistoryData.message }}</p>
+                                    </div>
+                                </div>
+                                <div class="modal-footer">
+                                    <button @click="showVersionHistoryModal = false" class="btn btn-secondary">Close</button>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Backup Modal -->
                         <div v-if="showRegistryBackupModal" class="modal-overlay" @click="showRegistryBackupModal = false">
                             <div class="modal-content" @click.stop style="max-width: 800px;">
@@ -2698,6 +2779,13 @@
                                             style="background: #3b82f6; margin-right: 5px;"
                                             title="Check for updates">
                                             <i class="fas fa-sync"></i>
+                                        </button>
+                                        <button 
+                                            @click="showImageVersions(image.name + ':' + image.tag)"
+                                            class="btn btn-sm"
+                                            style="background: #8b5cf6; margin-right: 5px;"
+                                            title="Show version history">
+                                            <i class="fas fa-history"></i>
                                         </button>
                                         <button 
                                             @click="deleteRegistryImage(image.name, image.tag)"
@@ -5254,7 +5342,12 @@ sudo systemctl restart docker</pre>
                     dockerHubAuthStatus: null,
                     dockerHubUsername: '',
                     dockerHubPassword: '',
-                    showDockerHubPassword: false
+                    showDockerHubPassword: false,
+                    // Version History
+                    showVersionHistoryModal: false,
+                    versionHistoryImageName: '',
+                    versionHistoryData: null,
+                    versionHistoryLoading: false
                 };
             },
             computed: {
@@ -9242,6 +9335,57 @@ sudo systemctl restart docker</pre>
                     } catch (error) {
                         console.error('Registry image check error:', error);
                         this.showToast('Failed to check for updates', 'error');
+                    }
+                },
+                
+                async showImageVersions(imageName) {
+                    try {
+                        this.versionHistoryImageName = imageName;
+                        this.versionHistoryData = null;
+                        this.versionHistoryLoading = true;
+                        this.showVersionHistoryModal = true;
+                        
+                        const response = await fetch(`/api/registry/image/${encodeURIComponent(imageName)}/versions`);
+                        const data = await response.json();
+                        
+                        this.versionHistoryData = data;
+                        this.versionHistoryLoading = false;
+                        
+                    } catch (error) {
+                        console.error('Failed to load version history:', error);
+                        this.versionHistoryData = {
+                            status: 'error',
+                            message: 'Failed to load version history: ' + error.message
+                        };
+                        this.versionHistoryLoading = false;
+                    }
+                },
+                
+                async rollbackToVersion(imageName, digest) {
+                    if (!confirm(`Rollback ${imageName} to this version?\n\nDigest: ${digest.substring(0, 19)}...\n\nThis will update the tag to point to this older version.`)) {
+                        return;
+                    }
+                    
+                    try {
+                        this.showToast('Rolling back...', 'info');
+                        
+                        const response = await fetch(`/api/registry/image/${encodeURIComponent(imageName)}/rollback`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ digest: digest })
+                        });
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            this.showToast('✓ Rollback successful', 'success');
+                            this.showVersionHistoryModal = false;
+                            await this.loadRegistryImages();
+                        } else {
+                            this.showToast('Rollback failed: ' + data.message, 'error');
+                        }
+                    } catch (error) {
+                        console.error('Rollback error:', error);
+                        this.showToast('Rollback failed', 'error');
                     }
                 },
                 
