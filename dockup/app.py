@@ -10952,6 +10952,13 @@ def registry_image_check_update(image_name):
         # Perform smart update on single image
         result = registry_mgr.perform_smart_update(image_name)
         
+        # Enforce retention policy after update
+        if result["status"] == "updated":
+            try:
+                registry_mgr.enforce_retention_policy()
+            except Exception as e:
+                logger.warning(f"Retention enforcement failed after update: {e}")
+        
         # Send notification based on result
         global config
         notify_on_check = config.get("notify_on_registry_check", False)
@@ -11120,54 +11127,6 @@ def docker_hub_logout():
         return jsonify({'status': 'error', 'message': 'Logout timeout'}), 500
     except Exception as e:
         logger.error(f"Docker Hub logout error: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-# Registry Version History & Rollback Routes
-@app.route('/api/registry/image/<path:image_name>/versions', methods=['GET'])
-@require_auth
-def registry_image_versions(image_name):
-    """Get version history for an image"""
-    try:
-        if not registry_mgr:
-            return jsonify({'error': 'Registry not initialized'}), 400
-        
-        result = registry_mgr.list_image_versions(image_name)
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Failed to get versions for {image_name}: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-@app.route('/api/registry/image/<path:image_name>/rollback', methods=['POST'])
-@require_auth
-def registry_image_rollback(image_name):
-    """Rollback an image to a specific version"""
-    try:
-        if not registry_mgr:
-            return jsonify({'error': 'Registry not initialized'}), 400
-        
-        data = request.get_json()
-        target_digest = data.get('digest')
-        
-        if not target_digest:
-            return jsonify({'status': 'error', 'message': 'Digest required'}), 400
-        
-        result = registry_mgr.rollback_to_version(image_name, target_digest)
-        
-        # Send notification if successful
-        if result['status'] == 'success':
-            notify(
-                f"Registry - {image_name}",
-                f"Rolled back to {target_digest[:19]}...",
-                "success"
-            )
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Rollback failed for {image_name}: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
