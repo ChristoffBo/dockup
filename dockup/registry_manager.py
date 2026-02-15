@@ -431,6 +431,9 @@ class RegistryManager:
         # For unwatched images: delete old manifest immediately (keep only latest)
         # For watched images: let retention policy handle it
         if pull_status["status"] == "success" and local_digest:
+            # Parse image name to get repo and tag
+            repo_parsed, tag_parsed = _normalize_image_name(image_name)
+            
             config = self._get_config()
             watched_images = config.get("registry", {}).get("watched_images", [])
             is_watched = any(item["image"] == image_name for item in watched_images)
@@ -438,7 +441,7 @@ class RegistryManager:
             if not is_watched:
                 # Not watched - delete old manifest to keep only latest
                 try:
-                    delete_url = f"{self.registry_url}/{repo}/manifests/{local_digest}"
+                    delete_url = f"{self.registry_url}/{repo_parsed}/manifests/{local_digest}"
                     self.session.delete(delete_url, timeout=10)
                     logger.info(f"[Registry] Deleted old manifest for unwatched image {image_name}")
                 except Exception as e:
@@ -1368,6 +1371,12 @@ class RegistryManager:
                         if manifest["digest"] == current_digest:
                             continue
                         
+                        # CRITICAL: Check if any OTHER tag in this repo references this manifest
+                        # before deleting to avoid data corruption
+                        if self._is_manifest_referenced_by_other_tags(repo, tag, manifest["digest"]):
+                            logger.info(f"[Registry] Skipping deletion of {manifest['digest'][:19]}... - referenced by other tags")
+                            continue
+                        
                         try:
                             delete_url = f"{self.registry_url}/{repo}/manifests/{manifest['digest']}"
                             resp = self.session.delete(delete_url, timeout=10)
@@ -1386,7 +1395,38 @@ class RegistryManager:
             self.run_gc()
         
         return {"status": "success", "deleted_count": deleted_count}
-
+    
+    def _is_manifest_referenced_by_other_tags(self, repo, exclude_tag, manifest_digest):
+        """Check if a manifest is referenced by any tag other than exclude_tag"""
+        try:
+            # Get list of all tags in the repo
+            tags_resp = self.session.get(f"{self.registry_url}/{repo}/tags/list", timeout=5)
+            if tags_resp.status_code != 200:
+                return True  # Conservative: assume it's referenced if we can't check
+            
+            all_tags = tags_resp.json().get("tags", [])
+            
+            # Check each tag (except the one we're enforcing retention for)
+            for tag in all_tags:
+                if tag == exclude_tag:
+                    continue
+                
+                try:
+                    # Get the digest this tag currently points to
+                    tag_digest = self._resolve_digest(repo, tag)
+                    if tag_digest == manifest_digest:
+                        # This tag points to the manifest we want to delete!
+                        logger.info(f"[Registry] Manifest {manifest_digest[:19]}... is referenced by {repo}:{tag}")
+                        return True
+                except:
+                    pass
+            
+            return False  # No other tags reference this manifest
+            
+        except Exception as e:
+            logger.error(f"[Registry] Error checking manifest references: {e}")
+            return True  # Conservative: assume it's referenced if check fails
+    
     def check_and_fix_permissions(self):
         """Ensures the registry storage path is writable by the current process."""
         try:
