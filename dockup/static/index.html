@@ -1081,7 +1081,7 @@
                     <i class="fas fa-database"></i>
                     Backups
                 </div>
-                <div class="nav-item" :class="{active: currentView === 'registry'}" @click="currentView = 'registry'; loadRegistryStatus(); loadDockerHubAuthStatus()" v-if="settings.registry_enabled">
+                <div class="nav-item" :class="{active: currentView === 'registry'}" @click="currentView = 'registry'; loadRegistryStatus().catch(e => console.warn('Registry status error:', e)); loadDockerHubAuthStatus().catch(e => console.warn('Docker Hub auth error:', e))" v-if="settings.registry_enabled">
                     <i class="fas fa-box"></i>
                     Registry
                 </div>
