@@ -1634,4 +1634,138 @@ class RegistryManager:
         except Exception as e:
             logger.error(f"[Registry] Failed to delete backup: {e}")
             return {"status": "error", "message": str(e)}
+    
+    def list_image_versions(self, image_name):
+        """List all stored manifest versions for an image (for rollback)"""
+        try:
+            repo, tag = _normalize_image_name(image_name)
+            
+            # Path to manifests revisions in registry storage
+            revisions_path = os.path.join(
+                self.storage_path, "docker", "registry", "v2", "repositories",
+                repo, "_manifests", "revisions", "sha256"
+            )
+            
+            if not os.path.exists(revisions_path):
+                return {"status": "error", "message": "No versions found", "versions": []}
+            
+            versions = []
+            current_digest = None
+            
+            # Get current digest for this tag
+            try:
+                current_digest = self._resolve_digest(repo, tag)
+            except:
+                pass
+            
+            # List all manifest digests
+            for digest_dir in os.listdir(revisions_path):
+                digest_full = f"sha256:{digest_dir}"
+                manifest_link = os.path.join(revisions_path, digest_dir, "link")
+                
+                if os.path.exists(manifest_link):
+                    # Get timestamp from directory mtime
+                    dir_path = os.path.join(revisions_path, digest_dir)
+                    mtime = os.path.getmtime(dir_path)
+                    
+                    # Try to get manifest data for size info
+                    try:
+                        m_resp = self.session.get(
+                            f"{self.registry_url}/{repo}/manifests/{digest_full}",
+                            headers=MANIFEST_HEADERS,
+                            timeout=5
+                        )
+                        if m_resp.status_code == 200:
+                            manifest_data = m_resp.json()
+                            size_bytes, _ = self._calculate_image_size(repo, manifest_data)
+                        else:
+                            size_bytes = 0
+                    except:
+                        size_bytes = 0
+                    
+                    versions.append({
+                        "digest": digest_full,
+                        "digest_short": digest_dir[:12],
+                        "is_current": (digest_full == current_digest),
+                        "timestamp": mtime,
+                        "size": size_bytes,
+                        "size_formatted": self._format_size(size_bytes) if size_bytes else "Unknown"
+                    })
+            
+            # Sort by timestamp, newest first
+            versions.sort(key=lambda x: x['timestamp'], reverse=True)
+            
+            return {
+                "status": "success",
+                "image_name": image_name,
+                "repo": repo,
+                "tag": tag,
+                "current_digest": current_digest,
+                "versions": versions
+            }
+            
+        except Exception as e:
+            logger.error(f"[Registry] Failed to list versions for {image_name}: {e}")
+            return {"status": "error", "message": str(e), "versions": []}
+    
+    def rollback_to_version(self, image_name, target_digest):
+        """Rollback an image tag to point to a specific digest"""
+        try:
+            repo, tag = _normalize_image_name(image_name)
+            
+            # Verify target digest exists
+            try:
+                m_resp = self.session.get(
+                    f"{self.registry_url}/{repo}/manifests/{target_digest}",
+                    headers=MANIFEST_HEADERS,
+                    timeout=5
+                )
+                if m_resp.status_code != 200:
+                    return {"status": "error", "message": f"Digest {target_digest} not found"}
+            except Exception as e:
+                return {"status": "error", "message": f"Cannot verify digest: {e}"}
+            
+            # Update the tag to point to target digest by PUTting the manifest
+            try:
+                # Get the manifest content
+                manifest_resp = self.session.get(
+                    f"{self.registry_url}/{repo}/manifests/{target_digest}",
+                    headers=MANIFEST_HEADERS,
+                    timeout=10
+                )
+                manifest_resp.raise_for_status()
+                manifest_content = manifest_resp.content
+                content_type = manifest_resp.headers.get('Content-Type', 'application/vnd.docker.distribution.manifest.v2+json')
+                
+                # PUT it back with the tag
+                put_headers = {
+                    'Content-Type': content_type
+                }
+                put_resp = self.session.put(
+                    f"{self.registry_url}/{repo}/manifests/{tag}",
+                    headers=put_headers,
+                    data=manifest_content,
+                    timeout=10
+                )
+                put_resp.raise_for_status()
+                
+                logger.info(f"[Registry] Rolled back {image_name} to {target_digest}")
+                
+                # Update last_updated timestamp
+                self._update_image_timestamp(image_name)
+                
+                return {
+                    "status": "success",
+                    "message": f"Rolled back {image_name} to {target_digest[:19]}",
+                    "image_name": image_name,
+                    "target_digest": target_digest
+                }
+                
+            except Exception as e:
+                logger.error(f"[Registry] Rollback failed: {e}")
+                return {"status": "error", "message": f"Rollback failed: {e}"}
+                
+        except Exception as e:
+            logger.error(f"[Registry] Rollback error for {image_name}: {e}")
+            return {"status": "error", "message": str(e)}
 
