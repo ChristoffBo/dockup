@@ -1415,28 +1415,42 @@ def setup_notifications():
 def check_docker_hub_rate_limit():
     """Check Docker Hub rate limit status"""
     try:
-        # Get authentication token
-        auth_url = "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull"
-        
         # Try to use Docker Hub credentials if available
         docker_config_path = os.path.expanduser('~/.docker/config.json')
-        username = None
-        password = None
+        auth_header = None
         
         if os.path.exists(docker_config_path):
             try:
                 with open(docker_config_path, 'r') as f:
                     docker_config = json.load(f)
                     auths = docker_config.get('auths', {})
-                    if 'https://index.docker.io/v1/' in auths:
-                        # Credentials are stored, but typically base64 encoded
-                        # For simplicity, we'll make anonymous request
-                        pass
-            except:
-                pass
+                    docker_hub_auth = auths.get('https://index.docker.io/v1/', {})
+                    
+                    if docker_hub_auth:
+                        # Extract base64 encoded username:password
+                        auth_str = docker_hub_auth.get('auth', '')
+                        if auth_str:
+                            # Decode base64 to get username:password
+                            import base64
+                            decoded = base64.b64decode(auth_str).decode('utf-8')
+                            username, password = decoded.split(':', 1) if ':' in decoded else (None, None)
+                            
+                            if username and password:
+                                # Create auth header for token request
+                                auth_header = (username, password)
+                                logger.info(f"Using authenticated Docker Hub credentials for rate limit check (user: {username})")
+            except Exception as e:
+                logger.warning(f"Failed to read Docker credentials: {e}")
         
-        # Get token (anonymous)
-        response = requests.get(auth_url, timeout=5)
+        # Get authentication token
+        auth_url = "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull"
+        
+        # Make token request (with or without credentials)
+        if auth_header:
+            response = requests.get(auth_url, auth=auth_header, timeout=5)
+        else:
+            response = requests.get(auth_url, timeout=5)
+            
         if response.status_code != 200:
             return None
         
