@@ -10333,6 +10333,127 @@ def registry_disable():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+def get_docker_hub_auth_status():
+    """Check if Docker Hub credentials are configured"""
+    try:
+        config_path = "/root/.docker/config.json"
+        if not os.path.exists(config_path):
+            return {
+                "authenticated": False,
+                "username": None,
+                "rate_limit": "100 API calls / 6 hours"
+            }
+        
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        # Check if Docker Hub auth exists
+        auths = config.get("auths", {})
+        docker_hub_auth = auths.get("https://index.docker.io/v1/", {})
+        
+        if docker_hub_auth:
+            # Parse username from auth string (base64 encoded username:password)
+            auth_str = docker_hub_auth.get("auth", "")
+            if auth_str:
+                import base64
+                decoded = base64.b64decode(auth_str).decode('utf-8')
+                username = decoded.split(':')[0] if ':' in decoded else "unknown"
+                
+                return {
+                    "authenticated": True,
+                    "username": username,
+                    "rate_limit": "200 API calls / 6 hours"
+                }
+        
+        return {
+            "authenticated": False,
+            "username": None,
+            "rate_limit": "100 API calls / 6 hours"
+        }
+    except Exception as e:
+        logger.error(f"Error checking Docker Hub auth: {e}")
+        return {
+            "authenticated": False,
+            "username": None,
+            "rate_limit": "100 API calls / 6 hours"
+        }
+
+
+def encrypt_docker_credential(credential):
+    """Encrypt a credential using bcrypt"""
+    try:
+        # Use bcrypt to hash (one-way) - but we need reversible encryption
+        # So we'll use base64 with a simple XOR for basic obfuscation
+        # Not military-grade but better than plaintext
+        import base64
+        key = b"dockup_registry_key_2026"
+        encrypted = bytearray()
+        for i, char in enumerate(credential.encode('utf-8')):
+            encrypted.append(char ^ key[i % len(key)])
+        return base64.b64encode(bytes(encrypted)).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Encryption error: {e}")
+        return None
+
+
+def decrypt_docker_credential(encrypted_credential):
+    """Decrypt a credential"""
+    try:
+        import base64
+        key = b"dockup_registry_key_2026"
+        encrypted = base64.b64decode(encrypted_credential.encode('utf-8'))
+        decrypted = bytearray()
+        for i, char in enumerate(encrypted):
+            decrypted.append(char ^ key[i % len(key)])
+        return bytes(decrypted).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Decryption error: {e}")
+        return None
+
+
+def docker_hub_auto_login():
+    """Auto-login to Docker Hub on startup if credentials are saved"""
+    try:
+        config = load_config()
+        docker_hub_config = config.get('docker_hub', {})
+        
+        if not docker_hub_config.get('auto_login', False):
+            return False
+        
+        encrypted_username = docker_hub_config.get('username')
+        encrypted_password = docker_hub_config.get('password')
+        
+        if not encrypted_username or not encrypted_password:
+            return False
+        
+        username = decrypt_docker_credential(encrypted_username)
+        password = decrypt_docker_credential(encrypted_password)
+        
+        if not username or not password:
+            logger.error("Failed to decrypt Docker Hub credentials")
+            return False
+        
+        # Perform docker login
+        logger.info("Auto-login to Docker Hub on startup...")
+        result = subprocess.run(
+            ['docker', 'login', '-u', username, '-p', password],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode == 0:
+            logger.info(f"✓ Auto-logged into Docker Hub as {username}")
+            return True
+        else:
+            logger.error(f"Docker Hub auto-login failed: {result.stderr}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Docker Hub auto-login error: {e}")
+        return False
+
+
 @app.route('/api/registry/status', methods=['GET'])
 @require_auth
 def registry_status():
@@ -10787,6 +10908,48 @@ def registry_check_updates():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/registry/image/<path:image_name>/check-update', methods=['POST'])
+@require_auth
+def registry_image_check_update(image_name):
+    """Manual trigger to check single image for update"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        # Perform smart update on single image
+        result = registry_mgr.perform_smart_update(image_name)
+        
+        # Send notification based on result
+        config = load_config()
+        notify_on_check = config.get("notify_on_registry_check", False)
+        notify_on_update = config.get("notify_on_registry_update", True)
+        
+        if result["status"] == "updated" and notify_on_update:
+            notify(
+                f"Registry - {image_name}",
+                f"✓ Updated to new version",
+                "success"
+            )
+        elif result["status"] == "up_to_date" and notify_on_check:
+            notify(
+                f"Registry - {image_name}",
+                f"Already up to date",
+                "info"
+            )
+        elif result["status"] == "error":
+            notify(
+                f"Registry - {image_name}",
+                f"Update check failed: {result.get('message', 'Unknown error')}",
+                "error"
+            )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry single image check failed for {image_name}: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/registry/cleanup-orphans', methods=['POST'])
 @require_auth
 def registry_cleanup_orphans():
@@ -10816,6 +10979,132 @@ def registry_sync_watched():
         
     except Exception as e:
         logger.error(f"Registry sync failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# Docker Hub Authentication Routes
+@app.route('/api/registry/docker-hub-auth', methods=['GET'])
+@require_auth
+def get_docker_hub_auth():
+    """Get Docker Hub authentication status"""
+    try:
+        auth_status = get_docker_hub_auth_status()
+        
+        # Check if auto-login is enabled
+        config = load_config()
+        auto_login = config.get('docker_hub', {}).get('auto_login', False)
+        auth_status['auto_login'] = auto_login
+        
+        return jsonify(auth_status)
+    except Exception as e:
+        logger.error(f"Error getting Docker Hub auth status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/registry/docker-hub-login', methods=['POST'])
+@require_auth
+def docker_hub_login():
+    """Login to Docker Hub with credentials"""
+    try:
+        data = request.get_json()
+        username = data.get('username', '').strip()
+        password = data.get('password', '').strip()
+        
+        if not username or not password:
+            return jsonify({'status': 'error', 'message': 'Username and password required'}), 400
+        
+        # Perform docker login
+        result = subprocess.run(
+            ['docker', 'login', '-u', username, '-p', password],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or 'Login failed'
+            logger.error(f"Docker Hub login failed: {error_msg}")
+            return jsonify({
+                'status': 'error',
+                'message': f'Login failed: {error_msg.strip()}'
+            }), 400
+        
+        # Verify login was successful
+        auth_status = get_docker_hub_auth_status()
+        
+        if auth_status['authenticated']:
+            # Save encrypted credentials for auto-login on restart
+            encrypted_username = encrypt_docker_credential(username)
+            encrypted_password = encrypt_docker_credential(password)
+            
+            config = load_config()
+            config['docker_hub'] = {
+                'auto_login': True,
+                'username': encrypted_username,
+                'password': encrypted_password
+            }
+            save_config()
+            
+            logger.info(f"Successfully logged into Docker Hub as {username} (credentials saved for auto-login)")
+            return jsonify({
+                'status': 'success',
+                'message': f'Logged in as {username}',
+                'username': username,
+                'rate_limit': '200 API calls / 6 hours',
+                'auto_login': True
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Login appeared to succeed but authentication not confirmed'
+            }), 500
+            
+    except subprocess.TimeoutExpired:
+        return jsonify({'status': 'error', 'message': 'Login timeout - Docker Hub may be unreachable'}), 500
+    except Exception as e:
+        logger.error(f"Docker Hub login error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/docker-hub-logout', methods=['POST'])
+@require_auth
+def docker_hub_logout():
+    """Logout from Docker Hub"""
+    try:
+        # Perform docker logout
+        result = subprocess.run(
+            ['docker', 'logout'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or 'Logout failed'
+            logger.error(f"Docker Hub logout failed: {error_msg}")
+            return jsonify({
+                'status': 'error',
+                'message': f'Logout failed: {error_msg.strip()}'
+            }), 400
+        
+        # Clear saved credentials from config
+        config = load_config()
+        if 'docker_hub' in config:
+            del config['docker_hub']
+            save_config()
+            logger.info("Cleared saved Docker Hub credentials")
+        
+        logger.info("Successfully logged out of Docker Hub")
+        return jsonify({
+            'status': 'success',
+            'message': 'Logged out successfully',
+            'rate_limit': '100 API calls / 6 hours'
+        })
+            
+    except subprocess.TimeoutExpired:
+        return jsonify({'status': 'error', 'message': 'Logout timeout'}), 500
+    except Exception as e:
+        logger.error(f"Docker Hub logout error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
@@ -11023,6 +11312,13 @@ if __name__ == '__main__':
         if registry_mgr:
             setup_registry_scheduler()
             logger.info("✓ Registry initialized and scheduled")
+            
+            # Auto-login to Docker Hub if credentials are saved
+            logger.info("Checking for Docker Hub auto-login...")
+            if docker_hub_auto_login():
+                logger.info("✓ Docker Hub auto-login successful")
+            else:
+                logger.info("Docker Hub auto-login not configured or failed")
         else:
             logger.info("Registry disabled, skipping")
         
