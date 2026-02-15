@@ -10994,15 +10994,21 @@ def get_docker_hub_auth():
     try:
         auth_status = get_docker_hub_auth_status()
         
-        # Check if auto-login is enabled
-        config = load_config()
+        # Check if auto-login is enabled using global config
+        global config
         auto_login = config.get('docker_hub', {}).get('auto_login', False)
         auth_status['auto_login'] = auto_login
         
         return jsonify(auth_status)
     except Exception as e:
         logger.error(f"Error getting Docker Hub auth status: {e}")
-        return jsonify({'error': str(e)}), 500
+        # Return safe fallback instead of error
+        return jsonify({
+            'authenticated': False,
+            'username': None,
+            'rate_limit': '100 API calls / 6 hours',
+            'auto_login': False
+        })
 
 
 @app.route('/api/registry/docker-hub-login', methods=['POST'])
@@ -11041,7 +11047,15 @@ def docker_hub_login():
             encrypted_username = encrypt_docker_credential(username)
             encrypted_password = encrypt_docker_credential(password)
             
-            config = load_config()
+            if not encrypted_username or not encrypted_password:
+                logger.error("Failed to encrypt Docker Hub credentials")
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Failed to save credentials for auto-login'
+                }), 500
+            
+            # Use global config
+            global config
             config['docker_hub'] = {
                 'auto_login': True,
                 'username': encrypted_username,
@@ -11091,8 +11105,8 @@ def docker_hub_logout():
                 'message': f'Logout failed: {error_msg.strip()}'
             }), 400
         
-        # Clear saved credentials from config
-        config = load_config()
+        # Clear saved credentials from config using global
+        global config
         if 'docker_hub' in config:
             del config['docker_hub']
             save_config()
