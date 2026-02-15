@@ -1415,42 +1415,28 @@ def setup_notifications():
 def check_docker_hub_rate_limit():
     """Check Docker Hub rate limit status"""
     try:
+        # Get authentication token
+        auth_url = "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull"
+        
         # Try to use Docker Hub credentials if available
         docker_config_path = os.path.expanduser('~/.docker/config.json')
-        auth_header = None
+        username = None
+        password = None
         
         if os.path.exists(docker_config_path):
             try:
                 with open(docker_config_path, 'r') as f:
                     docker_config = json.load(f)
                     auths = docker_config.get('auths', {})
-                    docker_hub_auth = auths.get('https://index.docker.io/v1/', {})
-                    
-                    if docker_hub_auth:
-                        # Extract base64 encoded username:password
-                        auth_str = docker_hub_auth.get('auth', '')
-                        if auth_str:
-                            # Decode base64 to get username:password
-                            import base64
-                            decoded = base64.b64decode(auth_str).decode('utf-8')
-                            username, password = decoded.split(':', 1) if ':' in decoded else (None, None)
-                            
-                            if username and password:
-                                # Create auth header for token request
-                                auth_header = (username, password)
-                                logger.info(f"Using authenticated Docker Hub credentials for rate limit check (user: {username})")
-            except Exception as e:
-                logger.warning(f"Failed to read Docker credentials: {e}")
+                    if 'https://index.docker.io/v1/' in auths:
+                        # Credentials are stored, but typically base64 encoded
+                        # For simplicity, we'll make anonymous request
+                        pass
+            except:
+                pass
         
-        # Get authentication token
-        auth_url = "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull"
-        
-        # Make token request (with or without credentials)
-        if auth_header:
-            response = requests.get(auth_url, auth=auth_header, timeout=5)
-        else:
-            response = requests.get(auth_url, timeout=5)
-            
+        # Get token (anonymous)
+        response = requests.get(auth_url, timeout=5)
         if response.status_code != 200:
             return None
         
@@ -11134,6 +11120,54 @@ def docker_hub_logout():
         return jsonify({'status': 'error', 'message': 'Logout timeout'}), 500
     except Exception as e:
         logger.error(f"Docker Hub logout error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# Registry Version History & Rollback Routes
+@app.route('/api/registry/image/<path:image_name>/versions', methods=['GET'])
+@require_auth
+def registry_image_versions(image_name):
+    """Get version history for an image"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        result = registry_mgr.list_image_versions(image_name)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Failed to get versions for {image_name}: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/registry/image/<path:image_name>/rollback', methods=['POST'])
+@require_auth
+def registry_image_rollback(image_name):
+    """Rollback an image to a specific version"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        data = request.get_json()
+        target_digest = data.get('digest')
+        
+        if not target_digest:
+            return jsonify({'status': 'error', 'message': 'Digest required'}), 400
+        
+        result = registry_mgr.rollback_to_version(image_name, target_digest)
+        
+        # Send notification if successful
+        if result['status'] == 'success':
+            notify(
+                f"Registry - {image_name}",
+                f"Rolled back to {target_digest[:19]}...",
+                "success"
+            )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Rollback failed for {image_name}: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
