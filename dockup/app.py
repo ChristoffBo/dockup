@@ -10345,10 +10345,10 @@ def get_docker_hub_auth_status():
             }
         
         with open(config_path, 'r') as f:
-            config = json.load(f)
+            docker_config = json.load(f)
         
         # Check if Docker Hub auth exists
-        auths = config.get("auths", {})
+        auths = docker_config.get("auths", {})
         docker_hub_auth = auths.get("https://index.docker.io/v1/", {})
         
         if docker_hub_auth:
@@ -10380,11 +10380,8 @@ def get_docker_hub_auth_status():
 
 
 def encrypt_docker_credential(credential):
-    """Encrypt a credential using bcrypt"""
+    """Encrypt a credential using XOR cipher"""
     try:
-        # Use bcrypt to hash (one-way) - but we need reversible encryption
-        # So we'll use base64 with a simple XOR for basic obfuscation
-        # Not military-grade but better than plaintext
         import base64
         key = b"dockup_registry_key_2026"
         encrypted = bytearray()
@@ -10414,7 +10411,6 @@ def decrypt_docker_credential(encrypted_credential):
 def docker_hub_auto_login():
     """Auto-login to Docker Hub on startup if credentials are saved"""
     try:
-        # Use global config that was already loaded
         global config
         docker_hub_config = config.get('docker_hub', {})
         
@@ -10912,48 +10908,6 @@ def registry_check_updates():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-@app.route('/api/registry/image/<path:image_name>/check-update', methods=['POST'])
-@require_auth
-def registry_image_check_update(image_name):
-    """Manual trigger to check single image for update"""
-    try:
-        if not registry_mgr:
-            return jsonify({'error': 'Registry not initialized'}), 400
-        
-        # Perform smart update on single image
-        result = registry_mgr.perform_smart_update(image_name)
-        
-        # Send notification based on result
-        config = load_config()
-        notify_on_check = config.get("notify_on_registry_check", False)
-        notify_on_update = config.get("notify_on_registry_update", True)
-        
-        if result["status"] == "updated" and notify_on_update:
-            notify(
-                f"Registry - {image_name}",
-                f"✓ Updated to new version",
-                "success"
-            )
-        elif result["status"] == "up_to_date" and notify_on_check:
-            notify(
-                f"Registry - {image_name}",
-                f"Already up to date",
-                "info"
-            )
-        elif result["status"] == "error":
-            notify(
-                f"Registry - {image_name}",
-                f"Update check failed: {result.get('message', 'Unknown error')}",
-                "error"
-            )
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Registry single image check failed for {image_name}: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
 @app.route('/api/registry/cleanup-orphans', methods=['POST'])
 @require_auth
 def registry_cleanup_orphans():
@@ -10983,6 +10937,49 @@ def registry_sync_watched():
         
     except Exception as e:
         logger.error(f"Registry sync failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# Per-Image Update Check
+@app.route('/api/registry/image/<path:image_name>/check-update', methods=['POST'])
+@require_auth
+def registry_image_check_update(image_name):
+    """Manual trigger to check single image for update"""
+    try:
+        if not registry_mgr:
+            return jsonify({'error': 'Registry not initialized'}), 400
+        
+        # Perform smart update on single image
+        result = registry_mgr.perform_smart_update(image_name)
+        
+        # Send notification based on result
+        global config
+        notify_on_check = config.get("notify_on_registry_check", False)
+        notify_on_update = config.get("notify_on_registry_update", True)
+        
+        if result["status"] == "updated" and notify_on_update:
+            notify(
+                f"Registry - {image_name}",
+                f"✓ Updated to new version",
+                "success"
+            )
+        elif result["status"] == "up_to_date" and notify_on_check:
+            notify(
+                f"Registry - {image_name}",
+                f"Already up to date",
+                "info"
+            )
+        elif result["status"] == "error":
+            notify(
+                f"Registry - {image_name}",
+                f"Update check failed: {result.get('message', 'Unknown error')}",
+                "error"
+            )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Registry single image check failed for {image_name}: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
