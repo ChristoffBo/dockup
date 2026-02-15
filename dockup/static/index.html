@@ -1202,9 +1202,20 @@
                     
                     <!-- Docker Hub Rate Limit Gauge -->
                     <div v-if="dockerHubRateLimit && !dockerHubRateLimit.unlimited" style="padding: 20px; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
-                        <div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">
+                        <div style="font-size: 13px; color: #94a3b8; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px;">
                             <i class="fab fa-docker"></i> Docker Hub Rate Limit
                         </div>
+                        
+                        <!-- Auth Status -->
+                        <div v-if="dockerHubAuthStatus" style="font-size: 11px; margin-bottom: 10px;">
+                            <span v-if="dockerHubAuthStatus.authenticated" style="color: #10b981;">
+                                <i class="fas fa-check-circle"></i> Authenticated as {{ dockerHubAuthStatus.username }}
+                            </span>
+                            <span v-else style="color: #f59e0b;">
+                                <i class="fas fa-exclamation-circle"></i> Not Authenticated
+                            </span>
+                        </div>
+                        
                         <div class="radial-gauge">
                             <svg width="140" height="140">
                                 <circle class="radial-gauge-bg" cx="70" cy="70" r="60"></circle>
@@ -1228,9 +1239,20 @@
                     </div>
                     
                     <div v-if="dockerHubRateLimit && dockerHubRateLimit.unlimited" style="padding: 20px; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
-                        <div style="font-size: 13px; color: #94a3b8; margin-bottom: 10px;">
+                        <div style="font-size: 13px; color: #94a3b8; margin-bottom: 5px;">
                             <i class="fab fa-docker"></i> Docker Hub Rate Limit
                         </div>
+                        
+                        <!-- Auth Status -->
+                        <div v-if="dockerHubAuthStatus" style="font-size: 11px; margin-bottom: 10px;">
+                            <span v-if="dockerHubAuthStatus.authenticated" style="color: #10b981;">
+                                <i class="fas fa-check-circle"></i> Authenticated as {{ dockerHubAuthStatus.username }}
+                            </span>
+                            <span v-else style="color: #f59e0b;">
+                                <i class="fas fa-exclamation-circle"></i> Not Authenticated
+                            </span>
+                        </div>
+                        
                         <div style="font-size: 32px; font-weight: bold; color: #22c55e;">
                             <i class="fas fa-infinity"></i> Unlimited
                         </div>
@@ -5449,6 +5471,14 @@ sudo systemctl restart docker</pre>
                 this.checkVersion(); // Check for updates
                 this.loadHostStats();
                 this.loadDockerHubRateLimit();
+                
+                // Load Docker Hub auth status if registry enabled
+                if (this.settings.registry_enabled) {
+                    this.loadDockerHubAuthStatus().catch(err => {
+                        console.warn('Docker Hub auth check failed on mount:', err);
+                    });
+                }
+                
                 this.loadAppdataSizes(); // Load appdata sizes
                 this.connectWebSocket();
                 
@@ -9160,6 +9190,7 @@ sudo systemctl restart docker</pre>
                             this.dockerHubUsername = '';
                             this.dockerHubPassword = '';
                             await this.loadDockerHubAuthStatus();
+                            this.loadDockerHubRateLimit(); // Refresh dashboard gauge
                         } else {
                             this.showToast('Login failed: ' + data.message, 'error');
                         }
@@ -9182,6 +9213,7 @@ sudo systemctl restart docker</pre>
                         if (data.status === 'success') {
                             this.showToast('✓ Logged out successfully', 'success');
                             await this.loadDockerHubAuthStatus();
+                            this.loadDockerHubRateLimit(); // Refresh dashboard gauge
                         } else {
                             this.showToast('Logout failed: ' + data.message, 'error');
                         }
