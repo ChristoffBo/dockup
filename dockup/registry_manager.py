@@ -428,7 +428,21 @@ class RegistryManager:
         # Disable auto_gc during batch updates - GC runs once at end in check_all_watched_updates
         pull_status = self.pull_image(image_name, auto_gc=False)
         
-        # DON'T delete old manifest here - let retention policy handle it
+        # For unwatched images: delete old manifest immediately (keep only latest)
+        # For watched images: let retention policy handle it
+        if pull_status["status"] == "success" and local_digest:
+            config = self._get_config()
+            watched_images = config.get("registry", {}).get("watched_images", [])
+            is_watched = any(item["image"] == image_name for item in watched_images)
+            
+            if not is_watched:
+                # Not watched - delete old manifest to keep only latest
+                try:
+                    delete_url = f"{self.registry_url}/{repo}/manifests/{local_digest}"
+                    self.session.delete(delete_url, timeout=10)
+                    logger.info(f"[Registry] Deleted old manifest for unwatched image {image_name}")
+                except Exception as e:
+                    logger.warning(f"[Registry] Failed to delete old manifest: {e}")
 
         # Update last_updated timestamp
         self._update_image_timestamp(image_name)
@@ -1313,21 +1327,21 @@ class RegistryManager:
                 logger.warning(f"Invalid retention policy '{retention}' for {image_name}")
                 continue
             
-            # Get all manifest revisions for this image
-            revisions_path = os.path.join(
+            # Get all manifest revisions for THIS SPECIFIC TAG
+            tag_index_path = os.path.join(
                 self.storage_path, "docker", "registry", "v2", "repositories",
-                repo, "_manifests", "revisions", "sha256"
+                repo, "_manifests", "tags", tag, "index", "sha256"
             )
             
-            if not os.path.exists(revisions_path):
+            if not os.path.exists(tag_index_path):
                 continue
             
             try:
                 # List all manifest digests with their timestamps
                 manifests = []
-                for digest_dir in os.listdir(revisions_path):
+                for digest_dir in os.listdir(tag_index_path):
                     digest_full = f"sha256:{digest_dir}"
-                    dir_path = os.path.join(revisions_path, digest_dir)
+                    dir_path = os.path.join(tag_index_path, digest_dir)
                     
                     if os.path.isdir(dir_path):
                         mtime = os.path.getmtime(dir_path)
@@ -1640,14 +1654,14 @@ class RegistryManager:
         try:
             repo, tag = _normalize_image_name(image_name)
             
-            # Path to manifests revisions in registry storage
-            revisions_path = os.path.join(
+            # Path to tag-specific manifest index (version history for THIS tag only)
+            tag_index_path = os.path.join(
                 self.storage_path, "docker", "registry", "v2", "repositories",
-                repo, "_manifests", "revisions", "sha256"
+                repo, "_manifests", "tags", tag, "index", "sha256"
             )
             
-            if not os.path.exists(revisions_path):
-                return {"status": "error", "message": "No versions found", "versions": []}
+            if not os.path.exists(tag_index_path):
+                return {"status": "success", "message": "No version history", "versions": [], "image_name": image_name, "repo": repo, "tag": tag}
             
             versions = []
             current_digest = None
@@ -1658,14 +1672,14 @@ class RegistryManager:
             except:
                 pass
             
-            # List all manifest digests
-            for digest_dir in os.listdir(revisions_path):
+            # List all manifest digests that this tag has pointed to
+            for digest_dir in os.listdir(tag_index_path):
                 digest_full = f"sha256:{digest_dir}"
-                manifest_link = os.path.join(revisions_path, digest_dir, "link")
+                manifest_link = os.path.join(tag_index_path, digest_dir, "link")
                 
                 if os.path.exists(manifest_link):
                     # Get timestamp from directory mtime
-                    dir_path = os.path.join(revisions_path, digest_dir)
+                    dir_path = os.path.join(tag_index_path, digest_dir)
                     mtime = os.path.getmtime(dir_path)
                     
                     # Try to get manifest data for size info
