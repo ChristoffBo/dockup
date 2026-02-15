@@ -10414,7 +10414,8 @@ def decrypt_docker_credential(encrypted_credential):
 def docker_hub_auto_login():
     """Auto-login to Docker Hub on startup if credentials are saved"""
     try:
-        config = load_config()
+        # Use global config that was already loaded
+        global config
         docker_hub_config = config.get('docker_hub', {})
         
         if not docker_hub_config.get('auto_login', False):
@@ -10430,7 +10431,7 @@ def docker_hub_auto_login():
         password = decrypt_docker_credential(encrypted_password)
         
         if not username or not password:
-            logger.error("Failed to decrypt Docker Hub credentials")
+            logger.warning("Failed to decrypt Docker Hub credentials")
             return False
         
         # Perform docker login
@@ -10446,11 +10447,14 @@ def docker_hub_auto_login():
             logger.info(f"✓ Auto-logged into Docker Hub as {username}")
             return True
         else:
-            logger.error(f"Docker Hub auto-login failed: {result.stderr}")
+            logger.warning(f"Docker Hub auto-login failed: {result.stderr}")
             return False
             
+    except subprocess.TimeoutExpired:
+        logger.warning("Docker Hub auto-login timeout")
+        return False
     except Exception as e:
-        logger.error(f"Docker Hub auto-login error: {e}")
+        logger.warning(f"Docker Hub auto-login error: {e}")
         return False
 
 
@@ -11314,11 +11318,14 @@ if __name__ == '__main__':
             logger.info("✓ Registry initialized and scheduled")
             
             # Auto-login to Docker Hub if credentials are saved
-            logger.info("Checking for Docker Hub auto-login...")
-            if docker_hub_auto_login():
-                logger.info("✓ Docker Hub auto-login successful")
-            else:
-                logger.info("Docker Hub auto-login not configured or failed")
+            try:
+                logger.info("Checking for Docker Hub auto-login...")
+                if docker_hub_auto_login():
+                    logger.info("✓ Docker Hub auto-login successful")
+                else:
+                    logger.info("Docker Hub auto-login not configured or skipped")
+            except Exception as e:
+                logger.warning(f"Docker Hub auto-login failed: {e}")
         else:
             logger.info("Registry disabled, skipping")
         
