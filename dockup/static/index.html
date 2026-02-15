@@ -2333,6 +2333,11 @@
                         </button>
                     </div>
 
+                    <div v-else-if="!registryStatus" style="padding: 40px; text-align: center;">
+                        <i class="fas fa-spinner fa-spin" style="font-size: 48px; color: #888; margin-bottom: 20px;"></i>
+                        <p style="color: #888;">Loading registry status...</p>
+                    </div>
+
                     <div v-else>
                         <!-- Container Status Card -->
                         <div style="margin-bottom: 20px; padding: 20px; background: #1e1e1e; border-radius: 8px; border-left: 4px solid #10b981;" v-if="registryStatus && registryStatus.container">
@@ -2400,11 +2405,14 @@
                                 <div style="font-size: 12px; color: #888; margin-bottom: 5px;">Docker Hub</div>
                                 <div v-if="dockerHubAuthStatus && dockerHubAuthStatus.authenticated" style="color: #10b981;">
                                     <i class="fas fa-check-circle"></i> {{ dockerHubAuthStatus.username }}
-                                    <div style="font-size: 11px; color: #888; margin-top: 3px;">200/6hr</div>
+                                    <div style="font-size: 11px; color: #888; margin-top: 3px;">{{ dockerHubAuthStatus.rate_limit ? dockerHubAuthStatus.rate_limit.replace(' API calls / 6 hours', '/6hr') : '200/6hr' }}</div>
                                 </div>
-                                <div v-else style="color: #f59e0b;">
+                                <div v-else-if="dockerHubAuthStatus" style="color: #f59e0b;">
                                     <i class="fas fa-exclamation-circle"></i> Not Auth
-                                    <div style="font-size: 11px; color: #888; margin-top: 3px;">100/6hr</div>
+                                    <div style="font-size: 11px; color: #888; margin-top: 3px;">{{ dockerHubAuthStatus.rate_limit ? dockerHubAuthStatus.rate_limit.replace(' API calls / 6 hours', '/6hr') : '100/6hr' }}</div>
+                                </div>
+                                <div v-else style="color: #888;">
+                                    <i class="fas fa-spinner fa-spin"></i> Loading...
                                 </div>
                             </div>
                         </div>
