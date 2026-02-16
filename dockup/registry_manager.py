@@ -1434,7 +1434,9 @@ class RegistryManager:
                         # This tag points to the manifest we want to delete!
                         logger.info(f"[Registry] Manifest {manifest_digest[:19]}... is referenced by {repo}:{tag}")
                         return True
-                except:
+                except Exception as e:
+                    # If we can't resolve this tag's digest, skip it
+                    logger.debug(f"[Registry] Could not resolve digest for {repo}:{tag}: {e}")
                     pass
             
             return False  # No other tags reference this manifest
@@ -1455,7 +1457,13 @@ class RegistryManager:
             blobs_path = os.path.join(self.storage_path, "docker", "registry", "v2", "blobs")
             
             return os.path.isdir(repos_path) and os.path.isdir(blobs_path)
-        except:
+        except (OSError, IOError) as e:
+            # Filesystem access errors (permissions, I/O errors)
+            logger.debug(f"[Registry] Filesystem check failed: {e}")
+            return False
+        except Exception as e:
+            # Other unexpected errors
+            logger.warning(f"[Registry] Unexpected error checking filesystem storage: {e}")
             return False
     
     def _safe_cleanup_tag_index(self, repo, tag, manifest_digest, image_name):
@@ -1488,9 +1496,9 @@ class RegistryManager:
                 if current_digest == manifest_digest:
                     logger.warning(f"[Registry] Refusing to cleanup tag index - manifest is current! {manifest_digest[:19]}...")
                     return False
-            except:
+            except Exception as e:
                 # If we can't resolve current digest, be conservative and don't delete
-                logger.warning(f"[Registry] Cannot verify current digest, skipping cleanup for safety")
+                logger.warning(f"[Registry] Cannot verify current digest for {repo}:{tag}, skipping cleanup for safety: {e}")
                 return False
             
             # SAFEGUARD 4: Construct paths carefully
