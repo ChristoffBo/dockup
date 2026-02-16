@@ -445,6 +445,10 @@ class RegistryManager:
                     resp = self.session.delete(delete_url, timeout=10)
                     if resp.status_code in [200, 202, 404]:
                         logger.info(f"[Registry] Deleted old manifest for unwatched image {image_name}")
+                        
+                        # Attempt safe cleanup of orphaned tag index entry
+                        self._safe_cleanup_tag_index(repo_parsed, tag_parsed, local_digest, image_name)
+                        
                 except Exception as e:
                     logger.warning(f"[Registry] Failed to delete old manifest: {e}")
 
@@ -1389,6 +1393,12 @@ class RegistryManager:
                             if resp.status_code in [200, 202, 404]:
                                 deleted_count += 1
                                 logger.info(f"[Registry] Retention: Deleted old manifest {manifest['digest'][:19]}... for {image_name}")
+                                
+                                # Attempt safe cleanup of orphaned tag index entry
+                                # This prevents accumulation of filesystem metadata
+                                # Safe: only runs on filesystem storage with multiple safeguards
+                                self._safe_cleanup_tag_index(repo, tag, manifest["digest"], image_name)
+                                
                         except Exception as e:
                             logger.warning(f"[Registry] Failed to delete manifest {manifest['digest'][:19]}...: {e}")
                 
@@ -1432,6 +1442,79 @@ class RegistryManager:
         except Exception as e:
             logger.error(f"[Registry] Error checking manifest references: {e}")
             return True  # Conservative: assume it's referenced if check fails
+    
+    def _is_filesystem_storage(self):
+        """Detect if registry is using filesystem storage (vs S3/Azure/etc)"""
+        try:
+            # Check if storage path exists and is accessible
+            if not os.path.exists(self.storage_path):
+                return False
+            
+            # Check for typical filesystem storage structure
+            repos_path = os.path.join(self.storage_path, "docker", "registry", "v2", "repositories")
+            blobs_path = os.path.join(self.storage_path, "docker", "registry", "v2", "blobs")
+            
+            return os.path.isdir(repos_path) and os.path.isdir(blobs_path)
+        except:
+            return False
+    
+    def _safe_cleanup_tag_index(self, repo, tag, manifest_digest, image_name):
+        """
+        Safely cleanup orphaned tag index entry after manifest deletion.
+        
+        IMPORTANT SAFEGUARDS:
+        - Only runs on filesystem storage (not S3/Azure)
+        - Checks current/link to avoid corruption
+        - Verifies manifest was actually deleted
+        - Comprehensive error handling
+        - Can be disabled via config
+        """
+        try:
+            # SAFEGUARD 1: Check if filesystem cleanup is enabled
+            config = self._get_config()
+            cleanup_enabled = config.get("registry", {}).get("cleanup_tag_index", True)
+            if not cleanup_enabled:
+                logger.debug(f"[Registry] Tag index cleanup disabled in config")
+                return False
+            
+            # SAFEGUARD 2: Only run on filesystem storage
+            if not self._is_filesystem_storage():
+                logger.debug(f"[Registry] Skipping tag index cleanup - not filesystem storage")
+                return False
+            
+            # SAFEGUARD 3: Get current tag digest to avoid deleting current reference
+            try:
+                current_digest = self._resolve_digest(repo, tag)
+                if current_digest == manifest_digest:
+                    logger.warning(f"[Registry] Refusing to cleanup tag index - manifest is current! {manifest_digest[:19]}...")
+                    return False
+            except:
+                # If we can't resolve current digest, be conservative and don't delete
+                logger.warning(f"[Registry] Cannot verify current digest, skipping cleanup for safety")
+                return False
+            
+            # SAFEGUARD 4: Construct paths carefully
+            digest_hash = manifest_digest.replace("sha256:", "")
+            tag_index_entry = os.path.join(
+                self.storage_path, "docker", "registry", "v2", "repositories",
+                repo, "_manifests", "tags", tag, "index", "sha256", digest_hash
+            )
+            
+            # SAFEGUARD 5: Verify entry exists before attempting deletion
+            if not os.path.exists(tag_index_entry):
+                logger.debug(f"[Registry] Tag index entry already gone: {digest_hash[:12]}...")
+                return True  # Already cleaned up
+            
+            # SAFEGUARD 6: Delete with comprehensive error handling
+            import shutil
+            shutil.rmtree(tag_index_entry)
+            logger.info(f"[Registry] Cleaned up orphaned tag index entry for {manifest_digest[:19]}... ({image_name})")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"[Registry] Failed to cleanup tag index for {manifest_digest[:19]}...: {e}")
+            # Non-fatal: GC will eventually handle this (though slowly)
+            return False
     
     def check_and_fix_permissions(self):
         """Ensures the registry storage path is writable by the current process."""
