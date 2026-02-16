@@ -442,8 +442,23 @@ class RegistryManager:
                 # Not watched - delete old manifest to keep only latest
                 try:
                     delete_url = f"{self.registry_url}/{repo_parsed}/manifests/{local_digest}"
-                    self.session.delete(delete_url, timeout=10)
-                    logger.info(f"[Registry] Deleted old manifest for unwatched image {image_name}")
+                    resp = self.session.delete(delete_url, timeout=10)
+                    if resp.status_code in [200, 202, 404]:
+                        logger.info(f"[Registry] Deleted old manifest for unwatched image {image_name}")
+                        
+                        # Also remove tag index entry to prevent orphaned references
+                        try:
+                            digest_hash = local_digest.replace("sha256:", "")
+                            tag_index_entry = os.path.join(
+                                self.storage_path, "docker", "registry", "v2", "repositories",
+                                repo_parsed, "_manifests", "tags", tag_parsed, "index", "sha256", digest_hash
+                            )
+                            if os.path.exists(tag_index_entry):
+                                import shutil
+                                shutil.rmtree(tag_index_entry)
+                                logger.info(f"[Registry] Cleaned up tag index entry for unwatched {image_name}")
+                        except Exception as cleanup_err:
+                            logger.warning(f"[Registry] Failed to cleanup tag index: {cleanup_err}")
                 except Exception as e:
                     logger.warning(f"[Registry] Failed to delete old manifest: {e}")
 
@@ -1388,6 +1403,22 @@ class RegistryManager:
                             if resp.status_code in [200, 202, 404]:
                                 deleted_count += 1
                                 logger.info(f"[Registry] Retention: Deleted old manifest {manifest['digest'][:19]}... for {image_name}")
+                                
+                                # CRITICAL: Also remove the tag index entry to prevent orphaned references
+                                # The Docker Registry API deletes the manifest blob but leaves tag index entries
+                                try:
+                                    digest_hash = manifest["digest"].replace("sha256:", "")
+                                    tag_index_entry = os.path.join(
+                                        self.storage_path, "docker", "registry", "v2", "repositories",
+                                        repo, "_manifests", "tags", tag, "index", "sha256", digest_hash
+                                    )
+                                    if os.path.exists(tag_index_entry):
+                                        import shutil
+                                        shutil.rmtree(tag_index_entry)
+                                        logger.info(f"[Registry] Cleaned up tag index entry for {manifest['digest'][:19]}...")
+                                except Exception as cleanup_err:
+                                    logger.warning(f"[Registry] Failed to cleanup tag index: {cleanup_err}")
+                                    
                         except Exception as e:
                             logger.warning(f"[Registry] Failed to delete manifest {manifest['digest'][:19]}...: {e}")
                 
