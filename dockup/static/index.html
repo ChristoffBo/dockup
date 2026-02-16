@@ -2620,18 +2620,20 @@
                                             <tr v-for="backup in registryBackups" :key="backup.filename" style="border-bottom: 1px solid #2a2a2a;">
                                                 <td style="padding: 10px;">
                                                     <code style="font-size: 12px;">{{ backup.filename }}</code>
+                                                    <span v-if="!backup.in_database" style="margin-left: 8px; padding: 2px 6px; background: #ff6b35; color: white; font-size: 10px; border-radius: 3px;">IMPORTED</span>
+                                                    <span v-else-if="backup.status === 'completed'" style="margin-left: 8px; padding: 2px 6px; background: #28a745; color: white; font-size: 10px; border-radius: 3px;">TRACKED</span>
                                                 </td>
                                                 <td style="padding: 10px; text-align: right;">
-                                                    {{ backup.size_formatted }}
+                                                    {{ backup.size_mb ? (backup.size_mb.toFixed(1) + ' MB') : 'Unknown' }}
                                                 </td>
                                                 <td style="padding: 10px;">
-                                                    {{ formatRelativeTime(backup.created) }}
+                                                    {{ formatRelativeTime(backup.created_at) }}
                                                 </td>
                                                 <td style="padding: 10px; text-align: right;">
                                                     <button @click="restoreRegistryBackup(backup)" class="btn btn-primary btn-sm" style="margin-right: 5px;">
                                                         <i class="fas fa-undo"></i> Restore
                                                     </button>
-                                                    <button @click="deleteRegistryBackup(backup)" class="btn btn-danger btn-sm">
+                                                    <button @click="deleteRegistryBackup(backup)" class="btn btn-danger btn-sm" :disabled="!backup.id" :title="!backup.id ? 'Cannot delete imported backups from UI' : 'Delete backup'">
                                                         <i class="fas fa-trash"></i>
                                                     </button>
                                                 </td>
@@ -9127,16 +9129,23 @@ sudo systemctl restart docker</pre>
                 },
                 
                 async restoreRegistryBackup(backup) {
-                    if (!confirm(`Restore registry from backup?\n\nFile: ${backup.filename}\nSize: ${backup.size_formatted}\nCreated: ${this.formatRelativeTime(backup.created)}\n\n⚠️ This will STOP the registry, REPLACE all data, and RESTART the registry.\n\nContinue?`)) {
+                    const backupType = backup.in_database ? 'database' : 'external/imported';
+                    if (!confirm(`Restore registry from backup?\n\nFile: ${backup.filename}\nSize: ${backup.size_mb ? (backup.size_mb.toFixed(1) + ' MB') : 'Unknown'}\nType: ${backupType}\nCreated: ${this.formatRelativeTime(backup.created_at)}\n\n⚠️ This will STOP the registry, REPLACE all data, and RESTART the registry.\n\nContinue?`)) {
                         return;
                     }
                     
                     try {
                         this.showToast('Restoring registry...', 'info');
+                        
+                        // Prefer backup_id if available (database backup), otherwise use path (external backup)
+                        const requestBody = backup.id 
+                            ? {backup_id: backup.id}
+                            : {backup_path: backup.path};
+                        
                         const response = await fetch('/api/registry/restore', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({backup_path: backup.path})
+                            body: JSON.stringify(requestBody)
                         });
                         const data = await response.json();
                         
@@ -9155,12 +9164,18 @@ sudo systemctl restart docker</pre>
                 },
                 
                 async deleteRegistryBackup(backup) {
-                    if (!confirm(`Delete backup?\n\n${backup.filename}\n${backup.size_formatted}`)) {
+                    // Check if backup has ID (database backup vs external/imported)
+                    if (!backup.id) {
+                        this.showToast('Cannot delete external backups. Delete the file manually from backup location.', 'warning');
+                        return;
+                    }
+                    
+                    if (!confirm(`Delete backup?\n\n${backup.filename}\n${backup.size_mb ? (backup.size_mb.toFixed(1) + ' MB') : 'Unknown size'}`)) {
                         return;
                     }
                     
                     try {
-                        const response = await fetch(`/api/registry/backups/${encodeURIComponent(backup.filename)}`, {
+                        const response = await fetch(`/api/registry/backups/${backup.id}`, {
                             method: 'DELETE'
                         });
                         const data = await response.json();
