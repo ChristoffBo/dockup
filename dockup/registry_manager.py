@@ -442,13 +442,8 @@ class RegistryManager:
                 # Not watched - delete old manifest to keep only latest
                 try:
                     delete_url = f"{self.registry_url}/{repo_parsed}/manifests/{local_digest}"
-                    resp = self.session.delete(delete_url, timeout=10)
-                    if resp.status_code in [200, 202, 404]:
-                        logger.info(f"[Registry] Deleted old manifest for unwatched image {image_name}")
-                        
-                        # Attempt safe cleanup of orphaned tag index entry
-                        self._safe_cleanup_tag_index(repo_parsed, tag_parsed, local_digest, image_name)
-                        
+                    self.session.delete(delete_url, timeout=10)
+                    logger.info(f"[Registry] Deleted old manifest for unwatched image {image_name}")
                 except Exception as e:
                     logger.warning(f"[Registry] Failed to delete old manifest: {e}")
 
@@ -1321,23 +1316,18 @@ class RegistryManager:
             image_name = item["image"]
             repo, tag = _normalize_image_name(image_name)
             
-            # Skip if retention is "keep_all"
-            if retention == "keep_all":
+            # Skip if retention is "latest" or "keep_all"
+            if retention == "latest" or retention == "keep_all":
                 continue
             
-            # Determine how many versions to keep
-            if retention == "latest":
-                keep_count = 1  # "latest" means keep only 1 version
-            elif retention.startswith("keep_"):
-                # Parse keep_N value
-                try:
-                    keep_count = int(retention.split("_")[1])
-                except:
-                    logger.warning(f"Invalid retention policy '{retention}' for {image_name}")
-                    continue
-            else:
-                # Unknown retention policy
-                logger.warning(f"Unknown retention policy '{retention}' for {image_name}")
+            # Parse keep_N value
+            if not retention.startswith("keep_"):
+                continue
+                
+            try:
+                keep_count = int(retention.split("_")[1])
+            except:
+                logger.warning(f"Invalid retention policy '{retention}' for {image_name}")
                 continue
             
             # Get all manifest revisions for THIS SPECIFIC TAG
@@ -1393,12 +1383,6 @@ class RegistryManager:
                             if resp.status_code in [200, 202, 404]:
                                 deleted_count += 1
                                 logger.info(f"[Registry] Retention: Deleted old manifest {manifest['digest'][:19]}... for {image_name}")
-                                
-                                # Attempt safe cleanup of orphaned tag index entry
-                                # This prevents accumulation of filesystem metadata
-                                # Safe: only runs on filesystem storage with multiple safeguards
-                                self._safe_cleanup_tag_index(repo, tag, manifest["digest"], image_name)
-                                
                         except Exception as e:
                             logger.warning(f"[Registry] Failed to delete manifest {manifest['digest'][:19]}...: {e}")
                 
@@ -1434,9 +1418,7 @@ class RegistryManager:
                         # This tag points to the manifest we want to delete!
                         logger.info(f"[Registry] Manifest {manifest_digest[:19]}... is referenced by {repo}:{tag}")
                         return True
-                except Exception as e:
-                    # If we can't resolve this tag's digest, skip it
-                    logger.debug(f"[Registry] Could not resolve digest for {repo}:{tag}: {e}")
+                except:
                     pass
             
             return False  # No other tags reference this manifest
@@ -1444,85 +1426,6 @@ class RegistryManager:
         except Exception as e:
             logger.error(f"[Registry] Error checking manifest references: {e}")
             return True  # Conservative: assume it's referenced if check fails
-    
-    def _is_filesystem_storage(self):
-        """Detect if registry is using filesystem storage (vs S3/Azure/etc)"""
-        try:
-            # Check if storage path exists and is accessible
-            if not os.path.exists(self.storage_path):
-                return False
-            
-            # Check for typical filesystem storage structure
-            repos_path = os.path.join(self.storage_path, "docker", "registry", "v2", "repositories")
-            blobs_path = os.path.join(self.storage_path, "docker", "registry", "v2", "blobs")
-            
-            return os.path.isdir(repos_path) and os.path.isdir(blobs_path)
-        except (OSError, IOError) as e:
-            # Filesystem access errors (permissions, I/O errors)
-            logger.debug(f"[Registry] Filesystem check failed: {e}")
-            return False
-        except Exception as e:
-            # Other unexpected errors
-            logger.warning(f"[Registry] Unexpected error checking filesystem storage: {e}")
-            return False
-    
-    def _safe_cleanup_tag_index(self, repo, tag, manifest_digest, image_name):
-        """
-        Safely cleanup orphaned tag index entry after manifest deletion.
-        
-        IMPORTANT SAFEGUARDS:
-        - Only runs on filesystem storage (not S3/Azure)
-        - Checks current/link to avoid corruption
-        - Verifies manifest was actually deleted
-        - Comprehensive error handling
-        - Can be disabled via config
-        """
-        try:
-            # SAFEGUARD 1: Check if filesystem cleanup is enabled
-            config = self._get_config()
-            cleanup_enabled = config.get("registry", {}).get("cleanup_tag_index", True)
-            if not cleanup_enabled:
-                logger.debug(f"[Registry] Tag index cleanup disabled in config")
-                return False
-            
-            # SAFEGUARD 2: Only run on filesystem storage
-            if not self._is_filesystem_storage():
-                logger.debug(f"[Registry] Skipping tag index cleanup - not filesystem storage")
-                return False
-            
-            # SAFEGUARD 3: Get current tag digest to avoid deleting current reference
-            try:
-                current_digest = self._resolve_digest(repo, tag)
-                if current_digest == manifest_digest:
-                    logger.warning(f"[Registry] Refusing to cleanup tag index - manifest is current! {manifest_digest[:19]}...")
-                    return False
-            except Exception as e:
-                # If we can't resolve current digest, be conservative and don't delete
-                logger.warning(f"[Registry] Cannot verify current digest for {repo}:{tag}, skipping cleanup for safety: {e}")
-                return False
-            
-            # SAFEGUARD 4: Construct paths carefully
-            digest_hash = manifest_digest.replace("sha256:", "")
-            tag_index_entry = os.path.join(
-                self.storage_path, "docker", "registry", "v2", "repositories",
-                repo, "_manifests", "tags", tag, "index", "sha256", digest_hash
-            )
-            
-            # SAFEGUARD 5: Verify entry exists before attempting deletion
-            if not os.path.exists(tag_index_entry):
-                logger.debug(f"[Registry] Tag index entry already gone: {digest_hash[:12]}...")
-                return True  # Already cleaned up
-            
-            # SAFEGUARD 6: Delete with comprehensive error handling
-            import shutil
-            shutil.rmtree(tag_index_entry)
-            logger.info(f"[Registry] Cleaned up orphaned tag index entry for {manifest_digest[:19]}... ({image_name})")
-            return True
-            
-        except Exception as e:
-            logger.warning(f"[Registry] Failed to cleanup tag index for {manifest_digest[:19]}...: {e}")
-            # Non-fatal: GC will eventually handle this (though slowly)
-            return False
     
     def check_and_fix_permissions(self):
         """Ensures the registry storage path is writable by the current process."""
@@ -1549,175 +1452,94 @@ class RegistryManager:
     # BACKUP & RESTORE FUNCTIONALITY
     # ========================================================================
 
-    def backup_registry(self, backup_dir="/app/backups"):
+    def backup_registry(self):
         """
-        Backup the entire registry data directory.
-        Creates a timestamped tar.gz backup similar to stack backups.
+        Backup the registry stack using the standard stack backup system.
+        Registry is a stack like any other - backs up compose file and volumes.
         """
-        import tarfile
-        from datetime import datetime
-        
         try:
-            logger.info("[Registry] Starting backup")
+            from backup_manager import execute_backup
             
-            # Ensure backup directory exists
-            os.makedirs(backup_dir, exist_ok=True)
+            logger.info("[Registry] Starting backup using stack backup system")
             
-            # Create backup filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_filename = f"registry_backup_{timestamp}.tar.gz"
-            backup_path = os.path.join(backup_dir, backup_filename)
+            # Registry is a stack - use the existing backup system
+            success, backup_file_path, error_msg = execute_backup('registry')
             
-            # Get size before backup
-            size_before = self.get_total_size().get("size_bytes", 0)
-            start_time = time.time()
-            
-            logger.info(f"[Registry] Creating backup: {backup_path}")
-            logger.info(f"[Registry] Source directory: {self.storage_path}")
-            
-            # Create tar.gz backup
-            with tarfile.open(backup_path, "w:gz") as tar:
-                tar.add(self.storage_path, arcname="registry")
-            
-            # Get backup file size
-            backup_size = os.path.getsize(backup_path)
-            backup_size_mb = backup_size / (1024 * 1024)
-            duration = int(time.time() - start_time)
-            
-            logger.info(f"[Registry] Backup completed successfully")
-            logger.info(f"[Registry] Backup file: {backup_path}")
-            logger.info(f"[Registry] Backup size: {backup_size_mb:.1f} MB")
-            logger.info(f"[Registry] Duration: {duration}s")
-            
-            # Send success notification
-            try:
-                from app import notify
-                msg_parts = [
-                    "Registry backup completed",
-                    f"Size: {backup_size_mb:.1f} MB",
-                    f"Duration: {duration}s",
-                    f"File: {backup_filename}"
-                ]
-                notify(
-                    "✓ Registry Backup Completed",
-                    "\n".join(msg_parts),
-                    "success"
-                )
-            except Exception as notif_error:
-                logger.error(f"[Registry] Failed to send notification: {notif_error}")
-            
-            return {
-                "status": "success",
-                "backup_file": backup_path,
-                "backup_filename": backup_filename,
-                "size_mb": backup_size_mb,
-                "duration": duration,
-                "timestamp": timestamp
-            }
-            
+            if success:
+                backup_filename = os.path.basename(backup_file_path)
+                
+                # Send success notification
+                try:
+                    from app import notify
+                    notify(
+                        "✓ Registry Backup Completed",
+                        f"File: {backup_filename}",
+                        "success"
+                    )
+                except:
+                    pass
+                
+                return {
+                    "status": "success",
+                    "backup_file": backup_file_path,
+                    "backup_filename": backup_filename
+                }
+            else:
+                # Send error notification
+                try:
+                    from app import notify
+                    notify("✗ Registry Backup Failed", f"Error: {error_msg}", "error")
+                except:
+                    pass
+                
+                return {"status": "error", "message": error_msg}
+                
         except Exception as e:
             logger.error(f"[Registry] Backup failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            
-            # Send error notification
-            try:
-                from app import notify
-                notify(
-                    "✗ Registry Backup Failed",
-                    f"Error: {str(e)}",
-                    "error"
-                )
-            except:
-                pass
-            
             return {"status": "error", "message": str(e)}
 
-    def restore_registry(self, backup_path):
+    def restore_registry(self, backup_id):
         """
-        Restore registry from a backup file.
-        Stops registry, restores data, starts registry.
+        Restore registry from a backup using the standard stack restore system.
         """
-        import tarfile
-        import tempfile
-        
         try:
-            logger.info(f"[Registry] Starting restore from: {backup_path}")
+            from backup_manager import restore_from_backup
             
-            # Verify backup file exists
-            if not os.path.exists(backup_path):
-                raise Exception(f"Backup file not found: {backup_path}")
+            logger.info(f"[Registry] Starting restore from backup ID: {backup_id}")
             
-            # Stop registry container
-            logger.info("[Registry] Stopping registry container")
-            stop_result = self.stop_registry()
-            if stop_result.get("status") != "success":
-                raise Exception(f"Failed to stop registry: {stop_result.get('message')}")
+            # Use standard stack restore
+            success, error_msg = restore_from_backup(backup_id, stacks_dir='/stacks')
             
-            # Backup current data (in case restore fails)
-            backup_current = f"{self.storage_path}.pre-restore-{int(time.time())}"
-            logger.info(f"[Registry] Backing up current data to: {backup_current}")
-            shutil.move(self.storage_path, backup_current)
-            
-            try:
-                # Extract backup
-                logger.info(f"[Registry] Extracting backup to: {self.storage_path}")
-                os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
+            if success:
+                # Clear cache
+                with self._cache_lock:
+                    self._images_cache = None
                 
-                with tarfile.open(backup_path, "r:gz") as tar:
-                    # Extract to parent directory
-                    parent_dir = os.path.dirname(self.storage_path)
-                    tar.extractall(path=parent_dir)
-                    
-                    # If extracted as "registry" folder, rename to actual storage path name
-                    extracted_path = os.path.join(parent_dir, "registry")
-                    if os.path.exists(extracted_path) and extracted_path != self.storage_path:
-                        if os.path.exists(self.storage_path):
-                            shutil.rmtree(self.storage_path)
-                        shutil.move(extracted_path, self.storage_path)
+                # Send success notification
+                try:
+                    from app import notify
+                    notify(
+                        "✓ Registry Restore Completed",
+                        "Registry restored from backup",
+                        "success"
+                    )
+                except:
+                    pass
                 
-                logger.info("[Registry] Restore completed successfully")
+                return {"status": "success", "message": "Registry restored successfully"}
+            else:
+                # Send error notification
+                try:
+                    from app import notify
+                    notify(
+                        "✗ Registry Restore Failed",
+                        f"Error: {error_msg}",
+                        "error"
+                    )
+                except:
+                    pass
                 
-                # Remove backup of old data
-                if os.path.exists(backup_current):
-                    logger.info(f"[Registry] Removing old backup: {backup_current}")
-                    shutil.rmtree(backup_current)
-                
-            except Exception as extract_error:
-                # Restore failed - put back original data
-                logger.error(f"[Registry] Restore failed, reverting: {extract_error}")
-                if os.path.exists(self.storage_path):
-                    shutil.rmtree(self.storage_path)
-                if os.path.exists(backup_current):
-                    shutil.move(backup_current, self.storage_path)
-                raise
-            
-            # Start registry container
-            logger.info("[Registry] Starting registry container")
-            start_result = self.start_registry()
-            if start_result.get("status") != "success":
-                logger.warning(f"[Registry] Failed to start registry: {start_result.get('message')}")
-            
-            # Clear cache
-            with self._cache_lock:
-                self._images_cache = None
-            
-            # Send success notification
-            try:
-                from app import notify
-                notify(
-                    "✓ Registry Restore Completed",
-                    f"Registry restored from backup\nFile: {os.path.basename(backup_path)}",
-                    "success"
-                )
-            except:
-                pass
-            
-            return {
-                "status": "success",
-                "message": "Registry restored successfully",
-                "backup_file": backup_path
-            }
+                return {"status": "error", "message": error_msg}
             
         except Exception as e:
             logger.error(f"[Registry] Restore failed: {e}")
@@ -1737,48 +1559,49 @@ class RegistryManager:
             
             return {"status": "error", "message": str(e)}
 
-    def list_registry_backups(self, backup_dir="/app/backups"):
-        """List all registry backup files"""
+    def list_registry_backups(self):
+        """List registry backups from the standard backup system"""
         try:
-            if not os.path.exists(backup_dir):
-                return {"status": "success", "backups": []}
+            from backup_manager import scan_backup_directory
             
-            backups = []
-            for filename in os.listdir(backup_dir):
-                if filename.startswith("registry_backup_") and filename.endswith(".tar.gz"):
-                    filepath = os.path.join(backup_dir, filename)
-                    stat = os.stat(filepath)
-                    backups.append({
-                        "filename": filename,
-                        "path": filepath,
-                        "size": stat.st_size,
-                        "size_mb": stat.st_size / (1024 * 1024),
-                        "size_formatted": self._format_size(stat.st_size),
-                        "created": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                        "timestamp": stat.st_mtime
-                    })
+            # Get all backups and filter for registry
+            all_backups = scan_backup_directory()
+            registry_backups = [b for b in all_backups if b.get('stack_name') == 'registry']
             
-            # Sort by timestamp (newest first)
-            backups.sort(key=lambda x: x["timestamp"], reverse=True)
-            
-            return {"status": "success", "backups": backups}
+            return {"status": "success", "backups": registry_backups}
             
         except Exception as e:
             logger.error(f"[Registry] Failed to list backups: {e}")
             return {"status": "error", "message": str(e)}
 
-    def delete_registry_backup(self, backup_path):
-        """Delete a registry backup file"""
+    def delete_registry_backup(self, backup_id):
+        """Delete a registry backup from the standard backup system"""
         try:
-            if not os.path.exists(backup_path):
-                return {"status": "error", "message": "Backup file not found"}
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
             
-            # Security check - ensure it's a registry backup file
-            if not os.path.basename(backup_path).startswith("registry_backup_"):
-                return {"status": "error", "message": "Invalid backup file"}
+            # Verify it's a registry backup
+            cursor.execute("SELECT stack_name, backup_file_path FROM backup_history WHERE id = ?", (backup_id,))
+            row = cursor.fetchone()
             
-            os.remove(backup_path)
-            logger.info(f"[Registry] Deleted backup: {backup_path}")
+            if not row:
+                conn.close()
+                return {"status": "error", "message": "Backup not found"}
+            
+            if row['stack_name'] != 'registry':
+                conn.close()
+                return {"status": "error", "message": "Not a registry backup"}
+            
+            # Delete file
+            backup_file = row['backup_file_path']
+            if backup_file and os.path.exists(backup_file):
+                os.remove(backup_file)
+                logger.info(f"[Registry] Deleted backup file: {backup_file}")
+            
+            # Delete database entry
+            cursor.execute("DELETE FROM backup_history WHERE id = ?", (backup_id,))
+            conn.commit()
+            conn.close()
             
             return {"status": "success", "message": "Backup deleted"}
             
@@ -1830,10 +1653,8 @@ class RegistryManager:
                             manifest_data = m_resp.json()
                             size_bytes, _ = self._calculate_image_size(repo, manifest_data)
                         else:
-                            logger.warning(f"[Registry] Failed to get manifest {digest_full[:19]}... for {image_name}: HTTP {m_resp.status_code}")
                             size_bytes = 0
-                    except Exception as e:
-                        logger.warning(f"[Registry] Exception getting manifest {digest_full[:19]}... for {image_name}: {e}")
+                    except:
                         size_bytes = 0
                     
                     versions.append({
