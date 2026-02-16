@@ -1316,18 +1316,23 @@ class RegistryManager:
             image_name = item["image"]
             repo, tag = _normalize_image_name(image_name)
             
-            # Skip if retention is "latest" or "keep_all"
-            if retention == "latest" or retention == "keep_all":
+            # Skip if retention is "keep_all"
+            if retention == "keep_all":
                 continue
             
-            # Parse keep_N value
-            if not retention.startswith("keep_"):
-                continue
-                
-            try:
-                keep_count = int(retention.split("_")[1])
-            except:
-                logger.warning(f"Invalid retention policy '{retention}' for {image_name}")
+            # Determine how many versions to keep
+            if retention == "latest":
+                keep_count = 1  # "latest" means keep only 1 version
+            elif retention.startswith("keep_"):
+                # Parse keep_N value
+                try:
+                    keep_count = int(retention.split("_")[1])
+                except:
+                    logger.warning(f"Invalid retention policy '{retention}' for {image_name}")
+                    continue
+            else:
+                # Unknown retention policy
+                logger.warning(f"Unknown retention policy '{retention}' for {image_name}")
                 continue
             
             # Get all manifest revisions for THIS SPECIFIC TAG
@@ -1733,8 +1738,10 @@ class RegistryManager:
                             manifest_data = m_resp.json()
                             size_bytes, _ = self._calculate_image_size(repo, manifest_data)
                         else:
+                            logger.warning(f"[Registry] Failed to get manifest {digest_full[:19]}... for {image_name}: HTTP {m_resp.status_code}")
                             size_bytes = 0
-                    except:
+                    except Exception as e:
+                        logger.warning(f"[Registry] Exception getting manifest {digest_full[:19]}... for {image_name}: {e}")
                         size_bytes = 0
                     
                     versions.append({
