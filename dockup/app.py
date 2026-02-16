@@ -1415,28 +1415,39 @@ def setup_notifications():
 def check_docker_hub_rate_limit():
     """Check Docker Hub rate limit status"""
     try:
-        # Get authentication token
-        auth_url = "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull"
-        
-        # Try to use Docker Hub credentials if available
+        # Try to get Docker Hub credentials if available
         docker_config_path = os.path.expanduser('~/.docker/config.json')
         username = None
         password = None
         
         if os.path.exists(docker_config_path):
             try:
+                import base64
                 with open(docker_config_path, 'r') as f:
                     docker_config = json.load(f)
                     auths = docker_config.get('auths', {})
-                    if 'https://index.docker.io/v1/' in auths:
-                        # Credentials are stored, but typically base64 encoded
-                        # For simplicity, we'll make anonymous request
-                        pass
+                    docker_hub_auth = auths.get('https://index.docker.io/v1/', {})
+                    
+                    if docker_hub_auth:
+                        # Decode base64 encoded username:password
+                        auth_str = docker_hub_auth.get('auth', '')
+                        if auth_str:
+                            decoded = base64.b64decode(auth_str).decode('utf-8')
+                            if ':' in decoded:
+                                username, password = decoded.split(':', 1)
             except:
                 pass
         
-        # Get token (anonymous)
-        response = requests.get(auth_url, timeout=5)
+        # Get authentication token
+        auth_url = "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull"
+        
+        if username and password:
+            # Authenticated request
+            response = requests.get(auth_url, auth=(username, password), timeout=5)
+        else:
+            # Anonymous request
+            response = requests.get(auth_url, timeout=5)
+        
         if response.status_code != 200:
             return None
         
@@ -11220,12 +11231,12 @@ def registry_restore():
             return jsonify({'error': 'Registry not initialized'}), 400
         
         data = request.json
-        backup_id = data.get('backup_id')
+        backup_path = data.get('backup_path')
         
-        if not backup_id:
-            return jsonify({'error': 'backup_id required'}), 400
+        if not backup_path:
+            return jsonify({'error': 'backup_path required'}), 400
         
-        result = registry_mgr.restore_registry(backup_id)
+        result = registry_mgr.restore_registry(backup_path)
         return jsonify(result)
         
     except Exception as e:
@@ -11233,15 +11244,16 @@ def registry_restore():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-@app.route('/api/registry/backups/<int:backup_id>', methods=['DELETE'])
+@app.route('/api/registry/backups/<path:filename>', methods=['DELETE'])
 @require_auth
-def registry_delete_backup(backup_id):
+def registry_delete_backup(filename):
     """Delete a registry backup"""
     try:
         if not registry_mgr:
             return jsonify({'error': 'Registry not initialized'}), 400
         
-        result = registry_mgr.delete_registry_backup(backup_id)
+        backup_path = os.path.join('/app/backups', filename)
+        result = registry_mgr.delete_registry_backup(backup_path)
         return jsonify(result)
         
     except Exception as e:
