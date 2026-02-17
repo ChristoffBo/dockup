@@ -9136,7 +9136,7 @@ sudo systemctl restart docker</pre>
                         const response = await fetch('/api/registry/restore', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({backup_id: backup.id})
+                            body: JSON.stringify({backup_path: backup.path})
                         });
                         const data = await response.json();
                         
@@ -9160,8 +9160,10 @@ sudo systemctl restart docker</pre>
                     }
                     
                     try {
-                        const response = await fetch(`/api/registry/backups/${backup.id}`, {
-                            method: 'DELETE'
+                        const response = await fetch('/api/registry/backups/delete', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({backup_path: backup.path})
                         });
                         const data = await response.json();
                         
