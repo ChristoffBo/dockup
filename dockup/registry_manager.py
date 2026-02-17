@@ -1598,7 +1598,8 @@ class RegistryManager:
             logger.info(f"[Registry] Duration: {duration}s")
             
             # Store in database
-            conn = self._get_db_connection()
+            from backup_manager import get_db_connection
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO backup_history 
@@ -1648,8 +1649,10 @@ class RegistryManager:
         import tarfile
         
         try:
+            from backup_manager import get_db_connection
+            
             # Get backup file path from database
-            conn = self._get_db_connection()
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT backup_file_path, stack_name 
@@ -1763,7 +1766,9 @@ class RegistryManager:
     def list_registry_backups(self):
         """List all registry backups from the backup system database"""
         try:
-            conn = self._get_db_connection()
+            from backup_manager import get_db_connection
+            
+            conn = get_db_connection()
             cursor = conn.cursor()
             
             # Get all registry backups from database
@@ -1805,7 +1810,9 @@ class RegistryManager:
     def delete_registry_backup(self, backup_id):
         """Delete a registry backup (file + database entry)"""
         try:
-            conn = self._get_db_connection()
+            from backup_manager import get_db_connection
+            
+            conn = get_db_connection()
             cursor = conn.cursor()
             
             # Get backup info
