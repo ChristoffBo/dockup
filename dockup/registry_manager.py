@@ -1551,94 +1551,196 @@ class RegistryManager:
 
     def backup_registry(self):
         """
-        Backup registry stack (docker-compose.yml + appdata volumes).
-        Uses the same backup system as all other stacks.
+        Backup registry appdata to the configured backup location.
         """
+        import tarfile
+        from datetime import datetime
+        
         try:
-            from backup_manager import execute_backup
+            from backup_manager import check_backup_destination_available
             
-            logger.info("[Registry] Starting backup using standard stack backup system")
+            logger.info("[Registry] Starting backup")
             
-            # Execute backup for registry stack - this backs up compose file AND volumes
-            success, backup_file_path, error_msg = execute_backup('registry', stacks_dir='/stacks')
+            # Get backup destination (SMB share or local path from settings)
+            is_available, dest_path, available_gb, error_msg = check_backup_destination_available()
             
-            if success:
-                backup_filename = os.path.basename(backup_file_path)
-                
-                # Send success notification
-                try:
-                    from app import notify
-                    notify(
-                        "✓ Registry Backup Completed",
-                        f"File: {backup_filename}",
-                        "success"
-                    )
-                except Exception:
-                    pass
-                
-                return {
-                    "status": "success",
-                    "backup_file": backup_file_path,
-                    "backup_filename": backup_filename
-                }
-            else:
-                # Send error notification
-                try:
-                    from app import notify
-                    notify("✗ Registry Backup Failed", f"Error: {error_msg}", "error")
-                except Exception:
-                    pass
-                
-                return {"status": "error", "message": error_msg}
-                
+            if not is_available:
+                raise Exception(f"Backup destination not available: {error_msg}")
+            
+            logger.info(f"[Registry] Backup destination: {dest_path}")
+            
+            # Create backup filename with timestamp
+            timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            backup_filename = f"registry_{timestamp}.tar.gz"
+            backup_file_path = os.path.join(dest_path, backup_filename)
+            
+            start_time = time.time()
+            
+            logger.info(f"[Registry] Creating backup: {backup_file_path}")
+            logger.info(f"[Registry] Source directory: {self.storage_path}")
+            
+            # Verify source exists
+            if not os.path.exists(self.storage_path):
+                raise Exception(f"Registry storage path does not exist: {self.storage_path}")
+            
+            # Create tar.gz backup of registry appdata
+            with tarfile.open(backup_file_path, "w:gz") as tar:
+                tar.add(self.storage_path, arcname="registry")
+            
+            # Get backup file size
+            backup_size = os.path.getsize(backup_file_path)
+            backup_size_mb = backup_size / (1024 * 1024)
+            duration = int(time.time() - start_time)
+            
+            logger.info(f"[Registry] Backup completed successfully")
+            logger.info(f"[Registry] Backup file: {backup_file_path}")
+            logger.info(f"[Registry] Backup size: {backup_size_mb:.1f} MB")
+            logger.info(f"[Registry] Duration: {duration}s")
+            
+            # Store in database
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO backup_history 
+                (stack_name, backup_file_path, backup_size_mb, backup_duration_seconds, status, volumes_backed_up, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+            """, ('registry', backup_file_path, backup_size_mb, duration, 'completed', 1))
+            conn.commit()
+            conn.close()
+            
+            # Send success notification
+            try:
+                from app import notify
+                notify(
+                    "✓ Registry Backup Completed",
+                    f"Size: {backup_size_mb:.1f} MB\nDuration: {duration}s",
+                    "success"
+                )
+            except Exception:
+                pass
+            
+            return {
+                "status": "success",
+                "backup_file": backup_file_path,
+                "backup_filename": backup_filename,
+                "size_mb": backup_size_mb
+            }
+            
         except Exception as e:
             logger.error(f"[Registry] Backup failed: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            
+            # Send error notification
+            try:
+                from app import notify
+                notify("✗ Registry Backup Failed", f"Error: {str(e)}", "error")
+            except Exception:
+                pass
+            
             return {"status": "error", "message": str(e)}
 
     def restore_registry(self, backup_id):
         """
-        Restore registry from a backup using the standard restore system.
+        Restore registry from a backup.
+        Stops registry, restores appdata, starts registry.
         """
+        import tarfile
+        
         try:
-            from backup_manager import restore_from_backup
+            # Get backup file path from database
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT backup_file_path, stack_name 
+                FROM backup_history 
+                WHERE id = ?
+            """, (backup_id,))
             
-            logger.info(f"[Registry] Starting restore from backup ID: {backup_id}")
+            row = cursor.fetchone()
+            conn.close()
             
-            # Use standard stack restore system
-            success, error_msg = restore_from_backup(backup_id, stacks_dir='/stacks')
+            if not row:
+                raise Exception(f"Backup {backup_id} not found")
             
-            if success:
-                # Clear cache
-                with self._cache_lock:
-                    self._images_cache = None
+            if row['stack_name'] != 'registry':
+                raise Exception("Not a registry backup")
+            
+            backup_path = row['backup_file_path']
+            
+            logger.info(f"[Registry] Starting restore from: {backup_path}")
+            
+            # Verify backup file exists
+            if not os.path.exists(backup_path):
+                raise Exception(f"Backup file not found: {backup_path}")
+            
+            # Stop registry container
+            logger.info("[Registry] Stopping registry container")
+            stop_result = self.stop_registry()
+            if stop_result.get("status") != "success":
+                raise Exception(f"Failed to stop registry: {stop_result.get('message')}")
+            
+            # Backup current data (in case restore fails)
+            backup_current = f"{self.storage_path}.pre-restore-{int(time.time())}"
+            logger.info(f"[Registry] Backing up current data to: {backup_current}")
+            if os.path.exists(self.storage_path):
+                shutil.move(self.storage_path, backup_current)
+            
+            try:
+                # Extract backup
+                logger.info(f"[Registry] Extracting backup to: {self.storage_path}")
+                os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
                 
-                # Send success notification
-                try:
-                    from app import notify
-                    notify(
-                        "✓ Registry Restore Completed",
-                        "Registry restored from backup",
-                        "success"
-                    )
-                except Exception:
-                    pass
+                with tarfile.open(backup_path, "r:gz") as tar:
+                    # Extract to parent directory
+                    parent_dir = os.path.dirname(self.storage_path)
+                    tar.extractall(path=parent_dir)
+                    
+                    # If extracted as "registry" folder, rename to actual storage path name
+                    extracted_path = os.path.join(parent_dir, "registry")
+                    if os.path.exists(extracted_path) and extracted_path != self.storage_path:
+                        if os.path.exists(self.storage_path):
+                            shutil.rmtree(self.storage_path)
+                        shutil.move(extracted_path, self.storage_path)
                 
-                return {"status": "success", "message": "Registry restored successfully"}
-            else:
-                # Send error notification
-                try:
-                    from app import notify
-                    notify(
-                        "✗ Registry Restore Failed",
-                        f"Error: {error_msg}",
-                        "error"
-                    )
-                except Exception:
-                    pass
+                logger.info("[Registry] Restore completed successfully")
                 
-                return {"status": "error", "message": error_msg}
+                # Remove backup of old data
+                if os.path.exists(backup_current):
+                    logger.info(f"[Registry] Removing old backup: {backup_current}")
+                    shutil.rmtree(backup_current)
+                
+            except Exception as extract_error:
+                # Restore failed - put back original data
+                logger.error(f"[Registry] Restore failed, reverting: {extract_error}")
+                if os.path.exists(self.storage_path):
+                    shutil.rmtree(self.storage_path)
+                if os.path.exists(backup_current):
+                    shutil.move(backup_current, self.storage_path)
+                raise
+            
+            # Start registry container
+            logger.info("[Registry] Starting registry container")
+            start_result = self.start_registry()
+            if start_result.get("status") != "success":
+                logger.warning(f"[Registry] Failed to start registry: {start_result.get('message')}")
+            
+            # Clear cache
+            with self._cache_lock:
+                self._images_cache = None
+            
+            # Send success notification
+            try:
+                from app import notify
+                notify(
+                    "✓ Registry Restore Completed",
+                    "Registry restored from backup",
+                    "success"
+                )
+            except Exception:
+                pass
+            
+            return {"status": "success", "message": "Registry restored successfully"}
             
         except Exception as e:
             logger.error(f"[Registry] Restore failed: {e}")
