@@ -11231,12 +11231,12 @@ def registry_restore():
             return jsonify({'error': 'Registry not initialized'}), 400
         
         data = request.json
-        backup_path = data.get('backup_path')
+        backup_id = data.get('backup_id')
         
-        if not backup_path:
-            return jsonify({'error': 'backup_path required'}), 400
+        if not backup_id:
+            return jsonify({'error': 'backup_id required'}), 400
         
-        result = registry_mgr.restore_registry(backup_path)
+        result = registry_mgr.restore_registry(backup_id)
         return jsonify(result)
         
     except Exception as e:
@@ -11244,16 +11244,15 @@ def registry_restore():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-@app.route('/api/registry/backups/<path:filename>', methods=['DELETE'])
+@app.route('/api/registry/backups/<int:backup_id>', methods=['DELETE'])
 @require_auth
-def registry_delete_backup(filename):
+def registry_delete_backup(backup_id):
     """Delete a registry backup"""
     try:
         if not registry_mgr:
             return jsonify({'error': 'Registry not initialized'}), 400
         
-        backup_path = os.path.join('/app/backups', filename)
-        result = registry_mgr.delete_registry_backup(backup_path)
+        result = registry_mgr.delete_registry_backup(backup_id)
         return jsonify(result)
         
     except Exception as e:
