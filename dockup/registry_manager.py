@@ -1641,36 +1641,14 @@ class RegistryManager:
             
             return {"status": "error", "message": str(e)}
 
-    def restore_registry(self, backup_id):
+    def restore_registry(self, backup_path):
         """
-        Restore registry from a backup.
+        Restore registry from a backup file.
         Stops registry, restores appdata, starts registry.
         """
         import tarfile
         
         try:
-            from backup_manager import get_db_connection
-            
-            # Get backup file path from database
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT backup_file_path, stack_name 
-                FROM backup_history 
-                WHERE id = ?
-            """, (backup_id,))
-            
-            row = cursor.fetchone()
-            conn.close()
-            
-            if not row:
-                raise Exception(f"Backup {backup_id} not found")
-            
-            if row['stack_name'] != 'registry':
-                raise Exception("Not a registry backup")
-            
-            backup_path = row['backup_file_path']
-            
             logger.info(f"[Registry] Starting restore from: {backup_path}")
             
             # Verify backup file exists
@@ -1695,11 +1673,9 @@ class RegistryManager:
                 os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
                 
                 with tarfile.open(backup_path, "r:gz") as tar:
-                    # Extract to parent directory
                     parent_dir = os.path.dirname(self.storage_path)
                     tar.extractall(path=parent_dir)
                     
-                    # If extracted as "registry" folder, rename to actual storage path name
                     extracted_path = os.path.join(parent_dir, "registry")
                     if os.path.exists(extracted_path) and extracted_path != self.storage_path:
                         if os.path.exists(self.storage_path):
@@ -1708,13 +1684,10 @@ class RegistryManager:
                 
                 logger.info("[Registry] Restore completed successfully")
                 
-                # Remove backup of old data
                 if os.path.exists(backup_current):
-                    logger.info(f"[Registry] Removing old backup: {backup_current}")
                     shutil.rmtree(backup_current)
                 
             except Exception as extract_error:
-                # Restore failed - put back original data
                 logger.error(f"[Registry] Restore failed, reverting: {extract_error}")
                 if os.path.exists(self.storage_path):
                     shutil.rmtree(self.storage_path)
@@ -1732,14 +1705,9 @@ class RegistryManager:
             with self._cache_lock:
                 self._images_cache = None
             
-            # Send success notification
             try:
                 from app import notify
-                notify(
-                    "✓ Registry Restore Completed",
-                    "Registry restored from backup",
-                    "success"
-                )
+                notify("✓ Registry Restore Completed", "Registry restored from backup", "success")
             except Exception:
                 pass
             
@@ -1750,56 +1718,36 @@ class RegistryManager:
             import traceback
             logger.error(traceback.format_exc())
             
-            # Send error notification
             try:
                 from app import notify
-                notify(
-                    "✗ Registry Restore Failed",
-                    f"Error: {str(e)}",
-                    "error"
-                )
+                notify("✗ Registry Restore Failed", f"Error: {str(e)}", "error")
             except Exception:
                 pass
             
             return {"status": "error", "message": str(e)}
 
     def list_registry_backups(self):
-        """List all registry backups from the backup system database"""
+        """List all registry backups by scanning the backup destination directory"""
         try:
-            from backup_manager import get_db_connection
+            from backup_manager import scan_backup_directory
             
-            conn = get_db_connection()
-            cursor = conn.cursor()
+            all_backups = scan_backup_directory()
+            registry_backups = []
             
-            # Get all registry backups from database
-            cursor.execute("""
-                SELECT id, backup_file_path, backup_size_mb, backup_duration_seconds, 
-                       created_at, status, volumes_backed_up
-                FROM backup_history
-                WHERE stack_name = 'registry'
-                ORDER BY created_at DESC
-            """)
+            for b in all_backups:
+                if b.get('stack_name') == 'registry':
+                    size_bytes = (b.get('size_mb') or 0) * 1024 * 1024
+                    registry_backups.append({
+                        "id": None,
+                        "filename": b.get('filename', ''),
+                        "path": b.get('file_path', ''),
+                        "size_mb": b.get('size_mb', 0),
+                        "size_formatted": self._format_size(size_bytes),
+                        "created": b.get('backup_date', ''),
+                        "status": "completed"
+                    })
             
-            backups = []
-            for row in cursor.fetchall():
-                backup_file = row['backup_file_path']
-                filename = os.path.basename(backup_file) if backup_file else ''
-                
-                backups.append({
-                    "id": row['id'],
-                    "filename": filename,
-                    "path": backup_file,
-                    "size_mb": row['backup_size_mb'] or 0,
-                    "size_formatted": self._format_size((row['backup_size_mb'] or 0) * 1024 * 1024),
-                    "duration": row['backup_duration_seconds'],
-                    "created": row['created_at'],
-                    "status": row['status'],
-                    "volumes_backed_up": row['volumes_backed_up'] or 0,
-                    "exists": os.path.exists(backup_file) if backup_file else False
-                })
-            
-            conn.close()
-            return {"status": "success", "backups": backups}
+            return {"status": "success", "backups": registry_backups}
             
         except Exception as e:
             logger.error(f"[Registry] Failed to list backups: {e}")
@@ -1807,49 +1755,19 @@ class RegistryManager:
             logger.error(traceback.format_exc())
             return {"status": "error", "message": str(e)}
 
-    def delete_registry_backup(self, backup_id):
-        """Delete a registry backup (file + database entry)"""
+    def delete_registry_backup(self, backup_path):
+        """Delete a registry backup file"""
         try:
-            from backup_manager import get_db_connection
+            if not backup_path or not os.path.exists(backup_path):
+                return {"status": "error", "message": "Backup file not found"}
             
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Get backup info
-            cursor.execute("""
-                SELECT stack_name, backup_file_path 
-                FROM backup_history 
-                WHERE id = ?
-            """, (backup_id,))
-            
-            row = cursor.fetchone()
-            if not row:
-                conn.close()
-                return {"status": "error", "message": "Backup not found"}
-            
-            # Verify it's a registry backup
-            if row['stack_name'] != 'registry':
-                conn.close()
-                return {"status": "error", "message": "Not a registry backup"}
-            
-            backup_file = row['backup_file_path']
-            
-            # Delete file if it exists
-            if backup_file and os.path.exists(backup_file):
-                os.remove(backup_file)
-                logger.info(f"[Registry] Deleted backup file: {backup_file}")
-            
-            # Delete database entry
-            cursor.execute("DELETE FROM backup_history WHERE id = ?", (backup_id,))
-            conn.commit()
-            conn.close()
+            os.remove(backup_path)
+            logger.info(f"[Registry] Deleted backup: {backup_path}")
             
             return {"status": "success", "message": "Backup deleted"}
             
         except Exception as e:
             logger.error(f"[Registry] Failed to delete backup: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
             return {"status": "error", "message": str(e)}
     
     def list_image_versions(self, image_name):
