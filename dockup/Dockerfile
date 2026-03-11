@@ -31,13 +31,15 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Trivy - with proper ARM detection
-RUN echo "Target architecture: ${TARGETARCH:-unknown}" && \
-    if [ "$(uname -m)" = "aarch64" ] || [ "${TARGETARCH}" = "arm64" ]; then \
-        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.69.1/trivy_0.69.1_Linux-ARM64.tar.gz | tar -xz -C /usr/local/bin trivy; \
-    else \
-        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.69.1/trivy_0.69.1_Linux-64bit.tar.gz | tar -xz -C /usr/local/bin trivy; \
-    fi && \
+# Install Trivy - use TARGETARCH (set by buildx), fall back to uname -m
+RUN TRIVY_VERSION="0.69.3" && \
+    ARCH="${TARGETARCH:-$(uname -m)}" && \
+    echo "Installing Trivy ${TRIVY_VERSION} for arch: ${ARCH}" && \
+    case "${ARCH}" in \
+        arm64|aarch64) TRIVY_ARCH="ARM64" ;; \
+        *) TRIVY_ARCH="64bit" ;; \
+    esac && \
+    wget -qO- "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-${TRIVY_ARCH}.tar.gz" | tar -xz -C /usr/local/bin trivy && \
     chmod +x /usr/local/bin/trivy
 
 # Install Skopeo for registry operations
