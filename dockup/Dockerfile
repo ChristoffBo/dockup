@@ -34,9 +34,9 @@ RUN apt-get update && \
 # Install Trivy - with proper ARM detection
 RUN echo "Target architecture: ${TARGETARCH:-unknown}" && \
     if [ "$(uname -m)" = "aarch64" ] || [ "${TARGETARCH}" = "arm64" ]; then \
-        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.68.1/trivy_0.68.1_Linux-ARM64.tar.gz | tar -xz -C /usr/local/bin trivy; \
+        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.69.1/trivy_0.69.1_Linux-ARM64.tar.gz | tar -xz -C /usr/local/bin trivy; \
     else \
-        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.68.1/trivy_0.68.1_Linux-64bit.tar.gz | tar -xz -C /usr/local/bin trivy; \
+        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.69.1/trivy_0.69.1_Linux-64bit.tar.gz | tar -xz -C /usr/local/bin trivy; \
     fi && \
     chmod +x /usr/local/bin/trivy
 
