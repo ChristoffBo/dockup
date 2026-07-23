@@ -5,6 +5,15 @@ ARG TARGETARCH
 ARG TARGETOS
 
 # Install Docker CLI, Docker Compose, and CIFS utilities for backup feature
+#
+# NOTE (2026-07-23) — build-essential / python3-dev / libxml2-dev /
+# libxslt1-dev / cargo / rustc are here because lxml 5.3.0 had NO Python 3.14
+# wheels and compiled from source on every build. lxml 6.1.1 (now pinned in
+# requirements.txt) ships cp314 wheels, and bcrypt 5.0.0 ships abi3 wheels, so
+# this toolchain is very likely now dead weight — it inflates the image and
+# the attack surface for nothing. Do NOT remove it in the same change as the
+# dependency bump: get one clean build first, then drop it as its own change
+# and confirm nothing falls back to a source build.
 RUN apt-get update && \
     apt-get install -y \
     curl \
@@ -32,7 +41,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Trivy - use TARGETARCH (set by buildx), fall back to uname -m
-RUN TRIVY_VERSION="0.69.3" && \
+RUN TRIVY_VERSION="0.72.0" && \
     ARCH="${TARGETARCH:-$(uname -m)}" && \
     echo "Installing Trivy ${TRIVY_VERSION} for arch: ${ARCH}" && \
     case "${ARCH}" in \
@@ -51,21 +60,16 @@ RUN apt-get update && \
 # Set working directory
 WORKDIR /app
 
-# Install Python dependencies with latest versions
-RUN pip install --no-cache-dir \
-    flask==3.1.2 \
-    flask-sock==0.7.0 \
-    docker==7.1.0 \
-    pyyaml==6.0.3 \
-    apscheduler==3.11.2 \
-    apprise==1.9.6 \
-    croniter==6.0.0 \
-    requests==2.32.5 \
-    pytz==2025.2 \
-    psutil==7.2.1 \
-    bcrypt==5.0.0 \
-    beautifulsoup4==4.12.3 \
-    lxml==5.3.0
+# Python dependencies — SINGLE SOURCE OF TRUTH is requirements.txt.
+# Previously this Dockerfile carried its own inline pip list, which had already
+# drifted from requirements.txt (apprise 1.9.6 vs 1.9.8, pytz 2025.2 vs 2026.1,
+# psutil 7.2.1 vs 7.2.2). Editing requirements.txt did nothing — the image
+# shipped whatever was pinned here. One file now, no drift.
+#
+# Copied BEFORE the app source on purpose: changing app.py no longer busts the
+# pip layer, so rebuilds after a code change skip the whole install.
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Create directories including logs, trivy cache, and backups
 RUN mkdir -p /app/static /app/data /app/logs /stacks /config/trivy-cache /app/backups /mnt/backup-share
