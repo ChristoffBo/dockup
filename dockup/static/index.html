@@ -2715,7 +2715,7 @@
                                     <th style="padding: 12px; text-align: left;">Tag</th>
                                     <th style="padding: 12px; text-align: right;">Size</th>
                                     <th style="padding: 12px; text-align: left;">Status</th>
-                                    <th style="padding: 12px; text-align: left;">Last Updated</th>
+                                    <th style="padding: 12px; text-align: left;">Last Checked</th>
                                     <th style="padding: 12px; text-align: left;">Retention</th>
                                     <th style="padding: 12px; text-align: right;">Actions</th>
                                 </tr>
@@ -2740,11 +2740,20 @@
                                         </span>
                                     </td>
                                     <td style="padding: 12px;">
-                                        <span v-if="image.last_updated" style="font-size: 12px; color: #10b981;">
-                                            <i class="fas fa-clock"></i> {{ formatRelativeTime(image.last_updated) }}
+                                        <div v-if="image.last_checked" style="font-size: 12px; color: #10b981;">
+                                            <i class="fas fa-clock"></i> Checked {{ formatRelativeTime(image.last_checked) }}
+                                            <div v-if="image.last_updated" style="font-size: 11px; color: #888;">
+                                                Updated {{ formatRelativeTime(image.last_updated) }}
+                                            </div>
+                                            <div v-else style="font-size: 11px; color: #888;">
+                                                No change yet
+                                            </div>
+                                        </div>
+                                        <span v-else-if="image.last_updated" style="font-size: 12px; color: #10b981;">
+                                            <i class="fas fa-clock"></i> Updated {{ formatRelativeTime(image.last_updated) }}
                                         </span>
                                         <span v-else-if="image.is_watched" style="font-size: 12px; color: #888;">
-                                            Never
+                                            Not yet checked
                                         </span>
                                         <span v-else style="color: #888;">-</span>
                                     </td>
