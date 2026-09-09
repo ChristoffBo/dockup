@@ -13,7 +13,7 @@ PERFORMANCE OPTIMIZATIONS:
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "2.0.2"
+DOCKUP_VERSION = "2.0.3"
 
 import os
 import json
@@ -2446,7 +2446,7 @@ def import_orphan_containers_as_stacks():
             # Mark container as imported (modern docker-py 6.0+ way)
             try:
                 container.update(labels={
-                    'com.docker.compose.project': stack_name,
+                    'com.docker.compose.project': compose_project_name(stack_name),
                     'dockup.imported': 'true'
                 })
                 container.reload()
@@ -2500,7 +2500,7 @@ def check_port_conflicts(stack_name, compose_content):
         # Get containers from this stack (to exclude them from conflict check)
         stack_containers = []
         try:
-            containers = docker_client.containers.list(filters={'label': f'com.docker.compose.project={stack_name}'})
+            containers = list_stack_containers(stack_name, all=False)
             stack_containers = [c.name for c in containers]
         except:
             pass
@@ -2573,8 +2573,9 @@ def get_stack_stats(stack_name, containers_list=None):
         # Use pre-fetched containers if provided, otherwise fetch
         if containers_list is None:
             all_containers = get_all_containers_cached()
+            project = compose_project_name(stack_name)
             containers = [c for c in all_containers 
-                         if c.labels.get('com.docker.compose.project') == stack_name and c.status == 'running']
+                         if c.labels.get('com.docker.compose.project') in (stack_name, project) and c.status == 'running']
         else:
             containers = containers_list
         
@@ -2847,6 +2848,54 @@ def get_peer_session(peer_id):
     peer_sessions[peer_id] = session
     return session
 
+def compose_project_name(stack_name):
+    """
+    Returns the project name Docker Compose will actually use for a stack directory.
+
+    Compose derives the project name from the directory basename: it lowercases it,
+    then takes the first run matching [a-z0-9]+[-_a-z0-9]* (compose-go cli/options.go).
+    A folder called "MCP" therefore labels its containers com.docker.compose.project=mcp,
+    and DockUp — which matched on the directory name verbatim — listed the stack as
+    "Never Started" while it was up and healthy. Examples:
+        MCP        -> mcp
+        My.Project -> my          (truncated at the first invalid character)
+        _stack     -> stack
+    Falls back to the lowercased name if nothing matches, so a caller always gets a
+    usable key rather than an empty string.
+    """
+    if not stack_name:
+        return stack_name
+    lowered = stack_name.lower()
+    match = re.search(r'[a-z0-9]+[-_a-z0-9]*', lowered)
+    return match.group(0) if match else lowered
+
+
+def list_stack_containers(stack_name, all=True, service=None):
+    """
+    Returns the containers belonging to a stack.
+
+    Matches BOTH the folder name and the Compose-normalised project name. Compose
+    itself can only ever produce the normalised label, but DockUp's own orphan
+    importer has historically written the raw folder name (e.g. "imported-MyApp"),
+    so filtering on the normalised name alone would lose those containers. When the
+    two are identical — the overwhelmingly common case — this is a single API call,
+    exactly as before. Results are de-duplicated by container id.
+    """
+    projects = [stack_name]
+    normalized = compose_project_name(stack_name)
+    if normalized and normalized != stack_name:
+        projects.append(normalized)
+
+    found = {}
+    for project in projects:
+        labels = [f'com.docker.compose.project={project}']
+        if service:
+            labels.append(f'com.docker.compose.service={service}')
+        for container in docker_client.containers.list(all=all, filters={'label': labels}):
+            found[container.id] = container
+    return list(found.values())
+
+
 def get_stacks():
     """Get all Docker Compose stacks - optimized with container caching"""
     global network_stats_cache
@@ -2920,7 +2969,13 @@ def get_stacks():
             compose_data = {'services': {s: {} for s in services}}
             
             # Get containers for this stack from pre-fetched list
+            # Containers are labelled with the name COMPOSE derived from the folder,
+            # not the folder name itself (see compose_project_name).
             stack_containers = containers_by_stack.get(stack_name, [])
+            if not stack_containers:
+                normalized = compose_project_name(stack_name)
+                if normalized != stack_name:
+                    stack_containers = containers_by_stack.get(normalized, [])
             containers = []
             
             for container in stack_containers:
@@ -3433,10 +3488,7 @@ def refresh_container_metadata(stack_name):
     try:
         logger.info(f"  → Refreshing metadata for {stack_name}")
         
-        containers = docker_client.containers.list(
-            all=True,
-            filters={'label': f'com.docker.compose.project={stack_name}'}
-        )
+        containers = list_stack_containers(stack_name, all=True)
         
         for container in containers:
             # Force refresh container inspect
@@ -3496,10 +3548,7 @@ def auto_update_stack(stack_name):
     # CRITICAL: Only auto-update stacks that are actually DEPLOYED (have containers)
     # This prevents saved/inactive compose files from being auto-started
     try:
-        stack_containers = docker_client.containers.list(
-            all=True,
-            filters={'label': f'com.docker.compose.project={stack_name}'}
-        )
+        stack_containers = list_stack_containers(stack_name, all=True)
         
         if not stack_containers:
             logger.debug(f"[{stack_name}] Stack has no containers (not deployed), skipping auto-update")
@@ -3674,10 +3723,7 @@ def auto_update_stack(stack_name):
             refresh_container_metadata(stack_name)
             
             # VERIFY: Check that containers are now running the new images
-            containers_updated = docker_client.containers.list(
-                all=True,
-                filters={'label': f'com.docker.compose.project={stack_name}'}
-            )
+            containers_updated = list_stack_containers(stack_name, all=True)
             
             verification_passed = True
             verification_results = []
@@ -3804,15 +3850,7 @@ def auto_update_container(stack_name, container_name, mode):
     
     try:
         # Find the container using compose labels
-        containers = docker_client.containers.list(
-            all=True,
-            filters={
-                'label': [
-                    f'com.docker.compose.project={stack_name}',
-                    f'com.docker.compose.service={container_name}'
-                ]
-            }
-        )
+        containers = list_stack_containers(stack_name, all=True, service=container_name)
         
         if not containers:
             logger.info(f"[{stack_name}/{container_name}] Container not found or not deployed")
@@ -4922,10 +4960,7 @@ def api_stack_delete(stack_name):
         # Get images before stopping if we need to delete them
         images_to_delete = []
         if delete_images:
-            containers = docker_client.containers.list(
-                all=True,
-                filters={'label': f'com.docker.compose.project={stack_name}'}
-            )
+            containers = list_stack_containers(stack_name, all=True)
             for container in containers:
                 images_to_delete.append(container.image.id)
         
@@ -4961,10 +4996,7 @@ def api_stack_delete(stack_name):
 def api_stack_delete_images(stack_name):
     """Delete images for a stack without removing the stack"""
     try:
-        containers = docker_client.containers.list(
-            all=True,
-            filters={'label': f'com.docker.compose.project={stack_name}'}
-        )
+        containers = list_stack_containers(stack_name, all=True)
         
         deleted = []
         for container in containers:
@@ -5224,10 +5256,7 @@ def api_backup_restore():
 def api_stack_changelog(stack_name):
     """Get changelog/update history for a stack"""
     try:
-        containers = docker_client.containers.list(
-            all=True,
-            filters={'label': f'com.docker.compose.project={stack_name}'}
-        )
+        containers = list_stack_containers(stack_name, all=True)
         
         changelog = []
         
@@ -5419,10 +5448,7 @@ def api_stack_logs(stack_name):
                 return jsonify({'logs': {'dockup': f"Unable to fetch logs: {e}"}}), 200
         
         # Normal stack handling
-        containers = docker_client.containers.list(
-            all=True,
-            filters={'label': f'com.docker.compose.project={stack_name}'}
-        )
+        containers = list_stack_containers(stack_name, all=True)
         
         logs = {}
         for container in containers:

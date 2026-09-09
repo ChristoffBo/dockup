@@ -32,6 +32,15 @@ MANIFEST_HEADERS = {
     )
 }
 
+# Media types that identify a manifest LIST / OCI index (multi-arch image).
+# The child manifests these point at are themselves blobs on disk and must be
+# treated as referenced, otherwise orphan detection deletes them and every
+# multi-arch image in the registry becomes unpullable.
+MANIFEST_LIST_TYPES = (
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.oci.image.index.v1+json"
+)
+
 def _normalize_image_name(image_name):
     """
     Normalize image name to (repository, tag) tuple.
@@ -471,6 +480,7 @@ class RegistryManager:
         updated_images = []
         up_to_date_images = []
         failed_images = []
+        checked_images = []  # every image the check actually reached, for last_checked
         
         for item in watched_images:
             image_name = item["image"]
@@ -489,6 +499,7 @@ class RegistryManager:
                     continue
                 
                 result = self.perform_smart_update(image_name)
+                checked_images.append(image_name)
                 if result["status"] == "updated":
                     updated_images.append(image_name)
                     logger.info(f"✓ Updated: {image_name}")
@@ -502,6 +513,11 @@ class RegistryManager:
                 failed_images.append({"image": image_name, "error": str(e)})
                 logger.error(f"✗ Exception checking {image_name}: {e}")
         
+        # Record that these images were checked, regardless of the outcome. Done once
+        # here rather than per image so concurrent WebUI config writes get one window,
+        # not one per watched image.
+        self._stamp_last_checked(checked_images)
+
         # Send notifications via HTTP like backup module does
         notify_on_check = config.get("notify_on_registry_check", False)
         notify_on_update = config.get("notify_on_registry_update", True)
@@ -573,6 +589,30 @@ class RegistryManager:
             "failed": failed_images,
             "total_checked": len(watched_images)
         }
+
+    def _stamp_last_checked(self, image_names):
+        """
+        Records that these images WERE checked, whatever the outcome.
+        last_updated is only written when a copy actually happens, so an image that
+        has been checked hundreds of times with no change never gets a timestamp and
+        the UI showed it as "Never" — which reads as "never checked" when it means
+        "never changed". One config write for the whole batch.
+        """
+        if not image_names:
+            return
+        try:
+            stamp = datetime.utcnow().isoformat() + "Z"
+            config = self._get_config()
+            watched_images = config.get("registry", {}).get("watched_images", [])
+            names = set(image_names)
+            for item in watched_images:
+                if item.get("image") in names:
+                    item["last_checked"] = stamp
+            config.setdefault("registry", {})["watched_images"] = watched_images
+            with open(self.config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            logger.error(f"[Registry] Failed to stamp last_checked: {e}")
 
     def _update_image_timestamp(self, image_name):
         """Update last_updated timestamp for an image."""
@@ -742,11 +782,41 @@ class RegistryManager:
             size_before = self.get_total_size().get("size_bytes", 0)
             logger.info(f"[Registry] Size before GC: {self._format_size(size_before)}")
             
-            # Run GC with --delete-untagged to actually remove blobs
-            result = container.exec_run("registry garbage-collect --delete-untagged /etc/docker/registry/config.yml")
+            # --delete-untagged is known to also unlink the per-architecture child
+            # manifests of TAGGED multi-arch images on affected registry versions
+            # (distribution/distribution#3178), which leaves the manifest list
+            # pointing at manifests that no longer exist. Exposed as a config key so
+            # it can be turned off without a rebuild. Default preserves the previous
+            # behaviour — set registry.gc_delete_untagged = false to disable.
+            delete_untagged = self._get_config().get("registry", {}).get("gc_delete_untagged", True)
+            gc_cmd = "registry garbage-collect"
+            if delete_untagged:
+                gc_cmd += " --delete-untagged"
+            gc_cmd += " /etc/docker/registry/config.yml"
+            logger.info(f"[Registry] GC command: {gc_cmd}")
+
+            result = container.exec_run(gc_cmd)
+            gc_output = result.output.decode(errors="replace") if result.output else ""
             logger.info(f"[Registry] GC command exit code: {result.exit_code}")
+
+            # A non-zero exit means the collector aborted, possibly part-way through.
+            # Previously this only logged a warning and still returned success, so a
+            # failed GC reported a reclaimed figure as if it had worked.
             if result.exit_code != 0:
-                logger.warning(f"[Registry] GC stderr: {result.output.decode()}")
+                logger.error(f"[Registry] GC FAILED (exit {result.exit_code}): {gc_output}")
+                self._cleanup_empty_dirs()
+                size_after_failed = self.get_total_size().get("size_bytes", 0)
+                with self._cache_lock: self._images_cache = None
+                return {
+                    "status": "error",
+                    "message": f"garbage-collect exited with code {result.exit_code}",
+                    "exit_code": result.exit_code,
+                    "output": gc_output,
+                    "size_before": size_before,
+                    "size_after": size_after_failed,
+                    "reclaimed_bytes": size_before - size_after_failed,
+                    "reclaimed_formatted": self._format_size(size_before - size_after_failed)
+                }
             
             # Clean up empty directories after GC
             self._cleanup_empty_dirs()
@@ -760,7 +830,7 @@ class RegistryManager:
             
             return {
                 "status": "success", 
-                "output": result.output.decode(), 
+                "output": gc_output, 
                 "reclaimed_bytes": reclaimed, 
                 "reclaimed_formatted": self._format_size(reclaimed),
                 "size_before": size_before,
@@ -772,17 +842,64 @@ class RegistryManager:
         finally:
             if not skip_lock: self._release_lock()
 
-    def delete_tag(self, name, tag, skip_lock=False, auto_gc=None):
-        """Deletes a tag and cleans up physical directories."""
+    def _tags_sharing_digest(self, name, tag, digest):
+        """
+        Returns the OTHER tags in this repository that resolve to the same manifest
+        digest. DELETE /v2/<name>/manifests/<digest> removes the manifest revision
+        itself, which unlinks EVERY tag pointing at it — so deleting :latest when
+        :latest and :abc123 share a digest destroys both, leaving dangling tag links
+        that fail to pull. Callers use this to skip the API delete in that case.
+        Returns [] when the tag list cannot be read, which keeps the previous
+        behaviour rather than silently blocking deletes.
+        """
+        if not digest:
+            return []
+        others = []
+        try:
+            t_resp = self.session.get(f"{self.registry_url}/{name}/tags/list", timeout=10)
+            if t_resp.status_code != 200:
+                logger.warning(f"[Registry] Could not list tags for {name} (HTTP {t_resp.status_code}) - shared-digest check skipped")
+                return []
+            all_tags = t_resp.json().get("tags") or []
+        except Exception as e:
+            logger.warning(f"[Registry] Could not list tags for {name}: {e} - shared-digest check skipped")
+            return []
+
+        for other in all_tags:
+            if other == tag:
+                continue
+            try:
+                if self._resolve_digest(name, other) == digest:
+                    others.append(other)
+            except Exception as e:
+                logger.warning(f"[Registry] Could not resolve digest for {name}:{other}: {e}")
+                continue
+        return others
+
+    def delete_tag(self, name, tag, skip_lock=False, auto_gc=None, check_shared=True):
+        """
+        Deletes a tag and cleans up physical directories.
+        check_shared=False skips the shared-digest lookup — only safe for callers that
+        are removing every tag in the repository anyway (delete_image), where the check
+        would cost one tag list plus one digest resolve per remaining tag for nothing.
+        """
         if not skip_lock and not self._acquire_lock(LOCK_DELETE): return {"status": "busy"}
         if auto_gc is None: auto_gc = self._get_config().get("registry", {}).get("auto_gc_after_operations", True)
         try:
             digest = self._resolve_digest(name, tag)
             tag_path = os.path.join(self.storage_path, "docker", "registry", "v2", "repositories", name, "_manifests", "tags", tag)
             
+            # Other tags on the same digest would be destroyed by a digest delete.
+            shared_tags = self._tags_sharing_digest(name, tag, digest) if check_shared else []
+
             # Try API delete first
             api_success = False
-            if digest:
+            if digest and shared_tags:
+                logger.warning(
+                    f"[Registry] {name}:{tag} shares its manifest with {shared_tags} - "
+                    f"removing the tag only, keeping the manifest so those tags stay pullable"
+                )
+            elif digest:
                 try:
                     r = self.session.delete(f"{self.registry_url}/{name}/manifests/{digest}", timeout=10)
                     if r.status_code == 202:
@@ -798,6 +915,23 @@ class RegistryManager:
                 shutil.rmtree(tag_path)
                 logger.info(f"[Registry] Removed filesystem tag: {tag_path}")
             
+            # If the API delete did not happen (registry refused it, request failed) the
+            # manifest revision survives on disk while the tag link is gone. That revision
+            # keeps every layer it references alive, so the space is never reclaimed and
+            # the repo accumulates unreachable blobs. Drop the revision too — but only when
+            # no other tag points at it.
+            if digest and not api_success and not shared_tags:
+                revision_path = os.path.join(
+                    self.storage_path, "docker", "registry", "v2", "repositories", name,
+                    "_manifests", "revisions", "sha256", digest.split(":")[-1]
+                )
+                if os.path.exists(revision_path):
+                    try:
+                        shutil.rmtree(revision_path)
+                        logger.info(f"[Registry] Removed unreferenced manifest revision: {revision_path}")
+                    except Exception as e:
+                        logger.error(f"[Registry] Could not remove manifest revision {revision_path}: {e}")
+
             # Remove from watched list if present
             image_name = f"{name}:{tag}"
             self.remove_from_watch_list(image_name)
@@ -805,7 +939,7 @@ class RegistryManager:
             with self._cache_lock: self._images_cache = None
             self._cleanup_empty_dirs()
             
-            res = {"status": "success", "api_delete": api_success}
+            res = {"status": "success", "api_delete": api_success, "shared_tags_preserved": shared_tags}
             if auto_gc and not skip_lock: 
                 gc_result = self.run_gc(skip_lock=True)
                 res["gc"] = gc_result
@@ -839,7 +973,7 @@ class RegistryManager:
             
             # Delete each tag
             for tag in tags: 
-                result = self.delete_tag(name, tag, skip_lock=True, auto_gc=False)
+                result = self.delete_tag(name, tag, skip_lock=True, auto_gc=False, check_shared=False)
                 logger.info(f"[Registry] Delete tag {name}:{tag} result: {result}")
             
             # Force remove entire repository folder
@@ -1105,16 +1239,19 @@ class RegistryManager:
         # Create lookup dictionaries for watched images
         watched_retention = {}
         watched_timestamps = {}
+        watched_checked = {}
         for item in watched_images:
             img_name = item["image"]
             watched_retention[img_name] = item.get("retention", "latest")
             watched_timestamps[img_name] = item.get("last_updated")
+            watched_checked[img_name] = item.get("last_checked")
         
         for img in img_list["images"]:
             nt = f"{img['name']}:{img['tag']}"
             img["is_watched"] = nt in watched_retention
             img["retention_policy"] = watched_retention.get(nt)
             img["last_updated"] = watched_timestamps.get(nt)
+            img["last_checked"] = watched_checked.get(nt)
         return img_list
 
     def add_to_watch_list(self, image_name, retention="latest", auto_pull=True):
@@ -1203,8 +1340,15 @@ class RegistryManager:
 
     def identify_all_referenced_blobs(self):
         """Deep scan to find every blob referenced by any manifest in the registry."""
+        # Any gap in this scan makes real blobs look unreferenced, so track whether the
+        # scan was complete. force_delete_orphans() refuses to delete anything unless it
+        # was — one timed-out request used to be enough to mark a whole image as garbage.
+        self._reference_scan_complete = True
+
         img_list = self.list_images()
-        if img_list.get("error"): return set()
+        if img_list.get("error"):
+            self._reference_scan_complete = False
+            return set()
         
         referenced_digests = set()
         for img in img_list["images"]:
@@ -1212,15 +1356,29 @@ class RegistryManager:
                 m_resp = self.session.get(
                     f"{self.registry_url}/{img['name']}/manifests/{img['tag']}", 
                     headers=MANIFEST_HEADERS, 
-                    timeout=5
+                    timeout=30
                 )
                 if m_resp.status_code == 200:
-                    _, digests = self._calculate_image_size(img['name'], m_resp.json())
+                    m_data = m_resp.json()
+                    _, digests = self._calculate_image_size(img['name'], m_data)
                     referenced_digests.update(digests)
                     # Include the manifest digest itself
                     m_digest = m_resp.headers.get("Docker-Content-Digest")
                     if m_digest: referenced_digests.add(m_digest)
+
+                    # For a manifest list, the per-architecture child manifests are blobs
+                    # in their own right. _calculate_image_size only collects each child's
+                    # config and layer digests, not the child manifest digest, so without
+                    # this every multi-arch child manifest was classified as an orphan.
+                    if m_data.get("mediaType") in MANIFEST_LIST_TYPES:
+                        for sub in m_data.get("manifests", []):
+                            sub_digest = sub.get("digest")
+                            if sub_digest: referenced_digests.add(sub_digest)
+                else:
+                    self._reference_scan_complete = False
+                    logger.error(f"Reference scan incomplete: {img['name']}:{img['tag']} returned HTTP {m_resp.status_code}")
             except Exception as e:
+                self._reference_scan_complete = False
                 logger.error(f"Error scanning references for {img['name']}: {e}")
                 continue
         return referenced_digests
@@ -1256,6 +1414,18 @@ class RegistryManager:
         if not self._acquire_lock(LOCK_GC): return {"status": "busy"}
         try:
             orphans = self.get_orphan_details()
+
+            # An incomplete reference scan means blobs that ARE in use can appear in this
+            # list. Deleting on a partial scan is how a single slow response turns into a
+            # destroyed image, so abort instead.
+            if not getattr(self, "_reference_scan_complete", False):
+                logger.error("[Registry] Reference scan incomplete - refusing to hard-delete orphan blobs")
+                return {
+                    "status": "error",
+                    "message": "Reference scan incomplete - refusing to delete blobs. Check the registry is reachable and retry.",
+                    "candidates": len(orphans)
+                }
+
             deleted_count = 0
             deleted_size = 0
             for o in orphans:

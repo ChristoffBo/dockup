@@ -41,7 +41,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Trivy - use TARGETARCH (set by buildx), fall back to uname -m
-RUN TRIVY_VERSION="0.72.0" && \
+RUN TRIVY_VERSION="0.74.0" && \
     ARCH="${TARGETARCH:-$(uname -m)}" && \
     echo "Installing Trivy ${TRIVY_VERSION} for arch: ${ARCH}" && \
     case "${ARCH}" in \
