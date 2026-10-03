@@ -1098,7 +1098,7 @@
         body.light-theme .nav-item.active { background: var(--accent-soft); color: var(--accent); }
 
         /* page */
-        .main-content { padding: 28px 32px; max-width: 1680px; width: 100%; margin: 0 auto; }
+        .main-content { padding: 28px 32px; width: 100%; }
         .header { margin-bottom: 22px; }
         .header h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.025em; margin-bottom: 4px; }
         .header p { color: var(--text-muted); font-size: 14px; }
@@ -1148,7 +1148,7 @@
         .status-running { background: var(--success-soft); color: var(--success); }
         .status-stopped { background: var(--danger-soft); color: var(--danger); }
         .status-updating { background: var(--warn-soft); color: var(--warn); }
-        .fresh-badge { animation: none; }
+        .fresh-badge { animation: none; max-width: none; overflow: visible; text-overflow: clip; }
 
         /* forms */
         .form-label { color: var(--text-muted); font-size: 13px; font-weight: 550; margin-bottom: 6px; }
@@ -1256,7 +1256,7 @@
         .st-error { color: var(--danger); }
         .st-warn { color: var(--warn); }
         .st-hint { color: var(--text-dim); }
-        .editor-actions { align-items: center; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+        .editor-actions { align-items: center; margin-top: 18px; padding: 14px 0 26px; border-top: 1px solid var(--border); position: sticky; bottom: -26px; background: var(--surface); z-index: 5; margin-bottom: -26px; }
         .kbd-hint { margin-left: auto; color: var(--text-dim); font-size: 12px; }
         kbd { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text-muted); }
         .editor-section { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; }
