@@ -1,4 +1,4 @@
-name: Build and Push Docker Image (DockerHub Multi-Arch)
+name: "Multi-Arch → Docker Hub (cbothma/dockup:latest + 3.0.0)"
 
 on:
   workflow_dispatch:

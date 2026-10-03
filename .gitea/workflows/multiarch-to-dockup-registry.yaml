@@ -1,4 +1,4 @@
-name: Build and Push Docker Image to Dockup
+name: "Multi-Arch → DockUp private registry (10.0.0.240:5500/cbothma/dockup:latest)"
 
 on:
   workflow_dispatch:
@@ -9,6 +9,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
+        with:
+          image: gitea.bothmainc.com/cbothma/binfmt:latest
+          platforms: all
 
       # IMPORTANT: Allows Buildx to push to your local HTTP registry
       - name: Set up Docker Buildx
@@ -21,20 +27,27 @@ jobs:
 
       # THE LOGIN STEP HAS BEEN REMOVED SINCE NO AUTH IS REQUIRED
 
-      - name: Build and push
+      - name: Build and push multi-arch
         uses: docker/build-push-action@v5
         with:
           context: ./dockup
           file: ./dockup/Dockerfile
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             10.0.0.240:5500/cbothma/dockup:latest
+
+      - name: Build summary
+        run: |
+          echo "✅ Multi-arch build complete!"
+          echo "🗂️  Platforms: linux/amd64, linux/arm64"
+          echo "📦 Pushed to: 10.0.0.240:5500/cbothma/dockup:latest"
 
       - name: Notify Gotify
         if: always()
         run: |
-          TITLE="🐳 Docker Build: ${{ github.repository }}"
-          MESSAGE="Platform: linux/amd64\nImage: dockup:latest (Private)\nStatus: ${{ job.status }}"
+          TITLE="🐳 Multi-Arch Build (Private): ${{ github.repository }}"
+          MESSAGE="Platforms: amd64 + arm64\nImage: dockup:latest (Private)\nStatus: ${{ job.status }}"
           
           if [ "${{ job.status }}" = "success" ]; then
             PRIORITY=3
@@ -45,4 +58,3 @@ jobs:
           curl -X POST "http://10.0.0.100:2580/message?token=120ff2" \
             -H "Content-Type: application/json" \
             -d "{\"title\": \"${TITLE}\", \"message\": \"${MESSAGE}\", \"priority\": ${PRIORITY}}"
-            

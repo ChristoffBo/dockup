@@ -1,4 +1,4 @@
-name: Build and Push Docker Image (Multi-Arch)
+name: "Multi-Arch → Gitea registry (gitea.bothmainc.com/cbothma/dockup:latest)"
 
 on:
   workflow_dispatch:
