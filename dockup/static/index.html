@@ -2004,7 +2004,7 @@
                         </div>
 
                         <div class="btn-group" style="margin-top: 15px;">
-                            <button class="btn btn-success" @click="stackOperationWithTerminal(stack.name, 'up')">
+                            <button class="btn btn-success" @click="stack.is_local ? stackOperationWithTerminal(stack.name, 'up') : remoteStackOperation(stack, 'up')">
                                 <i class="fas fa-play"></i> Start
                             </button>
                             <button class="btn btn-edit" @click="editStack(stack.name)" :disabled="!stack.is_local" :title="!stack.is_local ? 'Cannot edit remote stacks' : ''">
@@ -6665,17 +6665,28 @@ sudo systemctl restart docker</pre>
                 async stackOperation(stackName, operation) {
                     try {
                         const response = await axios.post(`/api/stack/${stackName}/operation`, { operation });
+                        const inModal = this.showOperationModal && this.terminalStack === stackName;
                         
                         // If output is returned and modal is open, display it
-                        if (response.data.output && this.showOperationModal && this.terminalStack === stackName) {
+                        if (response.data.output && inModal) {
                             const lines = response.data.output.split('\n').filter(line => line.trim());
                             this.terminalOutput.push(...lines);
                         }
+                        if (response.data.success === false) {
+                            throw { response: { data: response.data } };
+                        }
+                        if (inModal) this.terminalOutput.push(`✓ ${operation} finished`);
                         
                         this.showToast('Success', `Stack ${operation} completed`, 'success');
                         await this.loadStacks();
                     } catch (error) {
-                        this.showToast('Error', `Failed to ${operation} stack: ${error.response?.data?.error || error.message}`, 'error');
+                        const msg = error.response?.data?.error || error.message || 'unknown error';
+                        // v3: show the failure in the operation window too — it used to
+                        // sit on "Starting operation..." forever
+                        if (this.showOperationModal && this.terminalStack === stackName) {
+                            this.terminalOutput.push(`✗ ${operation} failed: ${msg}`);
+                        }
+                        this.showToast('Error', `Failed to ${operation} stack: ${msg}`, 'error');
                     }
                 },
                 stackOperationWithTerminal(stackName, operation) {

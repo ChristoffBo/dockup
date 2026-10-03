@@ -2516,6 +2516,11 @@ def import_orphan_containers_as_stacks():
             if container.name.startswith('GITEA-ACTIONS-TASK'):
                 continue
 
+            # v3: skip throwaway `docker run --rm` containers — they delete
+            # themselves, and were being imported as permanent stacks
+            if (container.attrs.get('HostConfig') or {}).get('AutoRemove'):
+                continue
+
             if container.image and container.image.tags:
                 image_tags_lower = ' '.join(tag.lower() for tag in container.image.tags)
                 if 'dockup' in image_tags_lower or 'dockge' in image_tags_lower:
@@ -7131,6 +7136,10 @@ def websocket_terminal(ws, container_id):
                         }))
                     except (socket.timeout, BlockingIOError):
                         continue
+                    except OSError as e:
+                        # [Errno 9] once the window was closed and the socket shut — normal
+                        logger.info(f"Terminal reader stopped: {e}")
+                        break
                     except Exception as e:
                         logger.error(f"Terminal reader error: {e}")
                         break
@@ -7169,11 +7178,15 @@ def websocket_terminal(ws, container_id):
                 exec_sock.sendall(message.encode('utf-8'))
 
     except Exception as e:
-        logger.error(f"Terminal setup error: {e}", exc_info=True)
-        try:
-            ws.send(json.dumps({'type': 'error', 'data': str(e)}))
-        except:
-            pass
+        if 'Connection closed' in str(e):
+            # the browser closed the terminal window — normal, not an error
+            logger.info(f"Terminal window closed by the browser: {container_id[:12]}")
+        else:
+            logger.error(f"Terminal setup error: {e}", exc_info=True)
+            try:
+                ws.send(json.dumps({'type': 'error', 'data': str(e)}))
+            except:
+                pass
     finally:
         if exec_sock:
             try:
