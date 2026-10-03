@@ -36,13 +36,13 @@ jobs:
           platforms: linux/amd64
           tags: |
             cbothma/dockup:latest
-            cbothma/dockup:1.2.9
+            cbothma/dockup:3.0.0
 
       - name: Notify Gotify
         if: always()
         run: |
           TITLE="🐳 DockerHub Push: dockup"
-          MESSAGE="Platform: linux/amd64\nRegistry: DockerHub\nTags: latest, 1.2.9\nStatus: ${{ job.status }}"
+          MESSAGE="Platform: linux/amd64\nRegistry: DockerHub\nTags: latest, 3.0.0\nStatus: ${{ job.status }}"
           
           if [ "${{ job.status }}" = "success" ]; then
             PRIORITY=4
