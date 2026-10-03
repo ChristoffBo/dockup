@@ -13,7 +13,7 @@ PERFORMANCE OPTIMIZATIONS:
 """
 
 # VERSION - Update this when releasing new version
-DOCKUP_VERSION = "2.0.3"
+DOCKUP_VERSION = "3.0.0"
 
 import os
 import json
@@ -54,6 +54,76 @@ import registry_deployment
 import shlex
 import re
 from typing import Dict, List, Tuple, Any
+
+
+# ---- v2.1: standard-cron scheduling (see make_cron_trigger) ----
+CRON_MACROS = {
+    '@yearly': '0 0 1 1 *', '@annually': '0 0 1 1 *', '@monthly': '0 0 1 * *',
+    '@weekly': '0 0 * * 0', '@daily': '0 0 * * *', '@midnight': '0 0 * * *', '@hourly': '0 * * * *',
+}
+_DOW_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+
+
+def _cron_dow_to_names(field):
+    """Standard cron day-of-week (0 or 7 = Sunday) -> explicit APScheduler day names."""
+    if field in ('*', '?'):
+        return '*'
+    days = []
+    for part in field.split(','):
+        part = part.strip().lower()
+        step = 1
+        if '/' in part:
+            part, step_s = part.split('/', 1)
+            step = int(step_s)
+            if step < 1:
+                raise ValueError(f"bad step in day-of-week: {field}")
+        if part in ('*', '?'):
+            lo, hi = 0, 6
+        elif '-' in part:
+            a, b = part.split('-', 1)
+            lo, hi = _dow_index(a), _dow_index(b)
+            if hi < lo:            # e.g. 5-1 (Fri..Mon) wraps through Sunday
+                hi += 7
+        else:
+            lo = hi = _dow_index(part)
+        for d in range(lo, hi + 1, step):
+            name = _DOW_NAMES[d % 7]
+            if name not in days:
+                days.append(name)
+    if not days:
+        raise ValueError(f"empty day-of-week: {field}")
+    return ','.join(days)
+
+
+def _dow_index(token):
+    token = token.strip().lower()
+    if token[:3] in _DOW_NAMES:
+        return _DOW_NAMES.index(token[:3])
+    n = int(token)
+    if not 0 <= n <= 7:
+        raise ValueError(f"day-of-week out of range: {token}")
+    return n % 7
+
+
+def make_cron_trigger(expr, timezone=None):
+    """A CronTrigger that runs when standard cron says it should.
+
+    v2.1: CronTrigger.from_crontab (APScheduler 3.x) counts day-of-week from
+    MONDAY = 0, so '0 3 * * 0' (Sunday) ran on Monday and '1-5' (Mon-Fri) ran
+    Tue-Sat — verified against the pinned 3.11.3. Macros like @daily were
+    refused even though the API accepted them. Raises ValueError on anything
+    it cannot schedule, so validation and scheduling agree.
+    """
+    from apscheduler.triggers.cron import CronTrigger
+    expr = (expr or '').strip()
+    expr = CRON_MACROS.get(expr.lower(), expr)
+    fields = expr.split()
+    if len(fields) != 5:
+        raise ValueError(f"cron needs 5 fields (minute hour day month weekday), got {len(fields)}: {expr!r}")
+    minute, hour, day, month, dow = fields
+    return CronTrigger(minute=minute, hour=hour, day=day, month=month,
+                       day_of_week=_cron_dow_to_names(dow), timezone=timezone)
+
 
 # ============================================================================
 # LOGGING SETUP - 24-hour rotation with 7 days retention
@@ -392,29 +462,35 @@ def health_check_background_worker():
             
             health_check_last_run = current_time
             
-            # Get all stacks with running containers
+            # v2.1: only RUNNING containers were collected, so a container that
+            # crashed and exited dropped out and the "exited/dead" branch of
+            # check_stack_health could never fire — no alert for a crashed app.
+            # Now: every stack with at least one container running or restarting
+            # is checked with ALL its containers. A fully stopped stack is taken
+            # as stopped on purpose and not alerted on.
             all_containers = get_all_containers_cached()
-            stacks_to_check = {}
-            
+            by_stack = {}
             for container in all_containers:
-                if container.status == 'running':
-                    stack_name = container.labels.get('com.docker.compose.project')
-                    if stack_name:
-                        if stack_name not in stacks_to_check:
-                            stacks_to_check[stack_name] = []
-                        
-                        # Build container info
-                        health_status = None
-                        state = container.attrs.get('State', {})
-                        if 'Health' in state:
-                            health_status = state['Health'].get('Status', 'none')
-                        
-                        stacks_to_check[stack_name].append({
-                            'id': container.id[:12],
-                            'name': container.name,
-                            'status': container.status,
-                            'health': health_status
-                        })
+                stack_name = container.labels.get('com.docker.compose.project')
+                if stack_name:
+                    by_stack.setdefault(stack_name, []).append(container)
+            
+            stacks_to_check = {}
+            for stack_name, members in by_stack.items():
+                if not any(c.status in ('running', 'restarting') for c in members):
+                    continue
+                infos = []
+                for container in members:
+                    state = container.attrs.get('State', {}) or {}
+                    health_status = state['Health'].get('Status', 'none') if 'Health' in state else None
+                    infos.append({
+                        'id': container.id[:12],
+                        'name': container.name,
+                        'status': container.status,
+                        'health': health_status,
+                        'exit_code': state.get('ExitCode'),
+                    })
+                stacks_to_check[stack_name] = infos
             
             # Check health for each stack
             for stack_name, containers in stacks_to_check.items():
@@ -1209,9 +1285,23 @@ def load_config():
 
 
 def save_config():
-    """Save configuration to file"""
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=2)
+    """Save configuration to file — atomically, under the lock shared with registry_manager.
+
+    v2.1: registry_manager owns registry.watched_images and writes it straight to
+    the file; this in-memory copy was stale, so every settings save reverted the
+    watch list (and its last_checked stamps) to what it was at startup.
+    """
+    with registry_manager.CONFIG_IO_LOCK:
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r') as f:
+                    on_disk = json.load(f)
+                disk_watch = (on_disk.get('registry') or {}).get('watched_images')
+                if disk_watch is not None:
+                    config.setdefault('registry', {})['watched_images'] = disk_watch
+        except Exception as e:
+            logger.warning(f"save_config: could not read current watch list from disk: {e}")
+        registry_manager.atomic_write_json(CONFIG_FILE, config)
 
 
 def load_schedules():
@@ -1226,10 +1316,7 @@ def load_schedules():
             # Don't call save_schedules() here - we already have the lock
             # Just write directly to avoid deadlock
             try:
-                with open(SCHEDULES_FILE, 'w') as f:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-                    json.dump(schedules, f, indent=2)
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                registry_manager.atomic_write_json(SCHEDULES_FILE, schedules)
             except Exception as e:
                 logger.error(f"Error creating schedules file: {e}")
 
@@ -1238,11 +1325,8 @@ def save_schedules():
     """Save schedules to file with file locking"""
     try:
         with schedules_lock:
-            schedules_snapshot = schedules.copy()
-        with open(SCHEDULES_FILE, 'w') as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            json.dump(schedules_snapshot, f, indent=2)
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            schedules_snapshot = json.loads(json.dumps(schedules))   # deep copy under the lock
+        registry_manager.atomic_write_json(SCHEDULES_FILE, schedules_snapshot)
     except Exception as e:
         logger.error(f"Error saving schedules: {e}")
 
@@ -1262,11 +1346,8 @@ def save_health_status():
     """Save health status tracking to file with file locking"""
     try:
         with health_status_lock:
-            health_status_snapshot = health_status.copy()
-        with open(HEALTH_STATUS_FILE, 'w') as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            json.dump(health_status_snapshot, f, indent=2)
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            health_status_snapshot = json.loads(json.dumps(health_status))
+        registry_manager.atomic_write_json(HEALTH_STATUS_FILE, health_status_snapshot)
     except Exception as e:
         logger.error(f"Error saving health status: {e}")
 
@@ -1284,10 +1365,7 @@ def load_update_history():
 def save_update_history():
     """Save update history to file with file locking"""
     try:
-        with open(UPDATE_HISTORY_FILE, 'w') as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            json.dump(update_history, f, indent=2)
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        registry_manager.atomic_write_json(UPDATE_HISTORY_FILE, update_history)
     except Exception as e:
         logger.error(f"Error saving update history: {e}")
 
@@ -1342,11 +1420,8 @@ def save_update_status():
     try:
         status_file = get_update_status_file()
         with update_status_lock:
-            update_status_snapshot = update_status.copy()
-        with open(status_file, 'w') as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            json.dump(update_status_snapshot, f, indent=2)
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            update_status_snapshot = json.loads(json.dumps(update_status))
+        registry_manager.atomic_write_json(status_file, update_status_snapshot)
     except Exception as e:
         logger.error(f"Error saving update status: {e}")
 
@@ -1360,7 +1435,14 @@ def get_stack_metadata(stack_name):
             with open(meta_file, 'r') as f:
                 return json.load(f)
         except json.JSONDecodeError as e:
-            logger.info(f"⚠ Metadata corrupted for {stack_name}, resetting: {e}")
+            # v2.1: keep the broken file instead of letting the next save silently
+            # replace it (that lost tags, web UI URL and action schedules).
+            keep = meta_file + '.corrupt-' + datetime.now().strftime('%Y%m%d-%H%M%S')
+            try:
+                os.replace(meta_file, keep)
+            except OSError:
+                keep = '(could not move it aside)'
+            logger.warning(f"⚠ Metadata corrupted for {stack_name}, kept as {keep}: {e}")
             return {}
         except Exception as e:
             logger.info(f"⚠ Could not load metadata for {stack_name}: {e}")
@@ -1373,8 +1455,7 @@ def save_stack_metadata(stack_name, metadata):
     stack_path = os.path.join(STACKS_DIR, stack_name)
     Path(stack_path).mkdir(parents=True, exist_ok=True)
     meta_file = os.path.join(stack_path, '.dockup-meta.json')
-    with open(meta_file, 'w') as f:
-        json.dump(metadata, f, indent=2)
+    registry_manager.atomic_write_json(meta_file, metadata)
 
 
 def setup_notifications():
@@ -1709,6 +1790,20 @@ def load_password_hash():
     return None
 
 
+def has_valid_api_token():
+    """True when the request carries this instance's API token (X-API-Token).
+
+    2026-10-03: peers authenticate with X-API-Token, but with password protection
+    on, check_auth and require_auth accepted ONLY the login cookie — every
+    request from a peer got 401, so a password-protected DockUp could not be
+    used as a peer at all. An empty configured token is never accepted.
+    """
+    import hmac
+    sent = request.headers.get('X-API-Token', '')
+    mine = str(config.get('api_token', '') or '')
+    return bool(sent) and bool(mine) and hmac.compare_digest(sent, mine)
+
+
 def require_auth(f):
     """Decorator to require authentication"""
     @wraps(f)
@@ -1717,14 +1812,35 @@ def require_auth(f):
         if not config.get('password_enabled', False):
             return f(*args, **kwargs)
         
-        # Check if authenticated
-        if not session.get('authenticated'):
+        # Check if authenticated (login session, or a peer's API token)
+        if not session.get('authenticated') and not has_valid_api_token():
             if request.path.startswith('/api/'):
                 return jsonify({'error': 'Authentication required'}), 401
             return redirect(url_for('login'))
         
         return f(*args, **kwargs)
     return decorated_function
+
+
+def is_valid_stack_name(name):
+    """A stack name must be ONE plain folder name inside STACKS_DIR.
+
+    2026-10-03: no route checked this. Flask hands '.' and '..' (also sent as
+    %2e%2e) straight to the view, so DELETE /api/stack/%2e%2e ran
+    shutil.rmtree(os.path.join(STACKS_DIR, '..')) — the folder ABOVE the stacks
+    folder — and clone's new_name could copy anywhere. Symlinked stack folders
+    are still allowed: only the name itself is checked.
+    """
+    return (isinstance(name, str) and name not in ('', '.', '..')
+            and '/' not in name and '\\' not in name and '\x00' not in name)
+
+
+@app.url_value_preprocessor
+def reject_invalid_stack_names(endpoint, values):
+    """Runs before any view (and before check_auth) for every route with <stack_name>."""
+    if values and 'stack_name' in values and not is_valid_stack_name(values['stack_name']):
+        from flask import abort, make_response
+        abort(make_response(jsonify({'error': 'Invalid stack name'}), 400))
 
 
 @app.before_request
@@ -1748,8 +1864,10 @@ def check_auth():
         if request.path.startswith(path):
             return None
     
-    # Check authentication
+    # Check authentication (login session, or a peer's API token on /api/)
     if not session.get('authenticated'):
+        if request.path.startswith('/api/') and has_valid_api_token():
+            return None
         if request.path.startswith('/api/'):
             return jsonify({'error': 'Authentication required'}), 401
         # Redirect to setup if password not set, otherwise login
@@ -1857,12 +1975,9 @@ def stack_action(stack_name, action):
     Returns: (success: bool, message: str)
     """
     stack_path = os.path.join(STACKS_DIR, stack_name)
-    compose_file = os.path.join(stack_path, 'compose.yaml')
+    compose_file = find_compose_file(stack_path)
     
-    if not os.path.exists(compose_file):
-        compose_file = os.path.join(stack_path, 'docker-compose.yml')
-    
-    if not os.path.exists(compose_file):
+    if not compose_file:
         return False, "Compose file not found"
     
     try:
@@ -1923,11 +2038,13 @@ def update_stack_action_jobs(stack_name, schedules_list):
     
     user_tz = pytz.timezone(config.get('timezone', 'UTC'))
     
-    # Remove old action jobs for this stack
+    # Remove old action jobs for this stack.
+    # v2.1: matched by ID prefix ("start_media_"), which also removed the jobs of
+    # any stack whose name merely starts the same way ("media_server"). Match
+    # on the job's own stack argument instead.
     for job in list(scheduler.get_jobs()):
-        if (job.id.startswith(f"start_{stack_name}_") or 
-            job.id.startswith(f"stop_{stack_name}_") or 
-            job.id.startswith(f"restart_{stack_name}_")):
+        if (getattr(job, 'func', None) is scheduled_stack_action
+                and job.args and job.args[0] == stack_name):
             try:
                 scheduler.remove_job(job.id)
                 logger.info(f"[Action Jobs] Removed old job: {job.id}")
@@ -1946,7 +2063,7 @@ def update_stack_action_jobs(stack_name, schedules_list):
             continue
         
         try:
-            trigger = CronTrigger.from_crontab(cron_expr, timezone=user_tz)
+            trigger = make_cron_trigger(cron_expr, timezone=user_tz)
             job_id = f"{action}_{stack_name}_{schedule.get('id', hashlib.md5(cron_expr.encode()).hexdigest()[:8])}"
             
             scheduler.add_job(
@@ -2022,8 +2139,12 @@ def check_stack_health(stack_name, containers):
     for container in containers:
         if container['health'] == 'unhealthy':
             unhealthy_containers.append(f"{container['name']}: unhealthy (failing health check)")
-        elif container['status'] in ['exited', 'dead', 'paused']:
-            unhealthy_containers.append(f"{container['name']}: {container['status']}")
+        elif container['status'] == 'exited' and container.get('exit_code') == 0:
+            continue   # v2.1: a one-shot/init container that finished cleanly is not a failure
+        elif container['status'] in ['exited', 'dead', 'paused', 'restarting']:
+            code = container.get('exit_code')
+            detail = f" (exit code {code})" if container['status'] == 'exited' and code is not None else ""
+            unhealthy_containers.append(f"{container['name']}: {container['status']}{detail}")
     
     current_time = datetime.now(pytz.UTC).isoformat()
     
@@ -2209,7 +2330,7 @@ def calculate_appdata_sizes():
             logger.info(f"ERROR: Stacks directory does not exist: {STACKS_DIR}")
             return
         
-        stack_names = [d.name for d in stacks_dir.iterdir() if d.is_dir()]
+        stack_names = [d.name for d in stacks_dir.iterdir() if d.is_dir() and not d.name.startswith('.')]
         logger.info(f"Found {len(stack_names)} stack directories: {stack_names}")
         
         if len(stack_names) == 0:
@@ -2343,13 +2464,36 @@ def calculate_appdata_sizes():
         traceback.print_exc()
 
 
+IMPORT_SEEN_FILE = os.path.join(DATA_DIR, 'imported_containers.json')
+
+
+def _load_import_seen():
+    try:
+        with open(IMPORT_SEEN_FILE) as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+
 def import_orphan_containers_as_stacks():
-    """Automatically detect and import containers without com.docker.compose.project label"""
+    """Automatically detect and import containers without com.docker.compose.project label
+
+    v2.1: Docker cannot add labels to an existing container (container.update()
+    has no labels argument), so the old "mark as imported" step always failed:
+    the imported stack never showed its container, and after you deleted the
+    imported stack the container was imported again 15 minutes later. Imports
+    are now remembered in imported_containers.json, and the stack finds its
+    container by the name stored in its metadata.
+    """
     try:
         all_containers = docker_client.containers.list(all=True)
+        seen = _load_import_seen()
+        seen_changed = False
 
         for container in all_containers:
             labels = container.labels
+            if container.id in seen:
+                continue
 
             # Skip if already part of a compose stack
             if labels.get('com.docker.compose.project'):
@@ -2443,15 +2587,15 @@ def import_orphan_containers_as_stacks():
             with open(compose_file, 'w') as f:
                 yaml.safe_dump(compose_data, f, sort_keys=False)
 
-            # Mark container as imported (modern docker-py 6.0+ way)
+            # Remember the import and link the stack to its container by name
+            seen.add(container.id)
+            seen_changed = True
             try:
-                container.update(labels={
-                    'com.docker.compose.project': compose_project_name(stack_name),
-                    'dockup.imported': 'true'
-                })
-                container.reload()
+                meta = get_stack_metadata(stack_name)
+                meta.update({'imported_container': container.name, 'ever_started': True})
+                save_stack_metadata(stack_name, meta)
             except Exception as e:
-                logger.info(f"[Dockup] Warning: Could not label container {container.name}: {e}")
+                logger.info(f"[Dockup] Warning: could not record import metadata for {container.name}: {e}")
 
             send_notification(
                 "Dockup – Orphan Imported",
@@ -2459,6 +2603,9 @@ def import_orphan_containers_as_stacks():
                 'info'
             )
             broadcast_ws({'type': 'stacks_changed'})
+
+        if seen_changed:
+            registry_manager.atomic_write_json(IMPORT_SEEN_FILE, sorted(seen))
 
     except Exception as e:
         logger.info(f"[Dockup] Orphan import error: {e}")
@@ -2717,7 +2864,8 @@ def get_stack_stats_batch(stack_containers_map):
         try:
             # Calculate CPU percentage
             cpu_delta = stats_result['cpu_stats']['cpu_usage']['total_usage'] - stats_result['precpu_stats']['cpu_usage']['total_usage']
-            system_delta = stats_result['cpu_stats']['system_cpu_usage'] - stats_result['precpu_stats']['system_cpu_usage']
+            # v2.1: a container's first sample has no precpu system_cpu_usage
+            system_delta = stats_result['cpu_stats'].get('system_cpu_usage', 0) - stats_result['precpu_stats'].get('system_cpu_usage', 0)
             cpu_count = stats_result['cpu_stats'].get('online_cpus', 1)
             
             if system_delta > 0 and cpu_delta > 0:
@@ -2815,8 +2963,8 @@ def require_api_token(f):
             return f(*args, **kwargs)
         
         # Check for valid API token in headers
-        token = request.headers.get('X-API-Token', '')
-        if token != config.get('api_token', ''):
+        # 2026-10-03: with no token configured, an EMPTY header used to match.
+        if not has_valid_api_token():
             return jsonify({'error': 'Invalid or missing API token'}), 401
         
         return f(*args, **kwargs)
@@ -2831,43 +2979,110 @@ def get_peer_session(peer_id):
     if not peer or not peer.get('enabled', True):
         return None
     
-    # Check if we have a cached session
-    if peer_id in peer_sessions:
-        session = peer_sessions[peer_id]
-        # Test if session is still valid
-        try:
-            test = session.get(f"{peer['url']}/api/ping", timeout=3, headers={'X-API-Token': peer['api_token']})
-            if test.status_code == 200:
-                return session
-        except:
-            pass
-    
-    # Create new session
-    session = requests.Session()
-    session.headers.update({'X-API-Token': peer['api_token']})
-    peer_sessions[peer_id] = session
+    # 2026-10-03: the cached session used to be "tested" with a /api/ping before
+    # EVERY peer request — one extra round trip each time, and up to 3 s more
+    # for an offline peer. The session only carries the token header, so it is
+    # simply reused; the real request reports any failure.
+    session = peer_sessions.get(peer_id)
+    if session is None or session.headers.get('X-API-Token') != peer.get('api_token'):
+        session = requests.Session()
+        session.headers.update({'X-API-Token': peer.get('api_token', '')})
+        peer_sessions[peer_id] = session
     return session
+
+
+# 2026-10-03: a peer that just failed is skipped for a short while instead of
+# making every stack refresh wait for it again.
+PEER_RETRY_SECONDS = 30
+peer_down_until = {}
+# v2.1: last known state per peer, filled as a side effect of normal refreshes
+# (no extra requests) — shown in the UI so a peer's stacks no longer just vanish.
+peer_status = {}   # peer_id -> {'state': 'online'|'offline'|'auth'|'error', 'detail', 'since', 'checked'}
+
+
+def _set_peer_status(peer_id, state, detail=''):
+    now = datetime.now(pytz.UTC).isoformat()
+    prev = peer_status.get(peer_id, {})
+    peer_status[peer_id] = {
+        'state': state,
+        'detail': detail,
+        'since': prev.get('since') if prev.get('state') == state else now,
+        'checked': now,
+    }
+
+
+def peer_base_url(peer):
+    return (peer.get('url') or '').rstrip('/')
+
+
+def _peer_error_text(e):
+    """v2.1: short, readable reason instead of urllib3's 300-char repr."""
+    if isinstance(e, requests.exceptions.Timeout):
+        return 'Timed out — the server is slow or unreachable'
+    if isinstance(e, requests.exceptions.ConnectionError):
+        return 'Cannot connect — DockUp on that server is down or the address/port is wrong'
+    return str(e)[:200]
+
+
+def fetch_peer_stacks(peer_id, peer):
+    """One peer's stacks for /api/stacks/all, or [] if it is down. Never raises."""
+    if peer_down_until.get(peer_id, 0) > time.time():
+        return []
+    try:
+        session = get_peer_session(peer_id)
+        if not session:
+            return []
+        # connect fast, but give a busy peer up to 10 s to build its stack list
+        response = session.get(f"{peer_base_url(peer)}/api/stacks", timeout=(3, 10))
+        if response.status_code in (401, 403):
+            # Wrong/regenerated token: not "down", so no blackout — just say so.
+            _set_peer_status(peer_id, 'auth', 'The peer refused the API token — re-enter it in Settings → Peers')
+            logger.warning(f"Peer {peer_id} refused the API token (HTTP {response.status_code})")
+            return []
+        if response.status_code != 200:
+            _set_peer_status(peer_id, 'error', f'HTTP {response.status_code}')
+            logger.warning(f"Peer {peer_id} returned HTTP {response.status_code} for /api/stacks")
+            return []
+        peer_stacks = response.json()
+        for stack in peer_stacks:
+            stack['peer_id'] = peer_id
+            stack['peer_name'] = peer.get('name', peer_id)
+            stack['is_local'] = False
+        peer_down_until.pop(peer_id, None)
+        _set_peer_status(peer_id, 'online')
+        return peer_stacks
+    except Exception as e:
+        peer_down_until[peer_id] = time.time() + PEER_RETRY_SECONDS
+        _set_peer_status(peer_id, 'offline', _peer_error_text(e))
+        logger.error(f"Error fetching stacks from peer {peer_id} (skipping it for "
+                     f"{PEER_RETRY_SECONDS}s): {e}")
+        return []
 
 def compose_project_name(stack_name):
     """
     Returns the project name Docker Compose will actually use for a stack directory.
 
-    Compose derives the project name from the directory basename: it lowercases it,
-    then takes the first run matching [a-z0-9]+[-_a-z0-9]* (compose-go cli/options.go).
+    Compose derives the project name from the directory basename with
+    compose-go loader.NormalizeProjectName: lowercase it, KEEP every character in
+    [a-z0-9_-] and drop the rest, then trim leading '_' and '-'.
     A folder called "MCP" therefore labels its containers com.docker.compose.project=mcp,
     and DockUp — which matched on the directory name verbatim — listed the stack as
     "Never Started" while it was up and healthy. Examples:
         MCP        -> mcp
-        My.Project -> my          (truncated at the first invalid character)
+        My.Project -> myproject
+        my app     -> myapp
         _stack     -> stack
-    Falls back to the lowercased name if nothing matches, so a caller always gets a
+    2026-10-03: the 2.0.3 version cut the name at the first invalid character
+    ("My.Project" -> "my"), which did not match Compose and made "my.app" and
+    "my.db" both look like project "my".
+    Falls back to the lowercased name if nothing is left, so a caller always gets a
     usable key rather than an empty string.
     """
     if not stack_name:
         return stack_name
     lowered = stack_name.lower()
-    match = re.search(r'[a-z0-9]+[-_a-z0-9]*', lowered)
-    return match.group(0) if match else lowered
+    normalized = ''.join(re.findall(r'[a-z0-9_-]', lowered)).lstrip('_-')
+    return normalized or lowered
 
 
 def list_stack_containers(stack_name, all=True, service=None):
@@ -2893,6 +3108,16 @@ def list_stack_containers(stack_name, all=True, service=None):
             labels.append(f'com.docker.compose.service={service}')
         for container in docker_client.containers.list(all=all, filters={'label': labels}):
             found[container.id] = container
+    # v2.1: an auto-imported stack's container has no compose label (Docker
+    # cannot add one to an existing container) — find it by its name instead.
+    if not found and stack_name.startswith('imported-') and not service:
+        try:
+            name = get_stack_metadata(stack_name).get('imported_container') or stack_name[len('imported-'):]
+            c = docker_client.containers.get(name)
+            if all or c.status == 'running':
+                found[c.id] = c
+        except Exception:
+            pass
     return list(found.values())
 
 
@@ -2921,6 +3146,8 @@ def get_stacks():
     # First, check direct subdirectories (most common)
     try:
         for item in os.listdir(STACKS_DIR):
+            if item.startswith('.'):
+                continue   # v2.1: hidden folders (e.g. .<stack>.pre-restore.<ts>) are not stacks
             item_path = os.path.join(STACKS_DIR, item)
             if os.path.isdir(item_path):
                 # Look for compose files
@@ -3219,18 +3446,36 @@ def get_stacks_cached():
     return stacks_data
 
 
+COMPOSE_FILENAMES = ('compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml')
+
+
+def find_compose_file(stack_path):
+    """The compose file Docker Compose itself would pick in stack_path, or None.
+
+    v2.1: stack_operation, stack_action and get_stack_compose only knew
+    compose.yaml and docker-compose.yml, so a stack using compose.yml or
+    docker-compose.yaml was listed but could not be started, updated or edited.
+    """
+    for filename in COMPOSE_FILENAMES:
+        path = os.path.join(stack_path, filename)
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def get_stack_compose(stack_name):
-    """Get compose file content for a stack with environment variable expansion"""
-    stack_path = os.path.join(STACKS_DIR, stack_name)
-    compose_file = os.path.join(stack_path, 'compose.yaml')
-    if not os.path.exists(compose_file):
-        compose_file = os.path.join(stack_path, 'docker-compose.yml')
-    
-    if os.path.exists(compose_file):
+    """Get the compose file content for a stack EXACTLY as it is on disk.
+
+    v2.1: this used to return the text with ${VARS} already substituted. The
+    editor showed that text and Save wrote it back, so opening a stack and
+    pressing Save baked secrets from .env (and DockUp's own environment) into
+    compose.yaml permanently. Expansion now happens only where it belongs —
+    for validation and for running compose.
+    """
+    compose_file = find_compose_file(os.path.join(STACKS_DIR, stack_name))
+    if compose_file:
         with open(compose_file, 'r') as f:
-            content = f.read()
-            # Expand environment variables before returning
-            return expand_env_vars(content, stack_name)
+            return f.read()
     return None
 
 
@@ -3426,12 +3671,15 @@ def expand_env_vars(content, stack_name=None):
     return expanded
 
 
+STACK_OPERATION_TIMEOUTS = {'up': 1800, 'pull': 1800}   # seconds; everything else 300
+
+
 def stack_operation(stack_name, operation):
     """Perform operation on stack (up/down/stop/restart/pull) with real-time output"""
     stack_path = os.path.join(STACKS_DIR, stack_name)
-    compose_file = os.path.join(stack_path, 'compose.yaml')
-    if not os.path.exists(compose_file):
-        compose_file = os.path.join(stack_path, 'docker-compose.yml')
+    compose_file = find_compose_file(stack_path)
+    if not compose_file:
+        return False, f"No compose file found in {stack_path}"
     
     try:
         if operation == 'up':
@@ -3459,21 +3707,40 @@ def stack_operation(stack_name, operation):
             bufsize=1
         )
         
-        output_lines = []
-        for line in iter(process.stdout.readline, ''):
-            if line:
-                output_lines.append(line.rstrip())
-                # Broadcast to WebSocket clients
-                broadcast_ws({
-                    'type': 'operation_output',
-                    'stack': stack_name,
-                    'operation': operation,
-                    'line': line.rstrip()
-                })
+        # v2.1: a stalled compose command (e.g. a pull from an unreachable
+        # registry) used to hang this thread forever — and in an auto-update job
+        # max_instances=1 then skipped every later run until a restart.
+        limit = STACK_OPERATION_TIMEOUTS.get(operation, 300)
+        timed_out = threading.Event()
+        def _kill_stuck():
+            timed_out.set()
+            try:
+                process.kill()
+            except Exception:
+                pass
+        watchdog = threading.Timer(limit, _kill_stuck)
+        watchdog.daemon = True
+        watchdog.start()
         
-        process.wait()
+        output_lines = []
+        try:
+            for line in iter(process.stdout.readline, ''):
+                if line:
+                    output_lines.append(line.rstrip())
+                    # Broadcast to WebSocket clients
+                    broadcast_ws({
+                        'type': 'operation_output',
+                        'stack': stack_name,
+                        'operation': operation,
+                        'line': line.rstrip()
+                    })
+            process.wait()
+        finally:
+            watchdog.cancel()
         output = '\n'.join(output_lines)
         
+        if timed_out.is_set():
+            return False, output + f"\nTimed out after {limit}s — 'docker compose {operation}' was stopped."
         if process.returncode != 0:
             return False, output
         
@@ -3657,6 +3924,30 @@ def auto_update_stack(stack_name):
         except Exception as e:
             logger.info(f"  ⚠ Could not check {image_name}: {e}")
     
+    # v2.1: ALSO compare what each container is RUNNING with what its tag points
+    # to now. Comparing the tag before/after the pull alone said "no update" on
+    # the second run (both sides were the image pulled the run before) while the
+    # containers were still on the old image — the flag cleared without anything
+    # being updated, and a failed 'up' was never retried.
+    try:
+        for service_name, service_config in services.items():
+            image_name = (service_config or {}).get('image')
+            tag_id = new_image_ids.get(image_name)
+            if not image_name or not tag_id:
+                continue
+            for c in stack_containers:
+                if c.labels.get('com.docker.compose.service') != service_name:
+                    continue
+                running_id = c.attrs.get('Image', '')
+                if running_id and running_id != tag_id:
+                    logger.info(f"  ✓ PENDING: {c.name} runs {running_id[7:19]} but {image_name} is now {tag_id[7:19]}")
+                    images_changed = True
+    except Exception as e:
+        logger.info(f"  ⚠ Could not compare running containers with their images: {e}")
+    
+    # v2.1: a stack you stopped stays stopped — auto mode used to 'up' it.
+    stack_running = any(getattr(c, 'status', '') == 'running' for c in stack_containers)
+    
     # Update status
     with update_status_lock:
         update_status[stack_name] = {
@@ -3694,6 +3985,12 @@ def auto_update_stack(stack_name):
                 'type': 'no_updates',
                 'stack': stack_name
             })
+            return
+        
+        if not stack_running:
+            logger.info(f"  ⏸ {stack_name} is stopped — new images pulled, NOT starting it. "
+                        f"The update applies the next time you start the stack.")
+            broadcast_ws({'type': 'update_available', 'stack': stack_name})
             return
         
         # AUTO MODE: Actually update the containers
@@ -3849,16 +4146,26 @@ def auto_update_container(stack_name, container_name, mode):
     logger.info(f"=" * 50)
     
     try:
-        # Find the container using compose labels
+        # v2.1: the schedule key is what the UI shows — the CONTAINER name (e.g.
+        # media-sonarr-1) — but this looked it up as a compose SERVICE name, so
+        # with default naming it never found anything. Accept either.
         containers = list_stack_containers(stack_name, all=True, service=container_name)
+        if not containers:
+            containers = [c for c in list_stack_containers(stack_name, all=True)
+                          if c.name == container_name]
         
         if not containers:
             logger.info(f"[{stack_name}/{container_name}] Container not found or not deployed")
             return
         
         container = containers[0]
-        current_image_id = container.image.id
-        image_name = container.image.tags[0] if container.image.tags else None
+        service_name = container.labels.get('com.docker.compose.service', container_name)
+        # The image ID this container RUNS (unchanged by later pulls), and the
+        # image REFERENCE it was created from. The reference used to come from
+        # container.image.tags, which is empty once a pull has moved the tag.
+        current_image_id = container.attrs.get('Image') or container.image.id
+        image_name = (container.attrs.get('Config') or {}).get('Image') or \
+            (container.image.tags[0] if container.image.tags else None)
         
         if not image_name:
             logger.error(f"[{stack_name}/{container_name}] No image name found")
@@ -3909,7 +4216,7 @@ def auto_update_container(stack_name, container_name, mode):
             
             # Recreate just this container using docker-compose
             result = subprocess.run(
-                ['docker', 'compose', '-f', compose_file, 'up', '-d', '--no-deps', '--force-recreate', container_name],
+                ['docker', 'compose', '-f', compose_file, 'up', '-d', '--no-deps', '--force-recreate', service_name],
                 cwd=stack_path,
                 capture_output=True,
                 text=True,
@@ -4019,6 +4326,31 @@ def check_stack_updates(stack_name):
             except Exception as e:
                 logger.info(f"  ⚠ Could not check {image_name}: {e}")
         
+        # v2.1: same rule as auto_update_stack — an update is also pending when a
+        # container still RUNS an older image than its tag now points to. Without
+        # this, pressing "Check for updates" twice cleared the flag.
+        if not update_available:
+            try:
+                containers = list_stack_containers(stack_name, all=True)
+                for service_name, service_config in services.items():
+                    image_name = (service_config or {}).get('image')
+                    if not image_name:
+                        continue
+                    try:
+                        tag_id = docker_client.images.get(image_name).id
+                    except Exception:
+                        continue
+                    for c in containers:
+                        if (c.labels.get('com.docker.compose.service') == service_name
+                                and c.attrs.get('Image') and c.attrs.get('Image') != tag_id):
+                            logger.info(f"  ✓ Update pending: {c.name} is not on the latest {image_name}")
+                            update_available = True
+                            break
+                    if update_available:
+                        break
+            except Exception as e:
+                logger.info(f"  ⚠ Could not compare running containers: {e}")
+        
         # Update status
         with update_status_lock:
             update_status[stack_name] = {
@@ -4057,6 +4389,16 @@ def get_schedule_cron(schedule_name):
     return schedules.get(schedule_name, '0 2 * * *')  # Default to 2 AM daily
 
 
+_appdata_scan_started = False
+
+
+def _remove_job_quietly(job_id):
+    try:
+        scheduler.remove_job(job_id)
+    except Exception:
+        pass
+
+
 def setup_scheduler():
     """
     Setup or refresh APScheduler without recreating it
@@ -4071,11 +4413,14 @@ def setup_scheduler():
     user_tz = pytz.timezone(config.get('timezone', 'UTC'))
 
     # Update scheduler timezone (scheduler already exists and is running from module init)
-    try:
-        scheduler.configure(timezone=user_tz)
-        logger.info(f"[Scheduler] Configured timezone: {user_tz}")
-    except Exception as e:
-        logger.error(f"[Scheduler] Could not update timezone: {e}")
+    # v2.1: APScheduler can't reconfigure a running scheduler (this logged an
+    # ERROR on every settings save). Every trigger is built with user_tz, so the
+    # scheduler-wide default doesn't matter once it is running.
+    if not scheduler.running:
+        try:
+            scheduler.configure(timezone=user_tz)
+        except Exception as e:
+            logger.warning(f"[Scheduler] Could not set timezone: {e}")
 
     # Remove only update jobs safely
     for job in list(scheduler.get_jobs()):
@@ -4100,7 +4445,7 @@ def setup_scheduler():
         # Add stack-level job if mode is not off
         if mode != "off":
             try:
-                trigger = CronTrigger.from_crontab(cron_expr, timezone=user_tz)
+                trigger = make_cron_trigger(cron_expr, timezone=user_tz)
                 scheduler.add_job(
                     auto_update_stack,
                     trigger,
@@ -4119,12 +4464,14 @@ def setup_scheduler():
             if container_mode != "off":
                 container_cron = container_schedule.get("cron", cron_expr)
                 try:
-                    trigger = CronTrigger.from_crontab(container_cron, timezone=user_tz)
+                    trigger = make_cron_trigger(container_cron, timezone=user_tz)
                     scheduler.add_job(
                         auto_update_container,
                         trigger,
                         args=[stack_name, container_name, container_mode],
-                        id=f"update_{stack_name}_{container_name}",
+                        # v2.1: "update_{stack}_{container}" could collide with the
+                        # stack job of a stack named "{stack}_{container}".
+                        id=f"update_c::{stack_name}::{container_name}",
                         replace_existing=True
                     )
                     logger.info(f"[Scheduler] Added container update job for {stack_name}/{container_name}: {container_cron}")
@@ -4150,7 +4497,7 @@ def setup_scheduler():
                     continue
                 
                 try:
-                    trigger = CronTrigger.from_crontab(cron_expr, timezone=user_tz)
+                    trigger = make_cron_trigger(cron_expr, timezone=user_tz)
                     
                     # DETERMINISTIC ID: Based on action + stack + cron
                     # Different action or cron = different ID
@@ -4175,7 +4522,7 @@ def setup_scheduler():
     if config.get("auto_prune", False):
         prune_cron = config.get("auto_prune_cron", "0 3 * * 0")
         try:
-            trigger = CronTrigger.from_crontab(prune_cron, timezone=user_tz)
+            trigger = make_cron_trigger(prune_cron, timezone=user_tz)
             scheduler.add_job(
                 auto_prune_images,
                 trigger,
@@ -4201,7 +4548,7 @@ def setup_scheduler():
     
     # Trivy database update - daily at 1 AM
     try:
-        trivy_trigger = CronTrigger.from_crontab('0 1 * * *', timezone=user_tz)
+        trivy_trigger = make_cron_trigger('0 1 * * *', timezone=user_tz)
         scheduler.add_job(
             update_trivy_database,
             trivy_trigger,
@@ -4219,7 +4566,7 @@ def setup_scheduler():
         
         if template_cron:
             try:
-                template_trigger = CronTrigger.from_crontab(template_cron, timezone=user_tz)
+                template_trigger = make_cron_trigger(template_cron, timezone=user_tz)
                 scheduler.add_job(
                     refresh_templates,
                     template_trigger,
@@ -4230,9 +4577,14 @@ def setup_scheduler():
             except Exception as e:
                 logger.error(f"[Scheduler] Error scheduling template refresh: {e}")
         else:
+            _remove_job_quietly("template_refresh")
             logger.info("[Scheduler] Template refresh disabled")
+    else:
+        _remove_job_quietly("template_refresh")   # v2.1: switching templates off left the job running
 
     # Host monitoring job
+    if not config.get("host_monitor_enabled", True):
+        _remove_job_quietly("host_monitor")       # v2.1: switching monitoring off left the job running
     if config.get("host_monitor_enabled", True):
         host_interval = config.get("host_monitor_interval", 5)
         try:
@@ -4247,20 +4599,26 @@ def setup_scheduler():
         except Exception as e:
             logger.info(f"[Scheduler] Error adding host monitoring: {e}")
 
-    # AppData size calculation job (every 3 hours)
+    # AppData size calculation job (every 3 hours).
+    # v2.1: setup_scheduler() runs on every settings/schedule save; it used to
+    # re-add this job (resetting its 3 h timer) AND start a full `du` scan of
+    # every bind mount each time — ten saves meant ten overlapping disk scans.
+    # Now: added once, first scan once.
+    global _appdata_scan_started
     try:
-        scheduler.add_job(
-            calculate_appdata_sizes,
-            "interval",
-            hours=3,
-            id="appdata_sizes",
-            replace_existing=True
-        )
-        logger.info("[Scheduler] Added appdata size calculation job (3h)")
-        
-        # Run in background thread so it doesn't block startup
-        threading.Thread(target=calculate_appdata_sizes, daemon=True).start()
-        logger.info("[Scheduler] Started background appdata size calculation")
+        if scheduler.get_job("appdata_sizes") is None:
+            scheduler.add_job(
+                calculate_appdata_sizes,
+                "interval",
+                hours=3,
+                id="appdata_sizes",
+                replace_existing=True
+            )
+            logger.info("[Scheduler] Added appdata size calculation job (3h)")
+        if not _appdata_scan_started:
+            _appdata_scan_started = True
+            threading.Thread(target=calculate_appdata_sizes, daemon=True).start()
+            logger.info("[Scheduler] Started background appdata size calculation")
     except Exception as e:
         logger.info(f"[Scheduler] Error adding appdata size job: {e}")
     
@@ -4964,8 +5322,13 @@ def api_stack_delete(stack_name):
             for container in containers:
                 images_to_delete.append(container.image.id)
         
-        # Stop stack first
-        stack_operation(stack_name, 'down')
+        # Stop stack first. v2.1: the result was ignored and the folder deleted
+        # anyway — a failed 'down' left containers running with no compose file,
+        # unmanageable from DockUp.
+        down_ok, down_output = stack_operation(stack_name, 'down')
+        if not down_ok and list_stack_containers(stack_name, all=True):
+            tail = '\n'.join((down_output or '').splitlines()[-5:])
+            return jsonify({'error': f"Could not stop the stack, so nothing was deleted.\n{tail}"}), 409
         
         # Delete images if requested
         if delete_images:
@@ -4986,6 +5349,23 @@ def api_stack_delete(stack_name):
             if stack_name in schedules:
                 del schedules[stack_name]
         save_schedules()
+        
+        # v2.1: also drop the stack's scheduler jobs (scheduled start/stop kept
+        # firing "Compose file not found") and its cached state (a new stack with
+        # the same name inherited the old ever_started flag and schedules).
+        for job in list(scheduler.get_jobs()):
+            if job.args and job.args[0] == stack_name:
+                _remove_job_quietly(job.id)
+        try:
+            invalidate_metadata_cache(stack_name)
+            invalidate_compose_cache(stack_name)
+        except Exception:
+            pass
+        with update_status_lock:
+            update_status.pop(stack_name, None)
+        with health_status_lock:
+            health_status.pop(stack_name, None)
+        get_stacks_data_cache['timestamp'] = 0
         
         return jsonify({'success': True})
     except Exception as e:
@@ -5023,7 +5403,7 @@ def api_apply_to_all():
         
         # Validate cron expression
         try:
-            croniter(cron)
+            make_cron_trigger(cron)   # v2.1: validate exactly what will be scheduled
         except:
             return jsonify({'error': 'Invalid cron expression'}), 400
         
@@ -5033,10 +5413,10 @@ def api_apply_to_all():
         # Apply to all
         with schedules_lock:
             for stack in stacks:
-                schedules[stack['name']] = {
-                    'mode': mode,
-                    'cron': cron
-                }
+                # v2.1: keep each stack's per-container schedules
+                entry = schedules.setdefault(stack['name'], {})
+                entry['mode'] = mode
+                entry['cron'] = cron
         
         save_schedules()
         
@@ -5422,8 +5802,9 @@ def update_stats_background():
                 if expired_scans:
                     logger.info(f"Cleaned {len(expired_scans)} expired vulnerability scans")
             
-            # Force garbage collection after stats update cycle (prevents memory leak with many containers)
-            gc.collect()
+            # v2.1: a full gc every 5s cost noticeable CPU; once a minute is enough
+            if cleanup_counter % 12 == 0:
+                gc.collect()
             
             # Wait 5 seconds before next update
             time.sleep(5)
@@ -5482,15 +5863,16 @@ def api_stack_schedule_set(stack_name):
     
     # Validate cron expression
     try:
-        croniter(cron)
+        make_cron_trigger(cron)   # v2.1: validate exactly what will be scheduled
     except:
         return jsonify({'error': 'Invalid cron expression'}), 400
     
     with schedules_lock:
-        schedules[stack_name] = {
-            'mode': mode,
-            'cron': cron
-        }
+        # v2.1: update in place — replacing the dict erased this stack's
+        # per-container schedules ('containers') without a word.
+        entry = schedules.setdefault(stack_name, {})
+        entry['mode'] = mode
+        entry['cron'] = cron
     save_schedules()
     
     # Trigger scheduler update
@@ -5526,7 +5908,7 @@ def api_container_schedule_set(stack_name, container_name):
     # Validate cron if provided
     if cron:
         try:
-            croniter(cron)
+            make_cron_trigger(cron)   # v2.1: validate exactly what will be scheduled
         except:
             return jsonify({'error': 'Invalid cron expression'}), 400
     
@@ -5590,7 +5972,7 @@ def api_stack_action_schedules_set(stack_name):
             return jsonify({'error': 'Cron expression required'}), 400
         
         try:
-            croniter(cron)
+            make_cron_trigger(cron)   # v2.1: validate exactly what will be scheduled
         except:
             return jsonify({'error': f'Invalid cron expression: {cron}'}), 400
         
@@ -5637,15 +6019,16 @@ def api_version():
         data = response.json()
         
         # Find the highest version number (exclude 'latest')
+        # v2.1: compare numerically — as strings "2.0.10" sorted below "2.0.9",
+        # and any non-version tag (e.g. "dev") counted as "newer"
+        def vkey(v):
+            parts = v.lstrip('v').split('.')
+            return tuple(int(x) for x in parts) if all(x.isdigit() for x in parts) else None
         latest_version = current_version
         for tag in data.get('results', []):
-            tag_name = tag['name']
-            # Skip 'latest' and non-version tags
-            if tag_name == 'latest':
-                continue
-            # Compare version strings (assumes semantic versioning like 1.1.4)
-            if tag_name > latest_version:
-                latest_version = tag_name
+            k = vkey(tag['name'])
+            if k is not None and vkey(latest_version) is not None and k > vkey(latest_version):
+                latest_version = tag['name']
         
         update_available = latest_version != current_version
         
@@ -5678,7 +6061,8 @@ def api_config_get():
 def api_config_set():
     """Set configuration"""
     global config
-    data = request.json
+    data = dict(request.json or {})
+    warnings = []
     
     # Validate timezone if provided
     if 'timezone' in data:
@@ -5686,7 +6070,22 @@ def api_config_set():
             pytz.timezone(data['timezone'])
         except pytz.exceptions.UnknownTimeZoneError:
             logger.warning(f"Invalid timezone provided: {data['timezone']}, falling back to UTC")
+            warnings.append(f"Unknown timezone '{data['timezone']}' — using UTC")
             data['timezone'] = 'UTC'
+    
+    # v2.1: the page posts back the WHOLE config it loaded, including a stale
+    # copy of the nested 'registry' block (watch list included); config.update()
+    # then replaced the live one. Registry settings arrive only as the flat
+    # registry_* keys below, so the nested block is ignored.
+    data.pop('registry', None)
+    # v2.1: the Settings field registry_update_cron was saved as a stray
+    # top-level key; the scheduler reads registry.update_check_cron.
+    registry_update_cron = data.pop('registry_update_cron', None)
+    if registry_update_cron:
+        try:
+            make_cron_trigger(registry_update_cron)
+        except ValueError as e:
+            return jsonify({'success': False, 'error': f'Registry update schedule: {e}'}), 400
     
     # Preserve critical fields that shouldn't be overwritten
     preserved = {
@@ -5695,13 +6094,18 @@ def api_config_set():
     }
     
     # Check if schedule-related settings changed
-    schedule_changed = (
-        data.get('templates_enabled') != config.get('templates_enabled') or
-        data.get('templates_refresh_schedule') != config.get('templates_refresh_schedule') or
-        data.get('auto_update_enabled') != config.get('auto_update_enabled') or
-        data.get('auto_update_check_schedule') != config.get('auto_update_check_schedule') or
-        data.get('timezone') != config.get('timezone')
-    )
+    # v2.1: only keys that were actually sent count (a partial save such as
+    # the instance name no longer looks like "everything changed"); auto_prune*,
+    # host_monitor* and default_cron used to need a restart to take effect.
+    schedule_keys = ('templates_enabled', 'templates_refresh_schedule', 'auto_update_enabled',
+                     'auto_update_check_schedule', 'timezone', 'auto_prune', 'auto_prune_cron',
+                     'host_monitor_enabled', 'host_monitor_interval', 'default_cron')
+    schedule_changed = any(k in data and data[k] != config.get(k) for k in schedule_keys)
+    if data.get('auto_prune_cron'):
+        try:
+            make_cron_trigger(data['auto_prune_cron'])
+        except ValueError as e:
+            return jsonify({'success': False, 'error': f'Auto-prune schedule: {e}'}), 400
     
     # Extract registry settings from flat structure
     registry_flat_settings = {
@@ -5716,14 +6120,17 @@ def api_config_set():
     # Check if registry settings changed
     old_registry = config.get('registry', {})
     registry_was_enabled = old_registry.get('enabled', False)
-    registry_now_enabled = registry_flat_settings.get('enabled', False)
-    registry_settings_changed = (
-        registry_flat_settings.get('version') != old_registry.get('version') or
-        registry_flat_settings.get('mode') != old_registry.get('mode') or
-        registry_flat_settings.get('port') != old_registry.get('port') or
-        registry_flat_settings.get('storage_path') != old_registry.get('storage_path') or
-        registry_flat_settings.get('proxy_upstream') != old_registry.get('proxy_upstream')
+    # v2.1: a save that doesn't mention the registry must not switch it off
+    registry_now_enabled = registry_flat_settings['enabled'] if 'registry_enabled' in data else registry_was_enabled
+    # v2.1: mode/upstream only reach the registry's own config.yml through
+    # update_mode(); restart() alone never rewrote it.
+    registry_mode_changed = (
+        (registry_flat_settings.get('mode') is not None and registry_flat_settings.get('mode') != old_registry.get('mode')) or
+        (registry_flat_settings.get('proxy_upstream') is not None and registry_flat_settings.get('proxy_upstream') != old_registry.get('proxy_upstream'))
     )
+    registry_settings_changed = any(
+        registry_flat_settings.get(k) is not None and registry_flat_settings.get(k) != old_registry.get(k)
+        for k in ('version', 'mode', 'port', 'storage_path', 'proxy_upstream'))
     
     # Remove flat registry settings from data before update
     for key in ['registry_enabled', 'registry_version', 'registry_mode', 'registry_port', 'registry_storage_path', 'registry_proxy_upstream']:
@@ -5741,12 +6148,23 @@ def api_config_set():
             if value is not None:
                 config['registry'][key] = value
     
+    registry_cron_changed = False
+    if registry_update_cron and registry_update_cron != config.setdefault('registry', {}).get('update_check_cron'):
+        config['registry']['update_check_cron'] = registry_update_cron
+        registry_cron_changed = True
+    
     # Restore preserved fields
     config['api_token'] = preserved['api_token']
     config['peers'] = preserved['peers']
     
-    # OPTIMIZATION: Debounced save - batches multiple config changes
-    save_config_debounced()
+    # v2.1: save NOW and report a failure. The deferred (500 ms, other thread)
+    # save meant this route answered "success" even when the write failed, and a
+    # container stop inside that window lost the change.
+    try:
+        save_config_debounced(immediate=True)
+    except Exception as e:
+        logger.error(f"Saving settings failed: {e}")
+        return jsonify({'success': False, 'error': f'Settings could not be written to disk: {e}'}), 500
     setup_notifications()
     
     # Refresh scheduler if schedule-related settings changed
@@ -5790,8 +6208,15 @@ def api_config_set():
                 # Reinitialize registry manager with new settings (updates URL/port)
                 registry_mgr = registry_manager.RegistryManager(CONFIG_FILE)
                 
-                # Restart (will recreate if port changed)
-                result = registry_deploy.restart()
+                # Restart (will recreate if port changed); rewrite config.yml when
+                # the mode or upstream changed (restart() alone never did)
+                if registry_mode_changed:
+                    result = registry_deploy.update_mode(config['registry'].get('mode'),
+                                                         config['registry'].get('proxy_upstream'))
+                else:
+                    result = registry_deploy.restart()
+                if isinstance(result, dict) and result.get('status') not in (None, 'success'):
+                    warnings.append(f"Registry: {result.get('message', 'restart failed')}")
                 setup_registry_scheduler()
                 logger.info("✓ Registry restarted with new settings")
             else:
@@ -5818,7 +6243,13 @@ def api_config_set():
         except Exception as e:
             logger.error(f"✗ Registry stop error: {e}")
     
-    return jsonify({'success': True})
+    if registry_cron_changed and config.get('registry', {}).get('enabled'):
+        try:
+            setup_registry_scheduler()
+        except Exception as e:
+            warnings.append(f"Registry schedule saved but not applied yet: {e}")
+    
+    return jsonify({'success': True, 'warnings': warnings})
 
 
 
@@ -5826,6 +6257,208 @@ def api_config_set():
 # ============================================================================
 # SPLIT EDITOR ENDPOINTS - ZimaOS Style
 # ============================================================================
+
+def _service_to_sections(service_name, service):
+    """v2.1: one service dict -> split-editor sections (shared by the file
+    and the in-editor routes)."""
+    # Split into sections
+    sections = {
+        'name_image': {
+            'name': service_name,
+            'image': service.get('image', ''),
+            'container_name': service.get('container_name', '')
+        },
+        'environment': service.get('environment', []),
+        'ports': service.get('ports', []),
+        'volumes': service.get('volumes', []),
+        'devices': service.get('devices', []),
+        'labels': service.get('labels', {}),
+        'command': service.get('command', ''),
+        'entrypoint': service.get('entrypoint', ''),
+        'network_mode': service.get('network_mode', ''),
+        'networks': service.get('networks', []),
+        'hostname': service.get('hostname', ''),
+        'domainname': service.get('domainname', ''),
+        'mac_address': service.get('mac_address', ''),
+        'dns': service.get('dns', []),
+        'dns_search': service.get('dns_search', []),
+        'dns_opt': service.get('dns_opt', []),
+        'extra_hosts': service.get('extra_hosts', []),
+        'privileged': service.get('privileged', False),
+        'cap_add': service.get('cap_add', []),
+        'cap_drop': service.get('cap_drop', []),
+        'security_opt': service.get('security_opt', []),
+        'user': service.get('user', ''),
+        'sysctls': service.get('sysctls', {}),
+        'tmpfs': service.get('tmpfs', []),
+        'stdin_open': service.get('stdin_open', False),
+        'tty': service.get('tty', False),
+        'healthcheck': service.get('healthcheck', {}),
+        'depends_on': service.get('depends_on', []),
+        'logging': service.get('logging', {}),
+        'restart': service.get('restart', 'unless-stopped'),
+        'extra': {}
+    }
+
+    # Gather extra keys
+    known_keys = ['image', 'container_name', 'environment', 'ports', 'volumes', 
+                  'devices', 'labels', 'command', 'entrypoint', 'network_mode', 'networks',
+                  'hostname', 'domainname', 'mac_address', 'dns', 'dns_search', 'dns_opt',
+                  'extra_hosts', 'privileged', 'cap_add', 'cap_drop', 'security_opt', 'user',
+                  'sysctls', 'tmpfs', 'stdin_open', 'tty', 'healthcheck', 'depends_on', 
+                  'logging', 'restart']
+
+    for key, value in service.items():
+        if key not in known_keys:
+            sections['extra'][key] = value
+    return sections
+
+
+def _sections_to_service(data):
+    """v2.1: split-editor sections -> one service dict."""
+    # Rebuild service from sections
+    new_service = {}
+
+    # Name/Image section
+    if 'name_image' in data:
+        if data['name_image'].get('image'):
+            new_service['image'] = data['name_image']['image']
+        if data['name_image'].get('container_name'):
+            new_service['container_name'] = data['name_image']['container_name']
+
+    # Environment
+    if 'environment' in data and data['environment']:
+        new_service['environment'] = data['environment']
+
+    # Ports
+    if 'ports' in data and data['ports']:
+        new_service['ports'] = data['ports']
+
+    # Volumes
+    if 'volumes' in data and data['volumes']:
+        new_service['volumes'] = data['volumes']
+
+    # Devices
+    if 'devices' in data and data['devices']:
+        new_service['devices'] = data['devices']
+
+    # Labels
+    if 'labels' in data and data['labels']:
+        new_service['labels'] = data['labels']
+
+    # Command
+    if 'command' in data and data['command']:
+        new_service['command'] = data['command']
+
+    # Entrypoint
+    if 'entrypoint' in data and data['entrypoint']:
+        new_service['entrypoint'] = data['entrypoint']
+
+    # Network mode
+    if 'network_mode' in data and data['network_mode']:
+        new_service['network_mode'] = data['network_mode']
+
+    # Networks
+    if 'networks' in data and data['networks']:
+        new_service['networks'] = data['networks']
+
+    # Hostname/Domain/MAC
+    if 'hostname' in data and data['hostname']:
+        new_service['hostname'] = data['hostname']
+    if 'domainname' in data and data['domainname']:
+        new_service['domainname'] = data['domainname']
+    if 'mac_address' in data and data['mac_address']:
+        new_service['mac_address'] = data['mac_address']
+
+    # DNS
+    if 'dns' in data and data['dns']:
+        new_service['dns'] = data['dns']
+    if 'dns_search' in data and data['dns_search']:
+        new_service['dns_search'] = data['dns_search']
+    if 'dns_opt' in data and data['dns_opt']:
+        new_service['dns_opt'] = data['dns_opt']
+    if 'extra_hosts' in data and data['extra_hosts']:
+        new_service['extra_hosts'] = data['extra_hosts']
+
+    # Security
+    if data.get('privileged'):   # v2.1: don't write 'privileged: false' noise
+        new_service['privileged'] = True
+    if 'cap_add' in data and data['cap_add']:
+        new_service['cap_add'] = data['cap_add']
+    if 'cap_drop' in data and data['cap_drop']:
+        new_service['cap_drop'] = data['cap_drop']
+    if 'security_opt' in data and data['security_opt']:
+        new_service['security_opt'] = data['security_opt']
+    if 'user' in data and data['user']:
+        new_service['user'] = data['user']
+
+    # Advanced
+    if 'sysctls' in data and data['sysctls']:
+        new_service['sysctls'] = data['sysctls']
+    if 'tmpfs' in data and data['tmpfs']:
+        new_service['tmpfs'] = data['tmpfs']
+    if data.get('stdin_open'):
+        new_service['stdin_open'] = True
+    if data.get('tty'):
+        new_service['tty'] = True
+    if 'healthcheck' in data and data['healthcheck']:
+        new_service['healthcheck'] = data['healthcheck']
+    if 'depends_on' in data and data['depends_on']:
+        new_service['depends_on'] = data['depends_on']
+    if 'logging' in data and data['logging']:
+        new_service['logging'] = data['logging']
+
+    # Restart
+    if 'restart' in data:
+        new_service['restart'] = data['restart'] or 'unless-stopped'
+
+    # Extra keys
+    if 'extra' in data and data['extra']:
+        new_service.update(data['extra'])
+    return new_service
+
+
+@app.route('/api/compose/sections/parse', methods=['POST'])
+def api_compose_sections_parse():
+    """v2.1: split the editor's CURRENT text into sections for one service.
+    Nothing is read from or written to disk, so this also works for a stack
+    that has not been created yet and for unsaved Raw-tab edits."""
+    body = request.json or {}
+    try:
+        compose_data = yaml.safe_load(body.get('content') or '') or {}
+    except yaml.YAMLError as e:
+        return jsonify({'error': f'YAML error: {e}'}), 400
+    services = (compose_data.get('services') if isinstance(compose_data, dict) else None) or {}
+    if not isinstance(services, dict):
+        return jsonify({'error': "'services' must be a mapping"}), 400
+    service_name = body.get('service') or (next(iter(services)) if services else '')
+    if service_name not in services:
+        return jsonify({'error': 'Service not found', 'services': list(services)}), 404
+    sections = _service_to_sections(service_name, services[service_name] or {})
+    return jsonify({'service': service_name, 'services': list(services), 'sections': sections})
+
+
+@app.route('/api/compose/sections/merge', methods=['POST'])
+def api_compose_sections_merge():
+    """v2.1: put edited sections back into the editor's text and return it.
+    The editor keeps ONE source of truth (the YAML text); previously Raw-tab
+    edits were silently dropped whenever a service was selected."""
+    body = request.json or {}
+    try:
+        compose_data = yaml.safe_load(body.get('content') or '') or {}
+    except yaml.YAMLError as e:
+        return jsonify({'error': f'YAML error: {e}'}), 400
+    if not isinstance(compose_data, dict):
+        return jsonify({'error': 'Compose file must be a mapping'}), 400
+    service_name = body.get('service')
+    if not service_name:
+        return jsonify({'error': 'service is required'}), 400
+    services = compose_data.setdefault('services', {})
+    if not isinstance(services, dict):
+        return jsonify({'error': "'services' must be a mapping"}), 400
+    services[service_name] = _sections_to_service(body.get('sections') or {})
+    return jsonify({'content': yaml.safe_dump(compose_data, sort_keys=False, default_flow_style=False)})
+
 
 @app.route('/api/stack/<stack_name>/service/<service_name>/sections', methods=['GET'])
 def get_service_sections(stack_name, service_name):
@@ -5854,56 +6487,7 @@ def get_service_sections(stack_name, service_name):
         
         service = services[service_name]
         
-        # Split into sections
-        sections = {
-            'name_image': {
-                'name': service_name,
-                'image': service.get('image', ''),
-                'container_name': service.get('container_name', '')
-            },
-            'environment': service.get('environment', []),
-            'ports': service.get('ports', []),
-            'volumes': service.get('volumes', []),
-            'devices': service.get('devices', []),
-            'labels': service.get('labels', {}),
-            'command': service.get('command', ''),
-            'entrypoint': service.get('entrypoint', ''),
-            'network_mode': service.get('network_mode', ''),
-            'networks': service.get('networks', []),
-            'hostname': service.get('hostname', ''),
-            'domainname': service.get('domainname', ''),
-            'mac_address': service.get('mac_address', ''),
-            'dns': service.get('dns', []),
-            'dns_search': service.get('dns_search', []),
-            'dns_opt': service.get('dns_opt', []),
-            'extra_hosts': service.get('extra_hosts', []),
-            'privileged': service.get('privileged', False),
-            'cap_add': service.get('cap_add', []),
-            'cap_drop': service.get('cap_drop', []),
-            'security_opt': service.get('security_opt', []),
-            'user': service.get('user', ''),
-            'sysctls': service.get('sysctls', {}),
-            'tmpfs': service.get('tmpfs', []),
-            'stdin_open': service.get('stdin_open', False),
-            'tty': service.get('tty', False),
-            'healthcheck': service.get('healthcheck', {}),
-            'depends_on': service.get('depends_on', []),
-            'logging': service.get('logging', {}),
-            'restart': service.get('restart', 'unless-stopped'),
-            'extra': {}
-        }
-        
-        # Gather extra keys
-        known_keys = ['image', 'container_name', 'environment', 'ports', 'volumes', 
-                      'devices', 'labels', 'command', 'entrypoint', 'network_mode', 'networks',
-                      'hostname', 'domainname', 'mac_address', 'dns', 'dns_search', 'dns_opt',
-                      'extra_hosts', 'privileged', 'cap_add', 'cap_drop', 'security_opt', 'user',
-                      'sysctls', 'tmpfs', 'stdin_open', 'tty', 'healthcheck', 'depends_on', 
-                      'logging', 'restart']
-        
-        for key, value in service.items():
-            if key not in known_keys:
-                sections['extra'][key] = value
+        sections = _service_to_sections(service_name, service)
         
         # Also provide raw YAML
         sections['raw_yaml'] = yaml.safe_dump({'services': {service_name: service}}, sort_keys=False)
@@ -5941,105 +6525,7 @@ def save_service_sections(stack_name, service_name):
         
         data = request.json
         
-        # Rebuild service from sections
-        new_service = {}
-        
-        # Name/Image section
-        if 'name_image' in data:
-            if data['name_image'].get('image'):
-                new_service['image'] = data['name_image']['image']
-            if data['name_image'].get('container_name'):
-                new_service['container_name'] = data['name_image']['container_name']
-        
-        # Environment
-        if 'environment' in data and data['environment']:
-            new_service['environment'] = data['environment']
-        
-        # Ports
-        if 'ports' in data and data['ports']:
-            new_service['ports'] = data['ports']
-        
-        # Volumes
-        if 'volumes' in data and data['volumes']:
-            new_service['volumes'] = data['volumes']
-        
-        # Devices
-        if 'devices' in data and data['devices']:
-            new_service['devices'] = data['devices']
-        
-        # Labels
-        if 'labels' in data and data['labels']:
-            new_service['labels'] = data['labels']
-        
-        # Command
-        if 'command' in data and data['command']:
-            new_service['command'] = data['command']
-        
-        # Entrypoint
-        if 'entrypoint' in data and data['entrypoint']:
-            new_service['entrypoint'] = data['entrypoint']
-        
-        # Network mode
-        if 'network_mode' in data and data['network_mode']:
-            new_service['network_mode'] = data['network_mode']
-        
-        # Networks
-        if 'networks' in data and data['networks']:
-            new_service['networks'] = data['networks']
-        
-        # Hostname/Domain/MAC
-        if 'hostname' in data and data['hostname']:
-            new_service['hostname'] = data['hostname']
-        if 'domainname' in data and data['domainname']:
-            new_service['domainname'] = data['domainname']
-        if 'mac_address' in data and data['mac_address']:
-            new_service['mac_address'] = data['mac_address']
-        
-        # DNS
-        if 'dns' in data and data['dns']:
-            new_service['dns'] = data['dns']
-        if 'dns_search' in data and data['dns_search']:
-            new_service['dns_search'] = data['dns_search']
-        if 'dns_opt' in data and data['dns_opt']:
-            new_service['dns_opt'] = data['dns_opt']
-        if 'extra_hosts' in data and data['extra_hosts']:
-            new_service['extra_hosts'] = data['extra_hosts']
-        
-        # Security
-        if 'privileged' in data:
-            new_service['privileged'] = data['privileged']
-        if 'cap_add' in data and data['cap_add']:
-            new_service['cap_add'] = data['cap_add']
-        if 'cap_drop' in data and data['cap_drop']:
-            new_service['cap_drop'] = data['cap_drop']
-        if 'security_opt' in data and data['security_opt']:
-            new_service['security_opt'] = data['security_opt']
-        if 'user' in data and data['user']:
-            new_service['user'] = data['user']
-        
-        # Advanced
-        if 'sysctls' in data and data['sysctls']:
-            new_service['sysctls'] = data['sysctls']
-        if 'tmpfs' in data and data['tmpfs']:
-            new_service['tmpfs'] = data['tmpfs']
-        if 'stdin_open' in data:
-            new_service['stdin_open'] = data['stdin_open']
-        if 'tty' in data:
-            new_service['tty'] = data['tty']
-        if 'healthcheck' in data and data['healthcheck']:
-            new_service['healthcheck'] = data['healthcheck']
-        if 'depends_on' in data and data['depends_on']:
-            new_service['depends_on'] = data['depends_on']
-        if 'logging' in data and data['logging']:
-            new_service['logging'] = data['logging']
-        
-        # Restart
-        if 'restart' in data:
-            new_service['restart'] = data['restart'] or 'unless-stopped'
-        
-        # Extra keys
-        if 'extra' in data and data['extra']:
-            new_service.update(data['extra'])
+        new_service = _sections_to_service(data)
         
         # Validate YAML
         try:
@@ -6074,70 +6560,65 @@ def save_service_sections(stack_name, service_name):
         return jsonify({'error': str(e)}), 500
 
 
+_resource_limits_cache = {}
+
+
+def _parse_mem_gb(value):
+    s = str(value).strip().lower().replace('ib', '').replace('b', '')
+    try:
+        if s.endswith('g'):
+            return float(s[:-1])
+        if s.endswith('m'):
+            return float(s[:-1]) / 1024
+        if s.endswith('k'):
+            return float(s[:-1]) / (1024 * 1024)
+        return float(s) / (1024 ** 3)  # plain bytes
+    except ValueError:
+        return 0
+
+
+def get_stack_resource_limits(stack_name):
+    """v2.1: CPU/memory limits of a stack's first service, cached by compose/.env
+    mtime. The UI used to fetch /resources for every stack on every poll."""
+    stack_path = os.path.join(STACKS_DIR, stack_name)
+    compose_file = find_compose_file(stack_path)
+    if not compose_file:
+        return {'cpu_limit': 0, 'mem_limit': 0}
+    env_file = os.path.join(stack_path, '.env')
+    try:
+        key = (compose_file, os.path.getmtime(compose_file),
+               os.path.getmtime(env_file) if os.path.exists(env_file) else 0)
+    except OSError:
+        return {'cpu_limit': 0, 'mem_limit': 0}
+    cached = _resource_limits_cache.get(stack_name)
+    if cached and cached[0] == key:
+        return dict(cached[1])
+    result = {'cpu_limit': 0, 'mem_limit': 0}
+    try:
+        with open(compose_file, 'r') as f:
+            compose_data = yaml.safe_load(expand_env_vars(f.read(), stack_name)) or {}
+        services = compose_data.get('services') or {}
+        if services:
+            first_service = list(services.values())[0] or {}
+            limits = ((first_service.get('deploy') or {}).get('resources') or {}).get('limits') or {}
+            if limits.get('cpus') not in (None, ''):
+                result['cpu_limit'] = float(limits['cpus'])
+            if limits.get('memory') not in (None, ''):
+                result['mem_limit'] = _parse_mem_gb(limits['memory'])
+            if first_service.get('cpus') not in (None, ''):
+                result['cpu_limit'] = float(first_service['cpus'])
+            if first_service.get('mem_limit') not in (None, ''):
+                result['mem_limit'] = _parse_mem_gb(first_service['mem_limit'])
+    except Exception as e:
+        logger.error(f"Error getting resources for {stack_name}: {e}")
+    _resource_limits_cache[stack_name] = (key, result)
+    return dict(result)
+
+
 @app.route('/api/stack/<stack_name>/resources', methods=['GET'])
 def api_get_stack_resources(stack_name):
     """Get current resource limits for a stack"""
-    try:
-        stack_path = os.path.join(STACKS_DIR, stack_name)
-        compose_file = None
-        
-        for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
-            potential_file = os.path.join(stack_path, filename)
-            if os.path.exists(potential_file):
-                compose_file = potential_file
-                break
-        
-        if not compose_file:
-            return jsonify({'cpu_limit': 0, 'mem_limit': 0})
-        
-        with open(compose_file, 'r') as f:
-            content = f.read()
-        expanded = expand_env_vars(content, stack_name)
-        compose_data = yaml.safe_load(expanded)
-        
-        services = compose_data.get('services', {})
-        if not services:
-            return jsonify({'cpu_limit': 0, 'mem_limit': 0})
-        
-        # Get first service's limits (we apply limits to all services identically)
-        first_service = list(services.values())[0]
-        cpu_limit = 0
-        mem_limit = 0
-        
-        # Check modern deploy.resources.limits format
-        if 'deploy' in first_service:
-            resources = first_service.get('deploy', {}).get('resources', {})
-            limits = resources.get('limits', {})
-            
-            if 'cpus' in limits:
-                cpu_limit = float(limits['cpus'])
-            
-            if 'memory' in limits:
-                mem_str = str(limits['memory']).upper()
-                if 'G' in mem_str:
-                    mem_limit = float(mem_str.replace('G', ''))
-                elif 'M' in mem_str:
-                    mem_limit = float(mem_str.replace('M', '')) / 1024
-        
-        # Check legacy format
-        if 'cpus' in first_service:
-            cpu_limit = float(first_service['cpus'])
-        
-        if 'mem_limit' in first_service:
-            mem_str = str(first_service['mem_limit']).lower()
-            if 'g' in mem_str:
-                mem_limit = float(mem_str.replace('g', ''))
-            elif 'm' in mem_str:
-                mem_limit = float(mem_str.replace('m', '')) / 1024
-        
-        return jsonify({
-            'cpu_limit': cpu_limit,
-            'mem_limit': mem_limit
-        })
-    
-    except Exception as e:
-        logger.error(f"Error getting resources for {stack_name}: {e}")
-        return jsonify({'cpu_limit': 0, 'mem_limit': 0})
+    return jsonify(get_stack_resource_limits(stack_name))
 
 
 @app.route('/api/stack/<stack_name>/resources', methods=['POST'])
@@ -6373,6 +6854,8 @@ def api_clone_stack(stack_name):
         
         if not new_name:
             return jsonify({'error': 'New stack name required'}), 400
+        if not is_valid_stack_name(new_name):
+            return jsonify({'error': 'Invalid stack name'}), 400
         
         source_path = os.path.join(STACKS_DIR, stack_name)
         dest_path = os.path.join(STACKS_DIR, new_name)
@@ -6701,8 +7184,14 @@ def websocket_terminal(ws, container_id):
 
 
 
+@sock.route('/ws')
 def websocket(ws):
-    """WebSocket endpoint for real-time updates"""
+    """WebSocket endpoint for real-time updates.
+
+    v2.1: the @sock.route decorator was missing, so /ws was a 404 — the page
+    retried it every 5 s forever and every broadcast_ws() (live up/pull output,
+    health alerts, update notices) reached nobody.
+    """
     with websocket_clients_lock:
         websocket_clients.append(ws)
     try:
@@ -6711,7 +7200,9 @@ def websocket(ws):
             if data is None:
                 break
     except Exception as e:
-        logger.info(f"WebSocket error: {e}")
+        # a browser tab closing/reloading (1000/1001) is normal, not an error
+        if 'Connection closed' not in str(e):
+            logger.info(f"WebSocket error: {e}")
     finally:
         # Always remove, even if exception during removal
         with websocket_clients_lock:
@@ -6839,37 +7330,34 @@ def api_get_all_stacks():
         stack['peer_id'] = None
         stack['peer_name'] = config.get('instance_name', 'DockUp')
         stack['is_local'] = True
+        stack.update(get_stack_resource_limits(stack['name']))
         if stack.get('name') in stack_stats_cache:
             stack['stats'] = stack_stats_cache[stack['name']]
     
     all_stacks.extend(local_stacks)
     
-    # Get stacks from each peer
-    for peer_id, peer in config.get('peers', {}).items():
-        if not peer.get('enabled', True):
-            continue
-        
-        try:
-            session = get_peer_session(peer_id)
-            if not session:
-                continue
-            
-            response = session.get(f"{peer['url']}/api/stacks", timeout=5)
-            if response.status_code == 200:
-                peer_stacks = response.json()
-                for stack in peer_stacks:
-                    stack['peer_id'] = peer_id
-                    stack['peer_name'] = peer.get('name', peer_id)
-                    stack['is_local'] = False
+    # Get stacks from each peer — 2026-10-03: in PARALLEL. They were fetched one
+    # after another, so one offline peer added its whole timeout to every
+    # stack refresh. Results keep the configured peer order.
+    peers = [(pid, p) for pid, p in config.get('peers', {}).items() if p.get('enabled', True)]
+    if peers:
+        with ThreadPoolExecutor(max_workers=min(8, len(peers))) as pool:
+            for peer_stacks in pool.map(lambda item: fetch_peer_stacks(*item), peers):
                 all_stacks.extend(peer_stacks)
-        except Exception as e:
-            logger.error(f"Error fetching stacks from peer {peer_id}: {e}")
     
     # Force garbage collection to prevent memory leak from polling
-    # Each poll builds 30-40 MB of data structures
-    gc.collect()
+    # Each poll builds 30-40 MB of data structures.
+    # 2026-10-03: a full collection on EVERY poll (every 5 s on Auto) cost CPU
+    # for nothing; at most once a minute keeps memory in check.
+    global _last_stacks_gc
+    if time.time() - _last_stacks_gc > 60:
+        _last_stacks_gc = time.time()
+        gc.collect()
     
     return jsonify(all_stacks)
+
+
+_last_stacks_gc = 0.0
 
 
 
@@ -6964,9 +7452,18 @@ def api_get_peers():
     for peer_id, peer in config.get('peers', {}).items():
         safe_peer = {k: v for k, v in peer.items() if k != 'api_token'}
         safe_peer['has_token'] = bool(peer.get('api_token'))
+        safe_peer['status'] = peer_status.get(peer_id, {'state': 'unknown'})   # v2.1
         safe_peers[peer_id] = safe_peer
     
     return jsonify(safe_peers)
+
+
+@app.route('/api/peers/status')
+@require_auth
+def api_peers_status():
+    """v2.1: last known state of every peer — no network calls, safe to poll."""
+    return jsonify({pid: peer_status.get(pid, {'state': 'unknown'})
+                    for pid, p in config.get('peers', {}).items() if p.get('enabled', True)})
 
 
 @app.route('/api/peers', methods=['POST'])
@@ -6984,7 +7481,7 @@ def api_add_peer():
     
     config['peers'][peer_id] = {
         'name': data.get('name', peer_id),
-        'url': data.get('url', ''),
+        'url': (data.get('url') or '').strip().rstrip('/'),   # v2.1: no "//api/..." from a trailing slash
         'api_token': data.get('api_token', ''),
         'enabled': data.get('enabled', True)
     }
@@ -7010,12 +7507,16 @@ def api_update_peer(peer_id):
     if 'api_token' not in data:
         data['api_token'] = config['peers'][peer_id].get('api_token', '')
     
+    if 'url' in data:
+        data['url'] = (data.get('url') or '').strip().rstrip('/')
     config['peers'][peer_id].update(data)
     save_config()
     
-    # Clear cached session
+    # Clear cached session — and the "down" blackout, so a fixed peer shows at once
     if peer_id in peer_sessions:
         del peer_sessions[peer_id]
+    peer_down_until.pop(peer_id, None)
+    peer_status.pop(peer_id, None)
     
     return jsonify({'success': True})
 
@@ -7047,23 +7548,31 @@ def api_test_peer(peer_id):
         session = requests.Session()
         session.headers.update({'X-API-Token': peer['api_token']})
         
-        response = session.get(f"{peer['url']}/api/ping", timeout=5)
+        response = session.get(f"{peer_base_url(peer)}/api/ping", timeout=5)
         
         if response.status_code == 200:
             data = response.json()
+            peer_down_until.pop(peer_id, None)            # v2.1: back in the stack list at once
+            _set_peer_status(peer_id, 'online')
             return jsonify({
                 'online': True,
                 'instance_name': data.get('instance_name', 'Unknown')
             })
+        elif response.status_code in (401, 403):
+            _set_peer_status(peer_id, 'auth', 'The peer refused the API token')
+            return jsonify({'online': False, 'error': 'The peer refused the API token — copy it again from that DockUp (Settings → API token)'})
         else:
+            _set_peer_status(peer_id, 'error', f'HTTP {response.status_code}')
             return jsonify({
                 'online': False,
                 'error': f'HTTP {response.status_code}'
             })
     except requests.exceptions.Timeout:
+        _set_peer_status(peer_id, 'offline', 'Connection timeout')
         return jsonify({'online': False, 'error': 'Connection timeout'})
     except Exception as e:
-        return jsonify({'online': False, 'error': str(e)})
+        _set_peer_status(peer_id, 'offline', _peer_error_text(e))
+        return jsonify({'online': False, 'error': _peer_error_text(e)})
 
 
 @app.route('/api/peer/<peer_id>/stacks')
@@ -7076,7 +7585,7 @@ def api_peer_stacks(peer_id):
     
     try:
         peer = config['peers'][peer_id]
-        response = session.get(f"{peer['url']}/api/stacks", timeout=10)
+        response = session.get(f"{peer_base_url(peer)}/api/stacks", timeout=10)
         
         if response.status_code == 200:
             return jsonify(response.json())
@@ -7096,7 +7605,7 @@ def api_peer_stack(peer_id, stack_name):
     
     try:
         peer = config['peers'][peer_id]
-        response = session.get(f"{peer['url']}/api/stack/{stack_name}", timeout=10)
+        response = session.get(f"{peer_base_url(peer)}/api/stack/{stack_name}", timeout=10)
         
         if response.status_code == 200:
             return jsonify(response.json())
@@ -7116,16 +7625,22 @@ def api_peer_stack_operation(peer_id, stack_name):
     
     try:
         peer = config['peers'][peer_id]
+        # v2.1: 60 s was shorter than a real pull/up — the UI reported failure
+        # while the peer was still working. Pass the peer's own error through.
         response = session.post(
-            f"{peer['url']}/api/stack/{stack_name}/operation",
+            f"{peer_base_url(peer)}/api/stack/{stack_name}/operation",
             json=request.json,
-            timeout=60
+            timeout=(5, 900)
         )
         
         if response.status_code == 200:
             return jsonify(response.json())
         else:
-            return jsonify({'error': f'Peer returned {response.status_code}'}), response.status_code
+            try:
+                peer_error = response.json().get('error') or response.json().get('message')
+            except Exception:
+                peer_error = None
+            return jsonify({'error': peer_error or f'Peer returned {response.status_code}'}), response.status_code
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -7142,7 +7657,7 @@ def api_peer_logs(peer_id, stack_name, container_id):
         peer = config['peers'][peer_id]
         tail = request.args.get('tail', 100, type=int)
         response = session.get(
-            f"{peer['url']}/api/stack/{stack_name}/logs/{container_id}",
+            f"{peer_base_url(peer)}/api/stack/{stack_name}/logs/{container_id}",
             params={'tail': tail},
             timeout=10
         )
@@ -9385,7 +9900,7 @@ def get_backup_config():
         if config:
             result = dict(config)
             # Add available space
-            available, mount_point, available_gb, error = backup_manager.check_backup_destination_available()
+            available, mount_point, available_gb, error = backup_manager.check_backup_destination_available(allow_mount=False)
             result['available_gb'] = available_gb if available else 0
             return jsonify(result)
         
@@ -9524,14 +10039,8 @@ def test_backup_connection():
                 logger.info(f"Full stdout:\n{result.stdout}")
                 logger.info(f"Full stderr:\n{result.stderr}")
                 
-                # Debug: show what's actually in the credentials file
-                try:
-                    with open(cred_file, 'rb') as f:
-                        raw_bytes = f.read()
-                        logger.info(f"Cred file raw bytes: {raw_bytes}")
-                        logger.info(f"Cred file hex: {raw_bytes.hex()}")
-                except Exception as e:
-                    logger.error(f"Can't read cred file: {e}")
+                # v2.1: removed a "debug" dump of the credentials file — it wrote the
+                # SMB password into the log in plain text (twice) on every test.
                 
                 if result.returncode == 0:
                     logger.info("✓ Test successful")
@@ -9620,8 +10129,10 @@ def mount_backup_share():
 def unmount_backup_share():
     """Unmount SMB backup share"""
     try:
-        success = backup_manager.unmount_smb_share()
-        return jsonify({'success': success})
+        success, message = backup_manager.unmount_smb_share()
+        if not success:
+            return jsonify({'success': False, 'message': message}), 409
+        return jsonify({'success': True, 'message': message})
     except Exception as e:
         logger.error(f"Error unmounting backup share: {e}")
         return jsonify({'success': False}), 500
@@ -9913,6 +10424,20 @@ def get_backup_queue():
     except Exception as e:
         logger.error(f"Error getting backup queue: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/backup/queue/<int:queue_id>', methods=['GET'])
+@require_auth
+def get_backup_queue_item(queue_id):
+    """v2.1: status of one queued backup, so the UI can say when it finished or why it failed."""
+    conn = backup_manager.get_db_connection()
+    try:
+        row = conn.execute("SELECT * FROM backup_queue WHERE id = ?", (queue_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify(dict(row))
 
 
 @app.route('/api/backup/scan', methods=['GET', 'POST'])
@@ -10552,6 +11077,8 @@ def registry_settings():
             return jsonify({'status': 'error', 'message': 'Registry not initialized'}), 400
         
         data = request.json or {}
+        mode_changed = (('mode' in data and data['mode'] != config['registry'].get('mode')) or
+                        ('proxy_upstream' in data and data['proxy_upstream'] != config['registry'].get('proxy_upstream')))
         
         # Update config
         if 'mode' in data:
@@ -10571,8 +11098,12 @@ def registry_settings():
         
         save_config()
         
-        # Restart container to apply changes
-        result = registry_deploy.restart()
+        # Restart container to apply changes (v2.1: rewrite config.yml for a mode/upstream change)
+        registry_deploy.config = config['registry']
+        if mode_changed:
+            result = registry_deploy.update_mode(config['registry'].get('mode'), config['registry'].get('proxy_upstream'))
+        else:
+            result = registry_deploy.restart()
         
         # Update scheduler
         setup_registry_scheduler()
@@ -10811,7 +11342,12 @@ def registry_restart():
 
 @app.route('/api/registry/deploy', methods=['POST'])
 @require_auth
-def registry_deploy():
+def api_registry_deploy():
+    # 2026-10-03: this function was named registry_deploy, the same as the global
+    # that holds the RegistryDeployment object. With the registry disabled at
+    # startup the global stayed bound to THIS function, so "if not registry_deploy"
+    # was false and registry_deploy.deploy() failed with
+    # "'function' object has no attribute 'deploy'" until a restart.
     """Deploy registry container (create if doesn't exist)"""
     global registry_mgr, registry_deploy
     
@@ -11318,7 +11854,7 @@ def setup_registry_scheduler():
         update_cron = registry_config.get('update_check_cron', '0 3 * * *')
         if update_cron:
             try:
-                trigger = CronTrigger.from_crontab(update_cron, timezone=user_tz)
+                trigger = make_cron_trigger(update_cron, timezone=user_tz)
                 scheduler.add_job(
                     registry_mgr.check_all_watched_updates,
                     trigger,
@@ -11333,7 +11869,7 @@ def setup_registry_scheduler():
         gc_cron = registry_config.get('gc_schedule_cron', '0 4 * * 0')
         if gc_cron:
             try:
-                trigger = CronTrigger.from_crontab(gc_cron, timezone=user_tz)
+                trigger = make_cron_trigger(gc_cron, timezone=user_tz)
                 scheduler.add_job(
                     registry_mgr.run_gc,
                     trigger,
@@ -11360,8 +11896,10 @@ if __name__ == '__main__':
         logger.info("Checking Trivy vulnerability database...")
         db_marker = os.path.join(TRIVY_CACHE_DIR, 'db', 'metadata.json')
         if not os.path.exists(db_marker):
-            logger.info("Trivy database not found, downloading (this may take 2-5 minutes)...")
-            update_trivy_database()
+            # v2.1: downloaded in the background — the web UI used to stay
+            # unreachable for 2-5 minutes on a fresh install while this ran.
+            logger.info("Trivy database not found, downloading in the background (2-5 minutes)...")
+            threading.Thread(target=update_trivy_database, daemon=True, name="trivy-db").start()
         else:
             logger.info("✓ Trivy database exists")
         

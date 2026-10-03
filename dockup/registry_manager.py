@@ -7,6 +7,54 @@ import logging
 import time
 import re
 import threading
+import tempfile
+import stat as _stat
+
+# v2.1: ONE lock and ONE atomic writer for config.json, shared with app.py.
+# Both modules used to truncate-and-rewrite the file independently: a reader
+# could catch it half-written, and each side overwrote the other's changes.
+CONFIG_IO_LOCK = threading.RLock()
+
+
+def atomic_write_json(path, data, indent=2):
+    """Write JSON so a crash or a concurrent reader never sees a partial file:
+    temp file in the same folder, fsync, then os.replace. Falls back to an
+    in-place write when replace is impossible (e.g. a file bind mount)."""
+    text = None
+    for _ in range(3):           # the dict may be mutated by another thread mid-dump
+        try:
+            text = json.dumps(data, indent=indent)
+            break
+        except RuntimeError:
+            time.sleep(0.01)
+    if text is None:
+        text = json.dumps(data, indent=indent)
+    folder = os.path.dirname(os.path.abspath(path)) or '.'
+    fd, tmp = tempfile.mkstemp(prefix='.' + os.path.basename(path) + '.', suffix='.tmp', dir=folder)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.exists(path):
+            try:
+                os.chmod(tmp, _stat.S_IMODE(os.stat(path).st_mode))
+            except OSError:
+                pass
+        try:
+            os.replace(tmp, path)
+        except OSError:
+            with open(path, 'w') as f:      # bind-mounted single file: cannot be replaced
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.unlink(tmp)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 import shutil
 import math
 from datetime import datetime
@@ -120,12 +168,30 @@ class RegistryManager:
         if not os.path.exists(self.config_path):
             return default_config
         
-        try:
-            with open(self.config_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to read config: {e}")
-            return default_config
+        for attempt in range(3):
+            try:
+                with open(self.config_path, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                if attempt == 2:
+                    logger.error(f"Failed to read config: {e}")
+                time.sleep(0.05)
+        # v2.1: marked, so _write_config refuses to save these defaults over the
+        # real file (that used to wipe every setting after one bad read).
+        default_config["_dockup_fallback"] = True
+        return default_config
+
+    def _write_config(self, config):
+        """Save ONLY the registry block, merged into the file as it is right now."""
+        if config.get("_dockup_fallback"):
+            raise RuntimeError("config.json could not be read — refusing to overwrite it with defaults")
+        with CONFIG_IO_LOCK:
+            current = {}
+            if os.path.exists(self.config_path):
+                with open(self.config_path, 'r') as f:
+                    current = json.load(f)
+            current["registry"] = config.get("registry", {})
+            atomic_write_json(self.config_path, current)
 
     def _get_blob_size(self, digest):
         """
@@ -243,12 +309,20 @@ class RegistryManager:
                         logger.debug(f"Could not remove {full_path}: {e}")
 
     def _resolve_digest(self, repo, tag):
-        """Resolve the correct digest for a tag using the Registry API."""
+        """Resolve the correct digest for a tag using the Registry API.
+
+        v2.1: returns None when the registry says the tag does not exist (404)
+        and raises for every other failure. It used to raise on 404 too, so the
+        "missing image -> pull it" branches never ran, and callers could not tell
+        "deleted" from "registry briefly unreachable".
+        """
         r = self.session.get(
             f"{self.registry_url}/{repo}/manifests/{tag}", 
             headers=MANIFEST_HEADERS, 
             timeout=10
         )
+        if r.status_code == 404:
+            return None
         r.raise_for_status()
         return r.headers.get("Docker-Content-Digest")
 
@@ -423,7 +497,11 @@ class RegistryManager:
         except: pass
         
         inspect_cmd = ["skopeo", "inspect", f"docker://{image_name}"]
-        inspect_res = subprocess.run(inspect_cmd, capture_output=True, text=True)
+        try:
+            # v2.1: no timeout meant one hung inspect stalled the whole batch
+            inspect_res = subprocess.run(inspect_cmd, capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            return {"status": "error", "message": "Timed out inspecting the upstream image"}
         if inspect_res.returncode != 0:
             return {"status": "error", "message": "Failed to inspect upstream image"}
         
@@ -436,6 +514,11 @@ class RegistryManager:
         logger.info(f"Update required for {image_name}. New digest: {remote_digest}")
         # Disable auto_gc during batch updates - GC runs once at end in check_all_watched_updates
         pull_status = self.pull_image(image_name, auto_gc=False)
+        # v2.1: a failed or busy pull used to fall through to "updated" — with a
+        # notification, a GC run, retention and a fresh last_updated stamp.
+        if pull_status.get("status") != "success":
+            return {"status": pull_status.get("status", "error"),
+                    "message": pull_status.get("message", "Pull failed")}
         
         # For unwatched images: delete old manifest immediately (keep only latest)
         # For watched images: let retention policy handle it
@@ -447,7 +530,11 @@ class RegistryManager:
             watched_images = config.get("registry", {}).get("watched_images", [])
             is_watched = any(item["image"] == image_name for item in watched_images)
             
-            if not is_watched:
+            # v2.1: a digest delete removes EVERY tag on that digest (e.g. updating
+            # nginx:latest also destroyed nginx:1.27). Same guard as delete_tag.
+            if not is_watched and self._tags_sharing_digest(repo_parsed, tag_parsed, local_digest):
+                logger.info(f"[Registry] Old manifest of {image_name} is still used by other tags — kept")
+            elif not is_watched:
                 # Not watched - delete old manifest to keep only latest
                 try:
                     delete_url = f"{self.registry_url}/{repo_parsed}/manifests/{local_digest}"
@@ -609,8 +696,7 @@ class RegistryManager:
                 if item.get("image") in names:
                     item["last_checked"] = stamp
             config.setdefault("registry", {})["watched_images"] = watched_images
-            with open(self.config_path, 'w') as f:
-                json.dump(config, f, indent=2)
+            self._write_config(config)
         except Exception as e:
             logger.error(f"[Registry] Failed to stamp last_checked: {e}")
 
@@ -626,8 +712,7 @@ class RegistryManager:
                     break
             
             config["registry"]["watched_images"] = watched_images
-            with open(self.config_path, 'w') as f:
-                json.dump(config, f, indent=2)
+            self._write_config(config)
         except Exception as e:
             logger.error(f"Failed to update timestamp for {image_name}: {e}")
 
@@ -654,15 +739,16 @@ class RegistryManager:
                         # Image doesn't exist - remove from watch list
                         removed.append(image_name)
                         logger.info(f"Removed orphan from watch list: {image_name}")
-                except:
-                    # Can't resolve - assume deleted
-                    removed.append(image_name)
-                    logger.info(f"Removed orphan from watch list: {image_name}")
+                except Exception as e:
+                    # v2.1: "can't resolve" was treated as "deleted" — one registry
+                    # restart or timeout emptied the whole watch list. Keep it.
+                    cleaned.append(item)
+                    logger.warning(f"Could not check {image_name} (kept on the watch list): {e}")
             
-            # Save cleaned list
-            config["registry"]["watched_images"] = cleaned
-            with open(self.config_path, 'w') as f:
-                json.dump(config, f, indent=2)
+            # Save cleaned list (only when something was really removed)
+            if removed:
+                config["registry"]["watched_images"] = cleaned
+                self._write_config(config)
             
             return {
                 "status": "success",
@@ -887,6 +973,8 @@ class RegistryManager:
         if auto_gc is None: auto_gc = self._get_config().get("registry", {}).get("auto_gc_after_operations", True)
         try:
             digest = self._resolve_digest(name, tag)
+            if not digest:
+                raise Exception(f"{name}:{tag} was not found in the registry")
             tag_path = os.path.join(self.storage_path, "docker", "registry", "v2", "repositories", name, "_manifests", "tags", tag)
             
             # Other tags on the same digest would be destroyed by a digest delete.
@@ -1278,7 +1366,7 @@ class RegistryManager:
         # Add to watch list
         watched.append({"image": normalized, "retention": retention})
         config["registry"]["watched_images"] = watched
-        with open(self.config_path, 'w') as f: json.dump(config, f, indent=2)
+        self._write_config(config)
         with self._cache_lock: self._images_cache = None
         
         return {"status": "success", "pulled": auto_pull and not local_digest}
@@ -1289,7 +1377,7 @@ class RegistryManager:
         normalized = f"{repo}:{tag}"
         config = self._get_config()
         config["registry"]["watched_images"] = [i for i in config.get("registry", {}).get("watched_images", []) if i["image"] != normalized]
-        with open(self.config_path, 'w') as f: json.dump(config, f, indent=2)
+        self._write_config(config)
         with self._cache_lock: self._images_cache = None
         return {"status": "success"}
 
@@ -1312,8 +1400,7 @@ class RegistryManager:
             return {"status": "error", "message": "Image not in watch list"}
         
         config["registry"]["watched_images"] = watched
-        with open(self.config_path, 'w') as f:
-            json.dump(config, f, indent=2)
+        self._write_config(config)
         
         with self._cache_lock:
             self._images_cache = None
@@ -1332,7 +1419,7 @@ class RegistryManager:
         config = self._get_config()
         if "registry" not in config: config["registry"] = {}
         for key, value in settings.items(): config["registry"][key] = value
-        with open(self.config_path, 'w') as f: json.dump(config, f, indent=2)
+        self._write_config(config)
         with self._cache_lock: self._images_cache = None
         return {"status": "success"}
 
@@ -1809,6 +1896,28 @@ class RegistryManager:
             except Exception:
                 pass
             
+            return {"status": "error", "message": str(e)}
+
+    def stop_registry(self):
+        """v2.1: restore_registry called this but it did not exist (AttributeError)."""
+        try:
+            container = self.client.containers.get("dockup-registry")
+            if container.status == "running":
+                container.stop(timeout=30)
+            return {"status": "success"}
+        except docker.errors.NotFound:
+            return {"status": "success", "message": "Registry container not found (nothing to stop)"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def start_registry(self):
+        """v2.1: restore_registry called this but it did not exist (AttributeError)."""
+        try:
+            container = self.client.containers.get("dockup-registry")
+            if container.status != "running":
+                container.start()
+            return {"status": "success"}
+        except Exception as e:
             return {"status": "error", "message": str(e)}
 
     def restore_registry(self, backup_path):

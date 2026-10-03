@@ -197,11 +197,18 @@ def mount_smb_share(host: str, share: str, username: str, password: str, mount_p
         if which_result.returncode != 0:
             return False, "mount.cifs not installed"
         
-        # Check if already mounted
+        # Check if already mounted — v2.1: and WHAT is mounted. "Anything mounted"
+        # used to count as success, so after changing host/share the old share
+        # stayed mounted while the UI said "Mounted successfully".
         check = subprocess.run(['mountpoint', '-q', BACKUP_MOUNT_POINT], capture_output=True)
         if check.returncode == 0:
-            logger.info("Already mounted")
-            return True, ""
+            wanted = f"//{host}/{share}".rstrip('/').lower()
+            current = _mounted_source().rstrip('/').lower()
+            if current == wanted:
+                logger.info(f"Already mounted: {current}")
+                _set_mount_status('connected')
+                return True, ""
+            logger.info(f"A different share is mounted ({current or 'unknown'}) — replacing it with {wanted}")
         
         # Cleanup
         subprocess.run(['umount', '-f', '-l', BACKUP_MOUNT_POINT], capture_output=True, timeout=5)
@@ -222,8 +229,6 @@ def mount_smb_share(host: str, share: str, username: str, password: str, mount_p
         
         logger.info(f"Created credentials file: {cred_file}")
         logger.info(f"Username: {username}")
-        logger.info(f"Password length: {len(password)}")
-        logger.info(f"Password has special chars: {'@' in password or '!' in password}")
         
         # Verify credentials file was written correctly
         try:
@@ -262,33 +267,27 @@ def mount_smb_share(host: str, share: str, username: str, password: str, mount_p
                 break
             else:
                 logger.warning(f"✗ Failed with version {version}: {result.stderr[:100]}")
+                # v2.1: a refused login or a missing capability will not get better
+                # with another SMB version — stop instead of failing 3 logins.
+                if 'Permission denied' in result.stderr or 'Operation not permitted' in result.stderr:
+                    break
         
         if not result or result.returncode != 0:
-            error = result.stderr if result else "Unknown error"
+            error = (result.stderr or result.stdout) if result else "Unknown error"
             if 'Permission denied' in error:
-                return False, "Wrong credentials"
-            elif 'No such file' in error:
-                return False, f"Cannot reach {host}"
-            elif 'No such device' in error:
-                return False, f"Share {share} not found"
-            return False, f"Mount failed with all SMB versions: {error[:100]}"
+                global _auto_mount_blocked_until, _auto_mount_block_reason
+                _auto_mount_blocked_until = time.time() + AUTH_FAILURE_BACKOFF_SECONDS
+                _auto_mount_block_reason = _explain_mount_error(error, host, share)
+            _set_mount_status('disconnected')
+            return False, _explain_mount_error(error, host, share)
         
         # Verify
         verify = subprocess.run(['mountpoint', '-q', BACKUP_MOUNT_POINT], capture_output=True)
         if verify.returncode != 0:
             return False, "Mount verification failed"
         
-        # Update database
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE global_backup_config 
-            SET mount_status = 'connected', last_mount_check = CURRENT_TIMESTAMP
-            WHERE id = 1
-        """)
-        conn.commit()
-        conn.close()
-        
+        _set_mount_status('connected')
+        _auto_mount_blocked_until = 0.0
         logger.info("✓ MOUNT SUCCESSFUL")
         return True, ""
         
@@ -300,32 +299,197 @@ def mount_smb_share(host: str, share: str, username: str, password: str, mount_p
             os.unlink(cred_file)
 
 
-def unmount_smb_share() -> bool:
-    """Unmount SMB share"""
+def _mounted_source(mount_point: str = BACKUP_MOUNT_POINT) -> str:
+    """The source (e.g. //nas/backups) currently mounted on mount_point, or ''."""
     try:
-        result = subprocess.run(['umount', '-f', BACKUP_MOUNT_POINT], 
-                              capture_output=True, timeout=10)
-        
-        # Update database
+        with open('/proc/mounts') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].replace('\\040', ' ') == mount_point:
+                    return parts[0].replace('\\040', ' ')
+    except OSError:
+        pass
+    return ''
+
+
+def _explain_mount_error(error: str, host: str, share: str) -> str:
+    """Turn mount.cifs output into something a person can act on."""
+    e = error or ''
+    if 'Operation not permitted' in e:
+        return ("The DockUp container is not allowed to mount network shares. Add "
+                "'cap_add: [SYS_ADMIN]' and 'security_opt: [apparmor:unconfined]' (or "
+                "'privileged: true') to DockUp's compose file, then recreate it.")
+    if 'Permission denied' in e:
+        return ("Access denied by the share — check the username and password. If "
+                "'Test connection' says the credentials are valid, the container is missing "
+                "mount permission (cap_add: [SYS_ADMIN] + security_opt: [apparmor:unconfined]).")
+    if 'Host is down' in e or 'Connection refused' in e or 'Unable to find suitable address' in e:
+        return f"Cannot reach {host} — check the address and that SMB is enabled on it."
+    if 'No such file' in e or 'No such device' in e:
+        return f"Share '{share}' was not found on {host} (or {host} is unreachable)."
+    return f"Mount failed: {e[:200]}"
+
+
+# v2.1: after the share REFUSES a login, automatic mounts (page loads, backups)
+# pause for a while — three SMB versions were tried on every attempt, which on
+# an AD/NAS account with lockout rules locks the account. A manual Mount click
+# always tries immediately.
+AUTH_FAILURE_BACKOFF_SECONDS = 600
+_auto_mount_blocked_until = 0.0
+_auto_mount_block_reason = ''
+
+
+def _set_mount_status(status: str) -> None:
+    try:
         conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE global_backup_config 
-            SET mount_status = 'disconnected', last_mount_check = CURRENT_TIMESTAMP
-            WHERE id = 1
-        """)
+        conn.execute("UPDATE global_backup_config SET mount_status = ?, "
+                     "last_mount_check = CURRENT_TIMESTAMP WHERE id = 1", (status,))
         conn.commit()
         conn.close()
-        
+    except Exception as e:
+        logger.error(f"Could not record mount status '{status}': {e}")
+
+
+def _compose_project(stack_name: str) -> str:
+    """Project name Docker Compose derives from a folder (compose-go NormalizeProjectName)."""
+    lowered = (stack_name or '').lower()
+    return ''.join(re.findall(r'[a-z0-9_-]', lowered)).lstrip('_-') or lowered
+
+
+def _stack_containers(stack_name: str, all_containers: bool = False) -> list:
+    """Containers of a stack by BOTH the folder name and the Compose project name.
+    v2.1: backup/restore matched the raw folder name only, so a folder like 'MCP'
+    (project 'mcp') was never stopped for backup or restarted after restore."""
+    if not docker_client:
+        return []
+    found = {}
+    for project in {stack_name, _compose_project(stack_name)}:
+        for c in docker_client.containers.list(all=all_containers,
+                                               filters={'label': f'com.docker.compose.project={project}'}):
+            found[c.id] = c
+    return list(found.values())
+
+
+def _stop_stack(stack_name: str) -> list:
+    """Stop the running containers of a stack; return their ids so exactly these
+    can be started again — after success AND after a failure."""
+    stopped = []
+    for c in _stack_containers(stack_name):
+        logger.info(f"  Stopping container: {c.name}")
+        c.stop(timeout=30)
+        stopped.append(c.id)
+    if stopped:
+        time.sleep(2)
+    return stopped
+
+
+def _start_containers(container_ids: list) -> None:
+    for cid in container_ids or []:
+        try:
+            docker_client.containers.get(cid).start()
+            logger.info(f"  Started: {cid[:12]}")
+        except Exception as e:
+            logger.warning(f"  Could not start {cid[:12]}: {e}")
+
+
+def _tar_add_tree(tar, src: str, arcname: str) -> None:
+    """Add a file or folder to an open tar. Symlinks are stored as links (as
+    copytree(symlinks=True) did). A file that disappears while the walk runs is
+    skipped instead of aborting the whole backup."""
+    tar.add(src, arcname=arcname, recursive=False)
+    if not os.path.isdir(src) or os.path.islink(src):
+        return
+    for root, dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        base = arcname if rel == '.' else f"{arcname}/{rel}"
+        for name in dirs + files:
+            path = os.path.join(root, name)
+            try:
+                tar.add(path, arcname=f"{base}/{name}", recursive=False)
+            except FileNotFoundError:
+                logger.info(f"  (vanished during backup, skipped) {path}")
+
+
+def _stack_extra_files(stack_path: str, exclude_paths) -> List[str]:
+    """v3: EVERYTHING in the stack (compose) folder, minus the compose file and
+    .env (stored separately), the selected volume folders (already stored under
+    volumes/, so not twice) and old .pre-restore copies. No size limit — the
+    compose folder is always backed up in full.
+    Returns paths relative to stack_path."""
+    if not os.path.isdir(stack_path):
+        return []
+    skip_names = {'compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml', '.env'}
+    excluded = {os.path.realpath(p) for p in exclude_paths if p}
+    rels, total = [], 0
+    for root, dirs, files in os.walk(stack_path):
+        keep = []
+        for d in dirs:
+            full = os.path.join(root, d)
+            if '.pre-restore.' in d or os.path.realpath(full) in excluded:
+                continue
+            keep.append(d)
+            if os.path.islink(full):
+                rels.append(os.path.relpath(full, stack_path))
+        dirs[:] = [d for d in keep if not os.path.islink(os.path.join(root, d))]
+        for d in dirs:
+            rels.append(os.path.relpath(os.path.join(root, d), stack_path))
+        for f in files:
+            full = os.path.join(root, f)
+            if root == stack_path and f in skip_names:
+                continue
+            if '.pre-restore.' in f or os.path.realpath(full) in excluded:
+                continue
+            try:
+                total += os.lstat(full).st_size
+            except OSError:
+                continue
+            rels.append(os.path.relpath(full, stack_path))
+    logger.info(f"Stack folder {stack_path}: {len(rels)} item(s), {total // (1024 ** 2)} MB outside the selected volumes")
+    return rels
+
+
+def _tar_add_bytes(tar, arcname: str, data: bytes) -> None:
+    import io
+    info = tarfile.TarInfo(arcname)
+    info.size = len(data)
+    info.mtime = time.time()
+    info.mode = 0o644
+    tar.addfile(info, io.BytesIO(data))
+
+
+def _tar_add_dir(tar, arcname: str) -> None:
+    info = tarfile.TarInfo(arcname)
+    info.type = tarfile.DIRTYPE
+    info.mode = 0o755
+    info.mtime = time.time()
+    tar.addfile(info)
+
+
+def unmount_smb_share() -> Tuple[bool, str]:
+    """Unmount SMB share. v2.1: reports failure (e.g. 'target is busy') instead of
+    always saying it worked."""
+    try:
+        if subprocess.run(['mountpoint', '-q', BACKUP_MOUNT_POINT], capture_output=True).returncode != 0:
+            _set_mount_status('disconnected')
+            return True, "Nothing was mounted"
+        result = subprocess.run(['umount', BACKUP_MOUNT_POINT], capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            # Busy: a backup may be writing. Lazy unmount detaches it safely.
+            result = subprocess.run(['umount', '-l', BACKUP_MOUNT_POINT], capture_output=True, text=True, timeout=15)
+        still = subprocess.run(['mountpoint', '-q', BACKUP_MOUNT_POINT], capture_output=True).returncode == 0
+        if still:
+            msg = (result.stderr or result.stdout or 'unknown error').strip()
+            logger.error(f"Unmount failed: {msg}")
+            return False, f"Unmount failed: {msg}"
+        _set_mount_status('disconnected')
         logger.info("✓ SMB share unmounted")
-        return True
-        
+        return True, ""
     except Exception as e:
         logger.error(f"Error unmounting SMB share: {e}")
-        return False
+        return False, str(e)
 
 
-def check_backup_destination_available() -> Tuple[bool, str, int, str]:
+def check_backup_destination_available(allow_mount: bool = True) -> Tuple[bool, str, int, str]:
     """
     Check if backup destination is available and writable
     
@@ -346,6 +510,12 @@ def check_backup_destination_available() -> Tuple[bool, str, int, str]:
         
         if backup_type == 'local':
             mount_point = config['local_path']
+            # v2.1: create the folder instead of failing every backup on a new path
+            try:
+                if mount_point:
+                    os.makedirs(mount_point, exist_ok=True)
+            except OSError as e:
+                return False, mount_point, 0, f"Cannot create '{mount_point}': {e.strerror or e}"
             if os.path.exists(mount_point) and os.access(mount_point, os.W_OK):
                 stat = shutil.disk_usage(mount_point)
                 available_gb = stat.free // (1024**3)
@@ -384,6 +554,14 @@ def check_backup_destination_available() -> Tuple[bool, str, int, str]:
             else:
                 # Not mounted - try to mount if auto_mount enabled
                 logger.info(f"Share not mounted. auto_mount={config['auto_mount']}")
+                # v2.1: loading the Backups page must not trigger a mount — with
+                # the NAS down that blocked the page for up to 90 s.
+                if not allow_mount:
+                    return False, BACKUP_MOUNT_POINT, 0, "SMB share is not mounted"
+                if config['auto_mount'] and time.time() < _auto_mount_blocked_until:
+                    return False, BACKUP_MOUNT_POINT, 0, (
+                        "Automatic mounting is paused after the share refused the login: "
+                        + _auto_mount_block_reason)
                 if config['auto_mount']:
                     logger.info("Attempting auto-mount...")
                     success, error = mount_smb_share(
@@ -395,7 +573,7 @@ def check_backup_destination_available() -> Tuple[bool, str, int, str]:
                     )
                     if success:
                         # Recursively check again
-                        return check_backup_destination_available()
+                        return check_backup_destination_available(allow_mount=False)
                     else:
                         logger.error(f"Auto-mount failed: {error}")
                         return False, BACKUP_MOUNT_POINT, 0, error
@@ -428,11 +606,14 @@ def estimate_backup_size(stack_name: str, stacks_dir: str = '/stacks') -> float:
         total_size = 0
         stack_path = os.path.join(stacks_dir, stack_name)
         
-        # Size of compose file and env
-        if os.path.exists(os.path.join(stack_path, 'docker-compose.yml')):
-            total_size += os.path.getsize(os.path.join(stack_path, 'docker-compose.yml'))
-        if os.path.exists(os.path.join(stack_path, '.env')):
-            total_size += os.path.getsize(os.path.join(stack_path, '.env'))
+        # v3: the whole compose folder goes into the backup now
+        if os.path.isdir(stack_path):
+            try:
+                r = subprocess.run(['du', '-sb', stack_path], capture_output=True, text=True, timeout=60)
+                if r.returncode == 0:
+                    total_size += int(r.stdout.split()[0])
+            except Exception:
+                pass
         
         # Get selected volumes
         conn = get_db_connection()
@@ -489,43 +670,64 @@ def parse_stack_volumes(stack_name: str, stacks_dir: str = '/stacks') -> List[Di
             logger.warning(f"No services found in {compose_file}")
             return []
         
-        for service_name, service in compose_data.get('services', {}).items():
-            service_volumes = service.get('volumes', [])
-            
-            for volume in service_volumes:
-                # Handle both string and dict format
+        # v2.1: relative binds (./config — the most common form) and the long
+        # syntax ({type: bind, source: ...}) were skipped, so those folders were
+        # never in a backup. Environment variables are expanded from .env/stack.env.
+        env = {}
+        for env_name in ('.env', 'stack.env'):
+            env_path = os.path.join(stack_path, env_name)
+            if os.path.exists(env_path):
+                try:
+                    with open(env_path) as ef:
+                        for line in ef:
+                            line = line.strip()
+                            if line and not line.startswith('#') and '=' in line:
+                                k, v = line.split('=', 1)
+                                env[k.strip()] = v.strip().strip('"').strip("'")
+                except OSError:
+                    pass
+
+        def expand(value):
+            return re.sub(r'\$\{([^}:]+)(?::?-([^}]*))?\}',
+                          lambda m: env.get(m.group(1), os.environ.get(m.group(1), m.group(2) or '')), value)
+
+        seen = set()
+        for service_name, service in (compose_data.get('services') or {}).items():
+            for volume in (service or {}).get('volumes', []) or []:
+                host_path = container_path = None
                 if isinstance(volume, str):
                     parts = volume.split(':')
                     if len(parts) >= 2:
-                        host_path = parts[0]
-                        container_path = parts[1]
-                        
-                        # Skip named volumes (no /)
-                        if not host_path.startswith('/'):
-                            continue
-                        
-                        # Estimate size
-                        size_mb = 0
-                        if os.path.exists(host_path):
-                            try:
-                                result = subprocess.run(
-                                    ['du', '-sm', host_path],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=10
-                                )
-                                if result.returncode == 0:
-                                    size_mb = float(result.stdout.split()[0])
-                            except:
-                                pass
-                        
-                        volumes.append({
-                            'host_path': host_path,
-                            'container_path': container_path,
-                            'estimated_size_mb': size_mb,
-                            'backup_enabled': True
-                        })
-        
+                        host_path, container_path = parts[0], parts[1]
+                elif isinstance(volume, dict) and volume.get('type', 'bind') == 'bind':
+                    host_path, container_path = volume.get('source'), volume.get('target')
+                if not host_path or not container_path:
+                    continue
+                host_path = expand(str(host_path))
+                if host_path.startswith('~'):
+                    continue                      # home of the host user — unknown here
+                if host_path.startswith('.'):
+                    host_path = os.path.normpath(os.path.join(stack_path, host_path))
+                if not host_path.startswith('/'):
+                    continue                      # named volume
+                if host_path in seen or host_path in ('/', '/var/run/docker.sock'):
+                    continue
+                seen.add(host_path)
+                size_mb = 0
+                if os.path.exists(host_path):
+                    try:
+                        result = subprocess.run(['du', '-sm', host_path], capture_output=True, text=True, timeout=10)
+                        if result.returncode == 0:
+                            size_mb = float(result.stdout.split()[0])
+                    except Exception:
+                        pass
+                volumes.append({
+                    'host_path': host_path,
+                    'container_path': container_path,
+                    'estimated_size_mb': size_mb,
+                    'backup_enabled': True
+                })
+
         logger.info(f"Parsed {len(volumes)} volumes from {compose_file}")
         return volumes
         
@@ -551,6 +753,8 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
     start_time = time.time()
     backup_file_path = None
     container_was_running = False
+    stopped_ids = []
+    partial_path = None
     
     try:
         logger.info("Checking backup destination availability...")
@@ -598,6 +802,29 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         """, (stack_name,))
         volumes = cursor.fetchall()
         
+        # v2.1: also add volumes that appeared in the compose file since the
+        # list was first saved (and the ./relative ones older versions missed).
+        # INSERT OR IGNORE keeps every on/off choice already made.
+        known = {v['host_path'] for v in volumes}
+        cursor.execute("SELECT host_path FROM backup_volume_selections WHERE stack_name = ?", (stack_name,))
+        known |= {r['host_path'] for r in cursor.fetchall()}
+        if known:
+            new_found = [v for v in parse_stack_volumes(stack_name, stacks_dir) if v['host_path'] not in known]
+            for vol in new_found:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO backup_volume_selections
+                    (stack_name, host_path, container_path, backup_enabled)
+                    VALUES (?, ?, ?, 1)
+                """, (stack_name, vol['host_path'], vol['container_path']))
+            if new_found:
+                conn.commit()
+                logger.info(f"Added {len(new_found)} new volume(s) for {stack_name}: {[v['host_path'] for v in new_found]}")
+                cursor.execute("""
+                    SELECT host_path, container_path FROM backup_volume_selections
+                    WHERE stack_name = ? AND backup_enabled = 1
+                """, (stack_name,))
+                volumes = cursor.fetchall()
+        
         # If no volumes in database, auto-populate from compose file
         if not volumes:
             logger.warning(f"No volumes in database for {stack_name}, attempting to parse from compose file...")
@@ -639,7 +866,13 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         
         # Save config values before closing connection
         stop_before_backup = config['stop_before_backup']
-        retention_count = config['retention_count']
+        # v2.1: a blank retention box was stored as '' and '' > 0 raised a
+        # TypeError AFTER a successful backup (recorded as failed). Blank or 0
+        # now means "keep all".
+        try:
+            retention_count = int(config['retention_count'] or 0)
+        except (TypeError, ValueError):
+            retention_count = 0
         
         # CRITICAL: Close database connection BEFORE file operations
         # This prevents database locking during long backup operations (30+ min for large volumes)
@@ -656,41 +889,25 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         if available_gb < required_space_gb:
             return False, '', f"Insufficient disk space. Required: {required_space_gb:.1f} GB, Available: {available_gb} GB"
         
-        # Stop container if required
+        # Stop container if required (v2.1: by folder AND Compose project name,
+        # remembering exactly which containers were stopped)
         logger.info(f"Stop before backup setting: {stop_before_backup}")
-        logger.info(f"Docker client available: {docker_client is not None}")
-        
         if stop_before_backup and docker_client:
-            try:
-                logger.info(f"Looking for containers with label: com.docker.compose.project={stack_name}")
-                containers = docker_client.containers.list(
-                    filters={'label': f'com.docker.compose.project={stack_name}'}
-                )
-                logger.info(f"Found {len(containers)} containers")
-                if containers:
-                    container_was_running = True
-                    logger.info(f"🛑 Stopping {len(containers)} containers for {stack_name}...")
-                    for container in containers:
-                        logger.info(f"  Stopping container: {container.name}")
-                        container.stop(timeout=30)
-                        logger.info(f"  ✓ Stopped: {container.name}")
-                    time.sleep(2)
-                else:
-                    logger.info("No containers found to stop")
-            except Exception as e:
-                logger.error(f"Error stopping containers: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
+            stopped_ids = _stop_stack(stack_name)
+            container_was_running = bool(stopped_ids)
+            logger.info(f"Stopped {len(stopped_ids)} container(s) for {stack_name}")
         else:
             logger.info("Skipping container stop (disabled or no docker client)")
         
-        # Create backup directory
+        # v2.1: stream straight from the source folders into the archive. The old
+        # code copied every volume into the container's /tmp first (doubling the
+        # time and able to fill DockUp's own disk) and left the copy plus a
+        # half-written .tar.gz behind on failure. The archive is written as
+        # .partial and renamed only when complete. Layout inside is unchanged:
+        #   <name>/docker-compose.yml, <name>/.env, <name>/volumes/<idx>_<base>,
+        #   <name>/volume_mapping.txt
         timestamp = datetime.now().strftime('%Y-%m-%d-%H%M%S')
         backup_name = f"{stack_name}_{timestamp}"
-        temp_backup_dir = os.path.join(BACKUP_TEMP_DIR, backup_name)
-        os.makedirs(temp_backup_dir, exist_ok=True)
-        
-        # Copy compose file (check all variants)
         stack_path = os.path.join(stacks_dir, stack_name)
         compose_src = None
         for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
@@ -698,83 +915,62 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             if os.path.exists(test_path):
                 compose_src = test_path
                 break
-        
-        if compose_src:
-            logger.info(f"Copying compose file: {compose_src}")
-            shutil.copy2(compose_src, os.path.join(temp_backup_dir, 'docker-compose.yml'))
-        else:
-            logger.error(f"No compose file found in {stack_path}")
-        
-        # Copy .env if exists
-        env_src = os.path.join(stack_path, '.env')
-        if os.path.exists(env_src):
-            logger.info(f"Copying .env file")
-            shutil.copy2(env_src, os.path.join(temp_backup_dir, '.env'))
-        
-        # Copy volumes
-        volumes_dir = os.path.join(temp_backup_dir, 'volumes')
-        os.makedirs(volumes_dir, exist_ok=True)
-        
-        logger.info(f"Starting volume backup for {len(volumes)} volumes...")
-        volumes_backed_up = []
-        for idx, volume in enumerate(volumes):
-            host_path = volume['host_path']
-            logger.info(f"[{idx+1}/{len(volumes)}] Processing volume: {host_path}")
-            
-            if not os.path.exists(host_path):
-                logger.warning(f"  ⚠️  Path does not exist: {host_path}")
-                continue
-                
-            try:
-                # Use index + sanitized path to avoid basename collisions
-                vol_name = f"{idx}_{os.path.basename(host_path)}"
-                vol_dest = os.path.join(volumes_dir, vol_name)
-                
-                # Store mapping for restore
-                mapping_file = os.path.join(temp_backup_dir, 'volume_mapping.txt')
-                with open(mapping_file, 'a') as f:
-                    f.write(f"{vol_name}={host_path}\n")
-                
-                if os.path.isdir(host_path):
-                    logger.info(f"  📁 Copying directory...")
-                    shutil.copytree(host_path, vol_dest, symlinks=True)
-                else:
-                    logger.info(f"  📄 Copying file...")
-                    shutil.copy2(host_path, vol_dest)
-                
-                logger.info(f"  ✓ Backed up: {host_path}")
-                volumes_backed_up.append(host_path)
-            except Exception as e:
-                logger.error(f"  ❌ Failed to backup {host_path}: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-        
-        # Create tarball
         backup_file_name = f"{backup_name}.tar.gz"
         backup_file_path = os.path.join(dest_path, backup_file_name)
+        partial_path = backup_file_path + '.partial'
         
-        with tarfile.open(backup_file_path, 'w:gz') as tar:
-            tar.add(temp_backup_dir, arcname=backup_name)
+        volumes_backed_up = []
+        mapping_lines = []
+        with tarfile.open(partial_path, 'w:gz') as tar:
+            _tar_add_dir(tar, backup_name)
+            if compose_src:
+                logger.info(f"Adding compose file: {compose_src}")
+                tar.add(compose_src, arcname=f"{backup_name}/docker-compose.yml", recursive=False)
+            else:
+                logger.error(f"No compose file found in {stack_path}")
+            env_src = os.path.join(stack_path, '.env')
+            if os.path.exists(env_src):
+                tar.add(env_src, arcname=f"{backup_name}/.env", recursive=False)
+            # v2.1: the rest of the stack folder (stack.env with the Environment
+            # tab's variables, config files, Dockerfiles ...). Before this, a
+            # restore silently dropped all of it.
+            # only the SELECTED volumes are skipped here (they are under volumes/);
+            # a switched-off volume that lives inside the compose folder is still
+            # part of the compose folder and is backed up with it
+            extras = _stack_extra_files(stack_path, [v['host_path'] for v in volumes])
+            _tar_add_dir(tar, f"{backup_name}/stack_files")
+            for rel in extras:
+                try:
+                    tar.add(os.path.join(stack_path, rel), arcname=f"{backup_name}/stack_files/{rel}", recursive=False)
+                except FileNotFoundError:
+                    pass
+            _tar_add_dir(tar, f"{backup_name}/volumes")
+            
+            logger.info(f"Starting volume backup for {len(volumes)} volumes...")
+            for idx, volume in enumerate(volumes):
+                host_path = volume['host_path']
+                logger.info(f"[{idx+1}/{len(volumes)}] Processing volume: {host_path}")
+                if not os.path.lexists(host_path):
+                    logger.warning(f"  ⚠️  Path does not exist: {host_path}")
+                    continue
+                vol_name = f"{idx}_{os.path.basename(host_path.rstrip('/')) or 'root'}"
+                _tar_add_tree(tar, host_path, f"{backup_name}/volumes/{vol_name}")
+                mapping_lines.append(f"{vol_name}={host_path}")
+                volumes_backed_up.append(host_path)
+                logger.info(f"  ✓ Backed up: {host_path}")
+            _tar_add_bytes(tar, f"{backup_name}/volume_mapping.txt",
+                           ("\n".join(mapping_lines) + ("\n" if mapping_lines else "")).encode())
+        os.replace(partial_path, backup_file_path)
+        partial_path = None
         
         # Get backup size
         backup_size_mb = os.path.getsize(backup_file_path) / (1024 * 1024)
         
-        # Clean up temp directory
-        shutil.rmtree(temp_backup_dir)
-        
-        # Restart container if it was running
-        if container_was_running and stop_before_backup and docker_client:
-            try:
-                logger.info(f"Starting containers for {stack_name}...")
-                containers = docker_client.containers.list(
-                    all=True,
-                    filters={'label': f'com.docker.compose.project={stack_name}'}
-                )
-                for container in containers:
-                    container.start()
-                    logger.info(f"Started: {container.name}")
-            except Exception as e:
-                logger.warning(f"Error restarting containers: {e}")
+        # Start exactly the containers that were stopped
+        if container_was_running and docker_client:
+            logger.info(f"Starting containers for {stack_name}...")
+            _start_containers(stopped_ids)
+            stopped_ids = []
         
         duration = int(time.time() - start_time)
         
@@ -789,6 +985,7 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         conn.commit()
         
         # Apply retention policy
+        all_backups = []
         if retention_count > 0:
             cursor.execute("""
                 SELECT id, backup_file_path FROM backup_history 
@@ -817,8 +1014,8 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
         conn.commit()
         conn.close()
         
-        kept_count = min(len(all_backups), retention_count)
-        deleted_count = max(0, len(all_backups) - retention_count)
+        kept_count = min(len(all_backups), retention_count) if retention_count > 0 else len(all_backups)
+        deleted_count = max(0, len(all_backups) - retention_count) if retention_count > 0 else 0
         
         logger.info("=" * 80)
         logger.info(f"✅ BACKUP COMPLETED SUCCESSFULLY")
@@ -888,12 +1085,15 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
             import traceback
             logger.error(traceback.format_exc())
         
-        # Restart container if it was stopped
-        if container_was_running and docker_client:
+        # v2.1: restart exactly the containers this backup stopped. The old call
+        # was 'docker-compose up -d' — the v1 binary is not in the image, the
+        # error was swallowed, and the stack stayed down.
+        if stopped_ids and docker_client:
+            _start_containers(stopped_ids)
+        if partial_path and os.path.exists(partial_path):
             try:
-                stack_path = os.path.join(stacks_dir, stack_name)
-                subprocess.run(['docker-compose', 'up', '-d'], cwd=stack_path, timeout=60)
-            except:
+                os.remove(partial_path)
+            except OSError:
                 pass
         
         # Record failure
@@ -921,150 +1121,180 @@ def execute_backup(stack_name: str, stacks_dir: str = '/stacks') -> Tuple[bool, 
 def restore_from_backup(backup_id: int, stacks_dir: str = '/stacks') -> Tuple[bool, str]:
     """
     Restore a stack from backup
-    
+
+    v2.1 rewrite — the order is now safe:
+      1. extract and check the archive FIRST (nothing touched yet),
+      2. stop the stack, move the current folder and volumes aside,
+      3. put the backup in place,
+      4. on ANY failure, put everything back exactly as it was.
+    The old version moved the stack folder away before extracting; a failed
+    extraction (e.g. Python 3.14 refusing an absolute symlink with the default
+    'data' filter) left the stack gone and its containers stopped. The aside
+    copies of the stack folder are hidden (.<stack>.pre-restore.<ts>) so they
+    no longer show up as an extra stack.
+
     Returns:
         (success, error_message)
     """
+    restore_temp = None
+    moved = []          # (original_path, aside_path) — undone in reverse on failure
+    created = []        # paths that did not exist before and were created
+    stopped_ids = []
     try:
-        # Get backup info
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM backup_history WHERE id = ?
-        """, (backup_id,))
+        cursor.execute("SELECT * FROM backup_history WHERE id = ?", (backup_id,))
         backup = cursor.fetchone()
         conn.close()
         
         if not backup:
             return False, f"Backup {backup_id} not found"
-        
         if not os.path.exists(backup['backup_file_path']):
             return False, f"Backup file not found: {backup['backup_file_path']}"
         
         stack_name = backup['stack_name']
         stack_path = os.path.join(stacks_dir, stack_name)
+        ts = int(time.time())
         
-        # Stop containers
-        if docker_client:
-            try:
-                containers = docker_client.containers.list(
-                    filters={'label': f'com.docker.compose.project={stack_name}'}
-                )
-                for container in containers:
-                    container.stop(timeout=30)
-                time.sleep(2)
-            except Exception as e:
-                logger.warning(f"Error stopping containers: {e}")
-        
-        # Backup current data
-        if os.path.exists(stack_path):
-            backup_suffix = f".backup.{int(time.time())}"
-            shutil.move(stack_path, stack_path + backup_suffix)
-        
-        # Extract backup
-        restore_temp = os.path.join(BACKUP_TEMP_DIR, f'restore_{stack_name}_{int(time.time())}')
+        # 1) extract first. filter='tar' keeps every file inside restore_temp but
+        #    restores symlinks as they were (the 'data' default refuses absolute
+        #    links, which app data often contains).
+        restore_temp = os.path.join(BACKUP_TEMP_DIR, f'restore_{stack_name}_{ts}')
         os.makedirs(restore_temp, exist_ok=True)
-        
         with tarfile.open(backup['backup_file_path'], 'r:gz') as tar:
-            # Safe extraction - prevent path traversal
-            def is_within_directory(directory, target):
-                abs_directory = os.path.abspath(directory)
-                abs_target = os.path.abspath(target)
-                return abs_target.startswith(abs_directory)
-            
-            for member in tar.getmembers():
-                member_path = os.path.join(restore_temp, member.name)
-                if not is_within_directory(restore_temp, member_path):
-                    raise Exception(f"Attempted path traversal in tar file: {member.name}")
-            
-            tar.extractall(restore_temp)
-        
-        # Find extracted directory
-        extracted_dirs = os.listdir(restore_temp)
-        if not extracted_dirs:
+            tar.extractall(restore_temp, filter='tar')
+        entries = sorted(os.listdir(restore_temp))
+        if not entries:
             return False, "Backup archive is empty"
+        extracted_dir = os.path.join(restore_temp, entries[0])
         
-        extracted_dir = os.path.join(restore_temp, extracted_dirs[0])
-        
-        # Restore docker-compose.yml and .env
-        os.makedirs(stack_path, exist_ok=True)
-        
-        if os.path.exists(os.path.join(extracted_dir, 'docker-compose.yml')):
-            shutil.copy2(
-                os.path.join(extracted_dir, 'docker-compose.yml'),
-                os.path.join(stack_path, 'docker-compose.yml')
-            )
-        
-        if os.path.exists(os.path.join(extracted_dir, '.env')):
-            shutil.copy2(
-                os.path.join(extracted_dir, '.env'),
-                os.path.join(stack_path, '.env')
-            )
-        
-        # Restore volumes using volume_mapping.txt
-        volumes_dir = os.path.join(extracted_dir, 'volumes')
+        volume_map = {}
         mapping_file = os.path.join(extracted_dir, 'volume_mapping.txt')
-        
-        if os.path.exists(volumes_dir) and os.path.exists(mapping_file):
-            # Read mapping
-            volume_map = {}
+        volumes_dir = os.path.join(extracted_dir, 'volumes')
+        if os.path.exists(mapping_file):
             with open(mapping_file, 'r') as f:
                 for line in f:
                     if '=' in line:
-                        vol_name, vol_path = line.strip().split('=', 1)
+                        vol_name, vol_path = line.rstrip('\n').split('=', 1)
                         volume_map[vol_name] = vol_path
-            
-            logger.info(f"Restoring {len(volume_map)} volumes from mapping")
-            
-            for vol_name, vol_path in volume_map.items():
-                vol_src = os.path.join(volumes_dir, vol_name)
-                
-                if not os.path.exists(vol_src):
-                    logger.warning(f"Volume {vol_name} missing in backup")
-                    continue
-                
-                # Backup existing
-                if os.path.exists(vol_path):
-                    backup_suffix = f".backup.{int(time.time())}"
-                    shutil.move(vol_path, vol_path + backup_suffix)
-                    logger.info(f"Backed up existing: {vol_path}")
-                
-                # Restore - ensure parent exists
-                parent_dir = os.path.dirname(vol_path)
-                if parent_dir:
-                    os.makedirs(parent_dir, exist_ok=True)
-                
-                if os.path.isdir(vol_src):
-                    shutil.copytree(vol_src, vol_path, symlinks=True)
-                else:
-                    shutil.copy2(vol_src, vol_path)
-                
-                logger.info(f"Restored: {vol_path}")
         
-        # Clean up temp
-        shutil.rmtree(restore_temp)
+        # 2) stop the stack
+        stopped_ids = _stop_stack(stack_name)
         
-        # Start containers using Docker SDK
-        if docker_client:
-            try:
-                logger.info(f"Starting containers for {stack_name}...")
-                containers = docker_client.containers.list(
-                    all=True,
-                    filters={'label': f'com.docker.compose.project={stack_name}'}
-                )
-                for container in containers:
-                    container.start()
-                    logger.info(f"Started: {container.name}")
-            except Exception as e:
-                logger.warning(f"Error starting containers: {e}")
+        # 3) stack folder: move aside (hidden), then write the backup's files
+        compose_name = 'docker-compose.yml'
+        aside_stack = None
+        if os.path.exists(stack_path):
+            for filename in ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']:
+                if os.path.exists(os.path.join(stack_path, filename)):
+                    compose_name = filename      # keep the file name the stack already used
+                    break
+            aside_stack = os.path.join(stacks_dir, f".{stack_name}.pre-restore.{ts}")
+            os.rename(stack_path, aside_stack)
+            moved.append((stack_path, aside_stack))
+        stack_files = os.path.join(extracted_dir, 'stack_files')
+        if os.path.isdir(stack_files):
+            # v2.1 backups carry the whole stack folder
+            shutil.copytree(stack_files, stack_path, symlinks=True)
+        else:
+            os.makedirs(stack_path)
+        if not aside_stack:
+            created.append(stack_path)
+        if aside_stack:
+            # v2.1: anything in the old folder that the backup doesn't contain —
+            # stack.env/configs on older backups, volume folders whose backup was
+            # switched off — is moved back (a rename, no copying) instead of being
+            # left behind in the .pre-restore folder. Volumes that ARE in the
+            # backup are skipped here and restored below.
+            restore_targets = {os.path.normpath(p) for p in volume_map.values()}
+            # files the backup itself provides stay in the aside copy, so a
+            # rollback can always put the originals back untouched
+            if os.path.exists(os.path.join(extracted_dir, 'docker-compose.yml')):
+                for fn in ('compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'):
+                    restore_targets.add(os.path.normpath(os.path.join(stack_path, fn)))
+            if os.path.exists(os.path.join(extracted_dir, '.env')):
+                restore_targets.add(os.path.normpath(os.path.join(stack_path, '.env')))
+
+            def carry_over(src_dir, dst_dir):
+                for name in sorted(os.listdir(src_dir)):
+                    if '.pre-restore.' in name:
+                        continue
+                    s, d = os.path.join(src_dir, name), os.path.join(dst_dir, name)
+                    if os.path.normpath(d) in restore_targets:
+                        continue
+                    if not os.path.lexists(d):
+                        os.rename(s, d)
+                        moved.append((s, d))
+                    elif os.path.isdir(s) and os.path.isdir(d) and not os.path.islink(s) and not os.path.islink(d):
+                        carry_over(s, d)
+            carry_over(aside_stack, stack_path)
+        if os.path.exists(os.path.join(extracted_dir, 'docker-compose.yml')):
+            shutil.copy2(os.path.join(extracted_dir, 'docker-compose.yml'), os.path.join(stack_path, compose_name))
+        if os.path.exists(os.path.join(extracted_dir, '.env')):
+            shutil.copy2(os.path.join(extracted_dir, '.env'), os.path.join(stack_path, '.env'))
+        if aside_stack and os.path.exists(os.path.join(aside_stack, '.dockup-meta.json')):
+            # keep tags, web UI URL and schedules (not part of the backup)
+            shutil.copy2(os.path.join(aside_stack, '.dockup-meta.json'), os.path.join(stack_path, '.dockup-meta.json'))
         
+        # 4) volumes
+        logger.info(f"Restoring {len(volume_map)} volumes from mapping")
+        for vol_name, vol_path in volume_map.items():
+            vol_src = os.path.join(volumes_dir, vol_name)
+            if not os.path.lexists(vol_src):
+                logger.warning(f"Volume {vol_name} missing in backup")
+                continue
+            if os.path.lexists(vol_path):
+                aside = f"{vol_path}.pre-restore.{ts}"
+                os.rename(vol_path, aside)
+                moved.append((vol_path, aside))
+                logger.info(f"Kept existing data as: {aside}")
+            else:
+                created.append(vol_path)
+            parent_dir = os.path.dirname(vol_path)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+            if os.path.isdir(vol_src) and not os.path.islink(vol_src):
+                shutil.copytree(vol_src, vol_path, symlinks=True)
+            else:
+                shutil.copy2(vol_src, vol_path, follow_symlinks=False)
+            logger.info(f"Restored: {vol_path}")
+        
+        _start_containers(stopped_ids)
         logger.info(f"✓ Restore completed for {stack_name} from backup {backup_id}")
         return True, ""
         
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Restore failed: {error_msg}")
+        logger.error(f"Restore failed: {error_msg} — rolling back")
+        rollback_ok = True
+        for path in reversed(created):
+            try:
+                if os.path.isdir(path) and not os.path.islink(path):
+                    shutil.rmtree(path)
+                elif os.path.lexists(path):
+                    os.remove(path)
+            except Exception as re_err:
+                rollback_ok = False
+                logger.error(f"Rollback: could not remove {path}: {re_err}")
+        for original, aside in reversed(moved):
+            try:
+                if os.path.lexists(original):
+                    if os.path.isdir(original) and not os.path.islink(original):
+                        shutil.rmtree(original)
+                    else:
+                        os.remove(original)
+                os.rename(aside, original)
+            except Exception as re_err:
+                rollback_ok = False
+                logger.error(f"Rollback: could not move {aside} back to {original}: {re_err}")
+        _start_containers(stopped_ids)
+        if moved or created:
+            error_msg += (" — everything was put back as it was" if rollback_ok
+                          else " — ROLLBACK INCOMPLETE, check the .pre-restore folders")
         return False, error_msg
+    finally:
+        if restore_temp and os.path.exists(restore_temp):
+            shutil.rmtree(restore_temp, ignore_errors=True)
 
 
 # ============================================================================
@@ -1337,6 +1567,20 @@ def start_backup_worker():
         logger.info(f"Current state: backup_worker_running={backup_worker_running}, thread_exists={backup_worker_thread is not None}")
         if backup_worker_thread:
             logger.info(f"Existing thread alive: {backup_worker_thread.is_alive()}")
+        
+        # v2.1: the queue lives in memory; after a restart, rows left 'running'
+        # stayed running forever and 'queued' ones never ran.
+        try:
+            conn = get_db_connection()
+            conn.execute("""UPDATE backup_queue SET status = 'failed', end_time = CURRENT_TIMESTAMP,
+                            error_message = 'DockUp restarted while this backup was running'
+                            WHERE status = 'running'""")
+            for row in conn.execute("SELECT id FROM backup_queue WHERE status = 'queued' ORDER BY id"):
+                backup_queue.put(row['id'])
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Could not recover the backup queue: {e}")
         
         # Set flag BEFORE starting thread to avoid race condition
         backup_worker_running = True
